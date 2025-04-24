@@ -11,7 +11,7 @@ from hydra_ros import DsgSubscriber
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from robot_executor_interface.action_descriptions import ActionSequence, Follow
+from robot_executor_interface.action_descriptions import ActionSequence, Follow, Gaze, Pick, Place
 from robot_executor_interface_ros.action_descriptions_ros import to_msg, to_viz_msg
 from robot_executor_msgs.msg import ActionSequenceMsg
 from ros_system_monitor_msgs.msg import NodeInfoMsg
@@ -20,9 +20,12 @@ from tf2_ros.transform_listener import TransformListener
 from visualization_msgs.msg import MarkerArray
 
 from omniplanner.goto_points import GotoPointsDomain, GotoPointsGoal
+from omniplanner.tamp_planner import TAMPDomain, TAMPGoal
 from omniplanner.omniplanner import PlanRequest, full_planning_pipeline
-from omniplanner_msgs.msg import GotoPointsGoalMsg
+from omniplanner_msgs.msg import GotoPointsGoalMsg, TAMPGoalMsg
 
+from dsg_tamp.mapping.outdoor_dsg_utils import spark_dsg_to_tamp
+from geometry_msgs.msg import Pose2D
 
 # TODO: this needs to move somewhere and become generic
 def temp_compile_plan(plan, plan_id, robot_name, frame_id):
@@ -35,6 +38,61 @@ def temp_compile_plan(plan, plan_id, robot_name, frame_id):
 
     seq = ActionSequence(plan_id=plan_id, robot_name=robot_name, actions=actions)
     return seq
+
+def temp_compile_tamp_plan(dsg, plan, plan_id, robot_name, plan_frame):
+    action_sequence = ActionSequence(plan_id=plan_id, robot_name=robot_name, actions=[])
+    for pddl_action, args in plan:
+        print("\tProcessing ", pddl_action)
+        if pddl_action == "moveplace":
+            c = args[-2]
+            actions = [Follow(frame=plan_frame, path2d=c.commands[0])]
+        elif pddl_action == "move":
+            actions = [Follow(frame=plan_frame, path2d=args[-1].commands[0])]
+        elif pddl_action == "inspect":
+            robot_point = np.zeros(3)
+            robot_point[:2] = args[1].pose[:2]
+            obj_center = dsg.objects.centers[args[0].idx]
+            actions = [
+                Gaze(frame=plan_frame, robot_point=robot_point, gaze_point=obj_center)
+            ]
+        elif pddl_action == "pick":
+            robot_point = np.zeros(3)
+            robot_point[:2] = args[-1].pose[:2]
+            object_point = np.zeros(3)
+            object_point[:2] = args[-2].pose[:2]
+            actions = [
+                Gaze(frame=plan_frame, robot_point=robot_point, gaze_point=object_point)
+            ]
+            semantic_label = dsg.objects.semantic_labels[args[0].idx]
+            actions.append(
+                Pick(
+                    frame=plan_frame,
+                    object_class=semantic_label,
+                    robot_point=robot_point,
+                    object_point=object_point,
+                )
+            )
+        elif pddl_action == "place":
+            robot_point = np.zeros(3)
+            robot_point[:2] = args[-1].pose[:2]
+            semantic_label = dsg.objects.semantic_labels[args[0].idx]
+            object_point = np.zeros(3)
+            object_point[:2] = args[-2].pose[:2]
+            actions = [
+                Place(
+                    frame=plan_frame,
+                    object_class=semantic_label,
+                    robot_point=robot_point,
+                    object_point=object_point,
+                )
+            ]
+        else:
+            raise Exception(f"Unknown action {pddl_action} for robot {robot_name}")
+
+        action_sequence.actions += actions
+
+    return action_sequence
+
 
 
 def get_robot_pose(
@@ -104,6 +162,20 @@ class OmniPlannerRos(Node):
             1,
         )
 
+        self.tamp_sub = self.create_subscription(
+            TAMPGoalMsg,
+            "~/tamp_goal",
+            self.tamp_callback,
+            1,
+        )
+
+        self.spot_pose_sub = self.create_subscription(
+            Pose2D,
+            "spot_executor_node/spot_pose",
+            self.spot_pose_callback,
+            1,
+        )
+
         self.dsg_lock = threading.Lock()
         DsgSubscriber(self, "~/dsg_in", self.dsg_callback)
 
@@ -127,12 +199,23 @@ class OmniPlannerRos(Node):
         #    NlpGoalMsg, "~/nlp_goal", self.nlp_goal_callback, 1
         # )
 
+        self.spot_pose = np.zeros(3)  # [x, y, theta]
+
         self.heartbeat_pub = self.create_publisher(NodeInfoMsg, "~/node_status", 1)
         heartbeat_timer_group = MutuallyExclusiveCallbackGroup()
         timer_period_s = 0.1
         self.timer = self.create_timer(
             timer_period_s, self.hb_callback, callback_group=heartbeat_timer_group
         )
+    
+    def spot_pose_callback(self, msg):
+        """Callback for the spot pose. This is used to get the robot's current
+        position in the world.
+        """
+        self.spot_pose = np.array(
+            [msg.x, msg.y, msg.theta]
+        )
+        self.get_logger().info(f"Got spot pose: {msg}")
 
     def dsg_callback(self, header, dsg):
         self.get_logger().warning("Setting DSG!")
@@ -229,6 +312,57 @@ class OmniPlannerRos(Node):
             self.current_planner = None
             self.plan_time_start = None
 
+    def tamp_callback(self, msg):
+        """TODO: in reality, this callback (and the subscription) should be
+        loaded from an external plugin
+        """
+        if self.dsg_last is None:
+            self.get_logger().error("Got plan request, but no DSG!")
+            return
+
+        with self.current_planner_lock and self.plan_time_start_lock:
+            self.current_planner = "TAMPPlanner"
+            self.plan_time_start = time.time()
+
+        
+
+        spot_pose = self.spot_pose
+
+        self.get_logger().info(f"Got spot pose: {spot_pose}")
+        flat_spot_pose = np.array([spot_pose[0], spot_pose[1], spot_pose[2]])
+        robot_poses = {"spot": flat_spot_pose}
+
+        goal_msg="(and (Holding o5))"
+        robot_id_msg="spot"
+        goal_msg = msg.goal
+        robot_id_msg = msg.robot_id
+         
+        #robot_poses={"spot":np.array([0.0, 0.1, 0.0])}
+        goal = TAMPGoal(
+            goal=goal_msg,
+            robot_id=robot_id_msg,
+        )
+
+        req = PlanRequest(
+            domain=TAMPDomain(),
+            goal=goal,
+            robot_states=robot_poses,
+        )
+        traversable_semantics=["ground", "water", "sidewalk", "road", "floor", "surface"]
+        dsg = spark_dsg_to_tamp(
+            self.dsg_last, traversable_semantics=traversable_semantics
+        )
+        with self.dsg_lock:
+            plan = full_planning_pipeline(req, dsg)
+        spot_path_frame = "map"  # TODO: parameter
+        compiled_plan = temp_compile_tamp_plan(
+            dsg, plan, str(uuid.uuid4()), "spot", spot_path_frame
+        )
+
+        # 1. Publish compiled plan <-- probably also should happen from omniplanner, not plugin
+        self.compiled_plan_pub.publish(to_msg(compiled_plan))
+        # 2. Publish compiled plan viz <-- should happen from omniplanner, not inside plugin
+        self.compiled_plan_viz_pub.publish(to_viz_msg(compiled_plan, "goto_pt_plan"))
 
 def main(args=None):
     rclpy.init(args=args)
