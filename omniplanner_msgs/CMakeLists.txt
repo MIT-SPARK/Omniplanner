@@ -16,6 +16,7 @@ find_package(rosidl_default_generators REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PlanRequestStringMsg.msg"
   "msg/GotoPointsGoalMsg.msg"
+  "msg/LanguageGoalMsg.msg"
 )
 
 

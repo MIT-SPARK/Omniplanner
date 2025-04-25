@@ -1,3 +1,4 @@
+import time
 from dataclasses import dataclass
 from typing import List, overload
 
@@ -69,6 +70,7 @@ def ground_problem(domain, map_context, start, goal) -> GroundedGotoPointsProble
 
 @dispatch(GroundedGotoPointsProblem, object)
 def make_plan(grounded_problem, map_context) -> GotoPointsPlan:
+    time.sleep(3)
     plan = []
     p = GotoPointPrimitive(
         grounded_problem.start_point, grounded_problem.goal_points[0]

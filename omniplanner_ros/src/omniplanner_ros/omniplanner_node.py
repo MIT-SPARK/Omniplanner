@@ -25,6 +25,7 @@ from omniplanner.omniplanner import compile_plan, full_planning_pipeline
 
 # TODO: get this import either through __init__.py or autodiscovery
 from omniplanner_ros.goto_points_ros import GotoPointsConfig  # NOQA
+from omniplanner_ros.language_planner_ros import LanguagePlannerConfig  # NOQA
 
 
 @dataclass
@@ -209,6 +210,7 @@ class OmniPlannerRos(Node):
             with self.current_planner_lock and self.plan_time_start_lock:
                 self.current_planner = None
                 self.plan_time_start = None
+            self.get_logger().info("Published Plan")
 
         resolved_topic_name = name + "/" + topic
         self.get_logger().info(

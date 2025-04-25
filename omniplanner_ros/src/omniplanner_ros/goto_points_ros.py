@@ -1,12 +1,15 @@
 from __future__ import annotations
-import spark_config as sc
+
 from dataclasses import dataclass
+
+import numpy as np
+import spark_config as sc
 from robot_executor_interface.action_descriptions import ActionSequence, Follow
 
 from omniplanner.goto_points import GotoPointsDomain, GotoPointsGoal, GotoPointsPlan
 from omniplanner.omniplanner import PlanRequest, compile_plan
 from omniplanner_msgs.msg import GotoPointsGoalMsg
-import numpy as np
+
 
 @compile_plan.register
 def compile_plan(plan: GotoPointsPlan, plan_id, robot_name, frame_id):
@@ -20,6 +23,7 @@ def compile_plan(plan: GotoPointsPlan, plan_id, robot_name, frame_id):
     seq = ActionSequence(plan_id=plan_id, robot_name=robot_name, actions=actions)
     return seq
 
+
 class GotoPointsRos:
     def __init__(self, config: GotoPointsConfig):
         self.config = config
@@ -28,7 +32,6 @@ class GotoPointsRos:
         return GotoPointsGoalMsg, "goto_points_goal", self.goto_points_callback
 
     def goto_points_callback(self, msg, robot_poses):
-
         goal = GotoPointsGoal(
             goal_points=msg.point_names_to_visit, robot_id=msg.robot_id
         )
@@ -40,7 +43,9 @@ class GotoPointsRos:
         return req
 
 
-@sc.register_config("omniplanner_pipeline", name="GotoPoints", constructor=GotoPointsRos)
+@sc.register_config(
+    "omniplanner_pipeline", name="GotoPoints", constructor=GotoPointsRos
+)
 @dataclass
 class GotoPointsConfig(sc.Config):
     pass
