@@ -35,7 +35,7 @@ points = np.array(
     ]
 )
 
-robot_poses = {"spot", self.get_spot_pose}
+# robot_poses = {"spot", self.get_spot_pose}
 
 req = PlanRequest(
     domain=GotoPointsDomain(),
