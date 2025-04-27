@@ -1,5 +1,6 @@
 # examples of planning combinations:
 from dataclasses import dataclass
+from functools import singledispatch
 from typing import Any
 
 from multipledispatch import dispatch
@@ -105,3 +106,8 @@ def full_planning_pipeline(plan_request: PlanRequest, map_context: Any):
     )
     plan = make_plan(grounded_problem, map_context)
     return plan
+
+
+@singledispatch
+def compile_plan(plan, plan_id, robot_name, frame_id):
+    raise NotImplementedError(f"No `compile_plan` implementation for {type(plan)}")
