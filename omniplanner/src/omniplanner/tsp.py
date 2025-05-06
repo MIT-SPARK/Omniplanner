@@ -1,27 +1,34 @@
+import logging
 from dataclasses import dataclass
 from typing import List, overload
-import spark_dsg.networkx as dsg_nx
 
+import networkx as nx
 import numpy as np
+import spark_dsg.networkx as dsg_nx
 from multipledispatch import dispatch
 
 from omniplanner.omniplanner import PlanningDomain
 from omniplanner.utils import str_to_ns_value
 
-import networkx as nx
-import logging
 logger = logging.getLogger(__name__)
+
 
 class LayerPlanner:
     def __init__(self, dsg, layer, precompute_shortest_paths=False):
         self.nx_layer = dsg_nx.layer_to_networkx(dsg.get_layer(layer))
 
         self.node_ids = [n for n in self.nx_layer.nodes]
-        self.node_positions = np.array([dsg.get_node(v).attributes.position[:2] for v in self.node_ids])
-        self.node_value_to_position = {v: dsg.get_node(v).attributes.position[:2] for v in self.node_ids}
+        self.node_positions = np.array(
+            [dsg.get_node(v).attributes.position[:2] for v in self.node_ids]
+        )
+        self.node_value_to_position = {
+            v: dsg.get_node(v).attributes.position[:2] for v in self.node_ids
+        }
 
         if precompute_shortest_paths:
-            self.stored_shortest_path_lengths = dict(nx.all_pairs_dijkstra_path_length(self.nx_layer))
+            self.stored_shortest_path_lengths = dict(
+                nx.all_pairs_dijkstra_path_length(self.nx_layer)
+            )
             self.stored_shortest_path = dict(nx.all_pairs_dijkstra_path(self.nx_layer))
         else:
             self.stored_shortest_path_lengths = None
@@ -48,7 +55,6 @@ class LayerPlanner:
         return self.node_positions[closest_idx]
 
     def get_external_distance(self, point_a, point_b):
-
         idx_a = self.get_closest_node_id(point_a)
         idx_b = self.get_closest_node_id(point_b)
 
@@ -60,9 +66,7 @@ class LayerPlanner:
 
         return da + self.get_shortest_distance(idx_a, idx_b) + db
 
-
     def get_external_path(self, point_a, point_b, extend_ends=False):
-
         idx_a = self.get_closest_node_id(point_a)
         idx_b = self.get_closest_node_id(point_b)
 
@@ -72,9 +76,7 @@ class LayerPlanner:
         return [point_a] + path_points + [point_b]
 
 
-
 def two_opt(route, cost_mat):
-
     def cost_change(n1, n2, n3, n4):
         return cost_mat[n1][n3] + cost_mat[n2][n4] - cost_mat[n1][n2] - cost_mat[n3][n4]
 
@@ -87,7 +89,7 @@ def two_opt(route, cost_mat):
                 if j - i == 1:
                     continue
                 if cost_change(best[i - 1], best[i], best[j - 1], best[j]) < 0:
-                    best[i:j] = best[j - 1:i - 1:-1]
+                    best[i:j] = best[j - 1 : i - 1 : -1]
                     improved = True
         route = best
     return best
@@ -103,6 +105,7 @@ def solve_tsp_2opt(distance_matrix):
 @dataclass
 class FollowPathPrimitive:
     path: np.ndarray
+
 
 class FollowPathPlan(list):
     pass
@@ -130,7 +133,7 @@ class TspGoal:
 @overload
 @dispatch(TspDomain, object, dict, TspGoal)
 def ground_problem(domain, dsg, robot_states, goal) -> GroundedTspProblem:
-    logger.info('Grounding TSP Problem')
+    logger.info("Grounding TSP Problem")
 
     start = robot_states[goal.robot_id][:2]
 
@@ -144,15 +147,17 @@ def ground_problem(domain, dsg, robot_states, goal) -> GroundedTspProblem:
     referenced_points = np.vstack([start, referenced_points])
 
     # layer_planner = LayerPlanner(dsg, spark_dsg.DsgLayers.MESH_PLACES)
-    layer_planner = LayerPlanner(dsg, 20) # needed for wespoint 2024 scene graphs
-  
+    layer_planner = LayerPlanner(dsg, 20)  # needed for wespoint 2024 scene graphs
+
     # Compute pairwise distance matrix based on places
     n = len(referenced_points)
-    distance_matrix = np.zeros((n,n))
+    distance_matrix = np.zeros((n, n))
 
     for ix in range(n):
-        for jx in range(ix+1, n):
-            distance_matrix[ix, jx] = layer_planner.get_external_distance(referenced_points[ix], referenced_points[jx])
+        for jx in range(ix + 1, n):
+            distance_matrix[ix, jx] = layer_planner.get_external_distance(
+                referenced_points[ix], referenced_points[jx]
+            )
     distance_matrix += distance_matrix.T
 
     return GroundedTspProblem(start, referenced_points, distance_matrix, domain.solver)
@@ -160,20 +165,24 @@ def ground_problem(domain, dsg, robot_states, goal) -> GroundedTspProblem:
 
 @dispatch(GroundedTspProblem, object)
 def make_plan(grounded_problem, map_context) -> FollowPathPlan:
-    logger.info('Making TSP Plan')
+    logger.info("Making TSP Plan")
 
     match grounded_problem.solver:
         case "2opt":
             tsp_order = solve_tsp_2opt(grounded_problem.distances)
         case _:
-            raise NotImplementedError(f"Requested TSP Solver not implemented: {grounded_problem.solver})")
+            raise NotImplementedError(
+                f"Requested TSP Solver not implemented: {grounded_problem.solver})"
+            )
 
     tsp_points = grounded_problem.goal_points[tsp_order]
 
     plan = FollowPathPlan()
 
-    #layer_planner = LayerPlanner(map_context, spark_dsg.DsgLayers.MESH_PLACES)
-    layer_planner = LayerPlanner(map_context, 20) # needed for wespoint 2024 scene graphs
+    # layer_planner = LayerPlanner(map_context, spark_dsg.DsgLayers.MESH_PLACES)
+    layer_planner = LayerPlanner(
+        map_context, 20
+    )  # needed for wespoint 2024 scene graphs
     for idx in range(len(tsp_points) - 1):
         path = layer_planner.get_external_path(tsp_points[idx], tsp_points[idx + 1])
         p = FollowPathPrimitive(path)

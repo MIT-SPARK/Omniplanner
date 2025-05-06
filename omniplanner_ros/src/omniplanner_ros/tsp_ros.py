@@ -5,9 +5,9 @@ from dataclasses import dataclass
 import spark_config as sc
 from robot_executor_interface.action_descriptions import ActionSequence, Follow
 
-from omniplanner.tsp import TspGoal, TspDomain, FollowPathPlan
-from omniplanner_msgs.msg import GotoPointsGoalMsg
 from omniplanner.omniplanner import PlanRequest, compile_plan
+from omniplanner.tsp import FollowPathPlan, TspDomain, TspGoal
+from omniplanner_msgs.msg import GotoPointsGoalMsg
 
 
 @compile_plan.register
@@ -28,9 +28,7 @@ class TspRos:
         return GotoPointsGoalMsg, "solve_tsp_goal", self.tsp_callback
 
     def tsp_callback(self, msg, robot_poses):
-        goal = TspGoal(
-            goal_points=msg.point_names_to_visit, robot_id=msg.robot_id
-        )
+        goal = TspGoal(goal_points=msg.point_names_to_visit, robot_id=msg.robot_id)
         req = PlanRequest(
             domain=TspDomain(solver=self.config.solver),
             goal=goal,
@@ -39,10 +37,7 @@ class TspRos:
         return req
 
 
-@sc.register_config(
-    "omniplanner_pipeline", name="Tsp", constructor=TspRos
-)
+@sc.register_config("omniplanner_pipeline", name="Tsp", constructor=TspRos)
 @dataclass
 class TspConfig(sc.Config):
     solver: str = "2opt"
-
