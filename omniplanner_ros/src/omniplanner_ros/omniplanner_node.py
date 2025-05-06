@@ -1,3 +1,4 @@
+import logging
 import threading
 import time
 import uuid
@@ -13,6 +14,7 @@ from hydra_ros import DsgSubscriber
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 from robot_executor_interface_ros.action_descriptions_ros import to_msg, to_viz_msg
 from robot_executor_msgs.msg import ActionSequenceMsg
 from ros_system_monitor_msgs.msg import NodeInfoMsg
@@ -26,6 +28,9 @@ from omniplanner.omniplanner import compile_plan, full_planning_pipeline
 # TODO: get this import either through __init__.py or autodiscovery
 from omniplanner_ros.goto_points_ros import GotoPointsConfig  # NOQA
 from omniplanner_ros.language_planner_ros import LanguagePlannerConfig  # NOQA
+from omniplanner_ros.ros_logging import setup_ros_log_forwarding
+
+Logger = logging.getLogger("omniplanner")
 
 
 @dataclass
@@ -90,6 +95,9 @@ class OmniPlannerRos(Node):
         super().__init__("omniplanner_ros")
         self.get_logger().info("Setting up omniplanner")
 
+        # forward python logging to ROS
+        setup_ros_log_forwarding(self, Logger)
+
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
@@ -113,8 +121,11 @@ class OmniPlannerRos(Node):
             ActionSequenceMsg, "~/compiled_plan_out", 1
         )
 
+        latching_qos = QoSProfile(
+            depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL
+        )
         self.compiled_plan_viz_pub = self.create_publisher(
-            MarkerArray, "~/compiled_plan_viz_out", 1
+            MarkerArray, "~/compiled_plan_viz_out", qos_profile=latching_qos
         )
 
         self.heartbeat_pub = self.create_publisher(NodeInfoMsg, "~/node_status", 1)
