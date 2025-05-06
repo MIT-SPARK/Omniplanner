@@ -3,19 +3,10 @@ from dataclasses import dataclass
 from typing import List, overload
 
 import numpy as np
-import parse
-import spark_dsg
 from multipledispatch import dispatch
 
 from omniplanner.omniplanner import PlanningDomain
-
-
-def str_to_ns_value(s):
-    p = parse.parse("{}({})", s)
-    key = p.fixed[0]
-    idx = int(p.fixed[1])
-    ns = spark_dsg.NodeSymbol(key, idx)
-    return ns.value
+from omniplanner.utils import str_to_ns_value
 
 
 class GotoPointsDomain(PlanningDomain):
@@ -31,6 +22,10 @@ class GroundedGotoPointsProblem:
 @dataclass
 class GotoPointsPlan:
     plan: list
+
+    def append(self, gpplan):
+        assert isinstance(gpplan, GotoPointsPlan)
+        self.plan.append(gpplan.append)
 
 
 @dataclass

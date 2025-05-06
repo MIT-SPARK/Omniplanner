@@ -29,6 +29,7 @@ from omniplanner.omniplanner import compile_plan, full_planning_pipeline
 from omniplanner_ros.goto_points_ros import GotoPointsConfig  # NOQA
 from omniplanner_ros.language_planner_ros import LanguagePlannerConfig  # NOQA
 from omniplanner_ros.ros_logging import setup_ros_log_forwarding
+from omniplanner_ros.tsp_ros import TspConfig  # NOQA
 
 Logger = logging.getLogger("omniplanner")
 
