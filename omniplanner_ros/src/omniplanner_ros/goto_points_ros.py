@@ -4,11 +4,10 @@ from dataclasses import dataclass
 
 import numpy as np
 import spark_config as sc
-from robot_executor_interface.action_descriptions import ActionSequence, Follow
-
 from omniplanner.goto_points import GotoPointsDomain, GotoPointsGoal, GotoPointsPlan
 from omniplanner.omniplanner import PlanRequest, compile_plan
 from omniplanner_msgs.msg import GotoPointsGoalMsg
+from robot_executor_interface.action_descriptions import ActionSequence, Follow
 
 
 @compile_plan.register

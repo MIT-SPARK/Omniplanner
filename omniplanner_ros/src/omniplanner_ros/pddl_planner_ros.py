@@ -7,10 +7,9 @@ from importlib.resources import as_file, files
 import dsg_pddl.domains
 import spark_config as sc
 from dsg_pddl.dsg_pddl_interface import PddlDomain, PddlGoal, PddlPlan
-from robot_executor_interface.action_descriptions import ActionSequence, Follow, Gaze
-
 from omniplanner.omniplanner import PlanRequest, compile_plan
 from omniplanner_msgs.msg import PddlGoalMsg
+from robot_executor_interface.action_descriptions import ActionSequence, Follow, Gaze
 
 logger = logging.getLogger(__name__)
 

@@ -1,7 +1,6 @@
 import rclpy
-from rclpy.node import Node
-
 from omniplanner_msgs.msg import PlanRequestStringMsg
+from rclpy.node import Node
 
 
 class ReqSender(Node):

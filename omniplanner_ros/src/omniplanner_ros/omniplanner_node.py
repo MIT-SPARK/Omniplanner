@@ -11,6 +11,7 @@ import rclpy.duration
 import tf2_ros
 import tf_transformations
 from hydra_ros import DsgSubscriber
+from omniplanner.omniplanner import compile_plan, full_planning_pipeline
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -23,14 +24,7 @@ from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 from visualization_msgs.msg import MarkerArray
 
-from omniplanner.omniplanner import compile_plan, full_planning_pipeline
-
-# TODO: get this import either through __init__.py or autodiscovery
-from omniplanner_ros.goto_points_ros import GotoPointsConfig  # NOQA
-from omniplanner_ros.language_planner_ros import LanguagePlannerConfig  # NOQA
-from omniplanner_ros.pddl_planner_ros import PddlConfig  # NOQA
 from omniplanner_ros.ros_logging import setup_ros_log_forwarding
-from omniplanner_ros.tsp_ros import TspConfig  # NOQA
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -147,6 +141,10 @@ class OmniPlannerRos(Node):
         self.config = OmniplannerNodeConfig.load(config_path)
         for name, planner in self.config.planners.items():
             plugin = planner.plugin.create()
+            if plugin is None:
+                raise Exception(
+                    f"Failed to load plugin {planner.plugin}. Did you add your planner package as a dependency?"
+                )
             self.register_plugin(name, plugin)
 
     def dsg_callback(self, header, dsg):

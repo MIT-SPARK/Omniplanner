@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import spark_config as sc
-
 from omniplanner.language_planner import LanguageDomain, LanguageGoal
 from omniplanner.omniplanner import PlanRequest
 from omniplanner_msgs.msg import LanguageGoalMsg
