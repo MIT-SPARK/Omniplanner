@@ -17,6 +17,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PlanRequestStringMsg.msg"
   "msg/GotoPointsGoalMsg.msg"
   "msg/LanguageGoalMsg.msg"
+  "msg/PddlGoalMsg.msg"
 )
 
 

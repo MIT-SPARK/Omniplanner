@@ -28,10 +28,12 @@ from omniplanner.omniplanner import compile_plan, full_planning_pipeline
 # TODO: get this import either through __init__.py or autodiscovery
 from omniplanner_ros.goto_points_ros import GotoPointsConfig  # NOQA
 from omniplanner_ros.language_planner_ros import LanguagePlannerConfig  # NOQA
+from omniplanner_ros.pddl_planner_ros import PddlConfig  # NOQA
 from omniplanner_ros.ros_logging import setup_ros_log_forwarding
 from omniplanner_ros.tsp_ros import TspConfig  # NOQA
 
-Logger = logging.getLogger("omniplanner")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -97,7 +99,8 @@ class OmniPlannerRos(Node):
         self.get_logger().info("Setting up omniplanner")
 
         # forward python logging to ROS
-        setup_ros_log_forwarding(self, Logger)
+        setup_ros_log_forwarding(self, logger)
+        logger.setLevel(logging.INFO)
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)

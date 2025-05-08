@@ -22,9 +22,10 @@ class RosForwarder(logging.Handler):
             record.levelno if record.levelno in self._level_map else logging.CRITICAL
         )
         self._level_map[level](f"{record.name}: {record.msg}")
+        self._level_map[logging.CRITICAL](f"{record.name}: {record.msg}")
 
 
 def setup_ros_log_forwarding(node, py_logger, level=logging.INFO):
     """Forward logging to ROS."""
     py_logger.addHandler(RosForwarder(node))
-    py_logger.setLevel(logging.INFO)
+    py_logger.setLevel(level)

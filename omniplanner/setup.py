@@ -9,7 +9,7 @@ setup(
     description="Central interface for planning pipeline(s)",
     package_dir={"": "src"},
     packages=find_packages("src"),
-    package_data={"": ["*.yaml"]},
+    package_data={"": ["*.yaml", "*.pddl"]},
     install_requires=[
         "multipledispatch",
     ],
