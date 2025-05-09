@@ -115,10 +115,13 @@ class PddlSymbol:
 
 def extract_symbols_of_interest(G, pddl_goal):
     place_facts = extract_facts(pddl_goal, "visited-place")
-    object_facts = extract_facts(pddl_goal, "suspicious")
+    place_facts += extract_facts(pddl_goal, "at-place")
 
-    place_symbols = [PddlSymbol(f[1], "place", "visited-place") for f in place_facts]
-    object_symbols = [PddlSymbol(f[1], "object", "suspicious") for f in object_facts]
+    object_facts = extract_facts(pddl_goal, "visited-object")
+    object_facts += extract_facts(pddl_goal, "at-object")
+
+    place_symbols = [PddlSymbol(f[1], "place", []) for f in place_facts]
+    object_symbols = [PddlSymbol(f[1], "object", []) for f in object_facts]
 
     return place_symbols + object_symbols
 
