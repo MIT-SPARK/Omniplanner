@@ -171,6 +171,9 @@ def pddl_char_to_dsg_char(c):
             return "R"
         case "o":
             return "O"
+        case "p":
+            # NOTE: this means we can only ground to 2d places, not 3d places
+            return "P"
         case _:
             return c
 
