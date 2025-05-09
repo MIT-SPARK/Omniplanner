@@ -4,6 +4,7 @@ from typing import List, overload
 
 import networkx as nx
 import numpy as np
+import spark_dsg
 import spark_dsg.networkx as dsg_nx
 from multipledispatch import dispatch
 
@@ -15,7 +16,16 @@ logger = logging.getLogger(__name__)
 
 class LayerPlanner:
     def __init__(self, dsg, layer, precompute_shortest_paths=False):
-        self.nx_layer = dsg_nx.layer_to_networkx(dsg.get_layer(layer))
+        if layer == spark_dsg.DsgLayers.MESH_PLACES:
+            try:
+                self.nx_layer = dsg_nx.layer_to_networkx(dsg.get_layer(layer))
+            except Exception as _:
+                logger.warning(
+                    f"Failed to load layer {spark_dsg.DsgLayers.MESH_PLACES}, attempting to fall back to layer 20"
+                )
+                self.nx_layer = dsg_nx.layer_to_networkx(dsg.get_layer(20))
+        else:
+            self.nx_layer = dsg_nx.layer_to_networkx(dsg.get_layer(layer))
 
         self.node_ids = [n for n in self.nx_layer.nodes]
         self.node_positions = np.array(
@@ -146,8 +156,7 @@ def ground_problem(domain, dsg, robot_states, goal) -> GroundedTspProblem:
     referenced_points = np.array([get_loc(symbol) for symbol in goal.goal_points])
     referenced_points = np.vstack([start, referenced_points])
 
-    # layer_planner = LayerPlanner(dsg, spark_dsg.DsgLayers.MESH_PLACES)
-    layer_planner = LayerPlanner(dsg, 20)  # needed for wespoint 2024 scene graphs
+    layer_planner = LayerPlanner(dsg, spark_dsg.DsgLayers.MESH_PLACES)
 
     # Compute pairwise distance matrix based on places
     n = len(referenced_points)
@@ -179,10 +188,7 @@ def make_plan(grounded_problem, map_context) -> FollowPathPlan:
 
     plan = FollowPathPlan()
 
-    # layer_planner = LayerPlanner(map_context, spark_dsg.DsgLayers.MESH_PLACES)
-    layer_planner = LayerPlanner(
-        map_context, 20
-    )  # needed for wespoint 2024 scene graphs
+    layer_planner = LayerPlanner(map_context, spark_dsg.DsgLayers.MESH_PLACES)
     for idx in range(len(tsp_points) - 1):
         path = layer_planner.get_external_path(tsp_points[idx], tsp_points[idx + 1])
         p = FollowPathPrimitive(path)

@@ -52,8 +52,7 @@ def lisp_string_to_ast(string):
 
 
 def generate_symbol_connectivity(G, symbols):
-    # layer_planner = LayerPlanner(dsg, spark_dsg.DsgLayers.MESH_PLACES)
-    layer_planner = LayerPlanner(G, 20)
+    layer_planner = LayerPlanner(G, spark_dsg.DsgLayers.MESH_PLACES)
 
     connections = []
     for si in symbols:
@@ -395,7 +394,7 @@ def make_plan(grounded_problem, map_context) -> PddlPlan:
 
     parameterized_plan = []
 
-    layer_planner = LayerPlanner(map_context, 20)
+    layer_planner = LayerPlanner(map_context, spark_dsg.DsgLayers.MESH_PLACES)
     last_pose = np.zeros(2)
     for p in plan:
         match p[0]:
