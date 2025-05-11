@@ -5,8 +5,10 @@ from multipledispatch import dispatch
 from omniplanner.goto_points import GotoPointsDomain, GotoPointsGoal
 
 
+@dataclass
 class LanguageDomain:
-    pass
+    domain_type: str
+    pddl_domain: PddlDomain = None
 
 
 @dataclass
@@ -17,15 +19,16 @@ class LanguageGoal:
 
 @dispatch(LanguageDomain, object, dict, LanguageGoal)
 def ground_problem(domain, dsg, robot_states, goal):
-    ##############################
-    ### TODO: this block is where we take the goal string from the goal, and any other goal or scene graph information,
-    ### and turn it into a specific planning problem. The LLM can decide to set the problem type, which
-    ### implicitly controls which downstream planner is used.
 
-    language_grounded_goal = GotoPointsGoal(
-        goal_points=goal.command.split(" "), robot_id=goal.robot_id
-    )
-    problem_type = GotoPointsDomain()
-    ##############################
+    if domain.domain_type == "goto_point"
 
-    return ground_problem(problem_type, dsg, robot_states, language_grounded_goal)
+        language_grounded_goal = GotoPointsGoal(
+            goal_points=goal.command.split(" "), robot_id=goal.robot_id
+        )
+        problem_type = GotoPointsDomain()
+        return ground_problem(problem_type, dsg, robot_states, language_grounded_goal)
+    elif domain.domain_type == "pddl":
+
+        # TODO: make a ppdl domain
+        return ground_problem(domain.pddl_domain, dsg, robot_states, pddl_language_grounded_goal)
+
