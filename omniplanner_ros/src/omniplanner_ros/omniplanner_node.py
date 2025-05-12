@@ -14,7 +14,7 @@ from hydra_ros import DsgSubscriber
 from omniplanner.omniplanner import compile_plan, full_planning_pipeline
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
-from rclpy.node import Node
+from rclpy.node import Node, Publisher
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 from robot_executor_interface_ros.action_descriptions_ros import to_msg, to_viz_msg
 from robot_executor_msgs.msg import ActionSequenceMsg
@@ -29,6 +29,13 @@ from omniplanner_ros.ros_logging import setup_ros_log_forwarding
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+@dataclass
+class PluginFeedbackCollector():
+    publishers: Dict[str, Publisher] = field(default_factory=dict)
+
+@dataclass
+class OmniplannerFeedbackCollector():
+    plugin_feedback_collectors: Dict[str, PluginFeedbackCollector] = field(default_factory=dict)
 
 @dataclass
 class PlannerConfig(Config):
@@ -138,6 +145,9 @@ class OmniPlannerRos(Node):
         config_path = self.get_parameter("plugin_config_path").value
         assert config_path != "", "plugin_config_path cannot be empty"
 
+        # Initialize a feedback collector to be populated by plugins
+        self.feedback = OmniplannerFeedbackCollector()
+
         self.config = OmniplannerNodeConfig.load(config_path)
         for name, planner in self.config.planners.items():
             plugin = planner.plugin.create()
@@ -194,6 +204,10 @@ class OmniPlannerRos(Node):
     def register_plugin(self, name, plugin):
         self.get_logger().info(f"Registering subscription plugin {name}")
         msg_type, topic, callback = plugin.get_plan_callback()
+        try:
+            self.feedback.plugin_feedback_collectors[name] = plugin.get_plugin_feedback(self.node)
+        except AttributeError:
+            self.get_logger().info(f"No method \"get_plugin_feedback()\" for plugin {name}")
 
         def plan_handler(msg):
             self.get_logger().info(f"Handling plan for plugin {name}")
@@ -210,7 +224,7 @@ class OmniPlannerRos(Node):
 
             plan_request = callback(msg, robot_poses)
             with self.dsg_lock:
-                plan = full_planning_pipeline(plan_request, self.dsg_last)
+                plan = full_planning_pipeline(plan_request, self.dsg_last, self.feedback)
 
             spot_path_frame = "map"  # TODO: parameter
             compiled_plan = compile_plan(

@@ -17,11 +17,10 @@ class LanguageGoal:
     command: str
 
 
-@dispatch(LanguageDomain, object, dict, LanguageGoal)
-def ground_problem(domain, dsg, robot_states, goal):
+@dispatch(LanguageDomain, object, dict, LanguageGoal, object)
+def ground_problem(domain, dsg, robot_states, goal, feedback=None):
 
-    if domain.domain_type == "goto_point"
-
+    if domain.domain_type == "goto_point":
         language_grounded_goal = GotoPointsGoal(
             goal_points=goal.command.split(" "), robot_id=goal.robot_id
         )
@@ -29,6 +28,6 @@ def ground_problem(domain, dsg, robot_states, goal):
         return ground_problem(problem_type, dsg, robot_states, language_grounded_goal)
     elif domain.domain_type == "pddl":
 
-        # TODO: make a ppdl domain
+        # TODO: make a pddl domain
         return ground_problem(domain.pddl_domain, dsg, robot_states, pddl_language_grounded_goal)
 
