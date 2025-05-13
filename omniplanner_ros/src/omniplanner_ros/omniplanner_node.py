@@ -204,10 +204,7 @@ class OmniPlannerRos(Node):
     def register_plugin(self, name, plugin):
         self.get_logger().info(f"Registering subscription plugin {name}")
         msg_type, topic, callback = plugin.get_plan_callback()
-        try:
-            self.feedback.plugin_feedback_collectors[name] = plugin.get_plugin_feedback(self.node)
-        except AttributeError:
-            self.get_logger().info(f"No method \"get_plugin_feedback()\" for plugin {name}")
+        self.feedback.plugin_feedback_collectors[name] = plugin.get_plugin_feedback(self)
 
         def plan_handler(msg):
             self.get_logger().info(f"Handling plan for plugin {name}")

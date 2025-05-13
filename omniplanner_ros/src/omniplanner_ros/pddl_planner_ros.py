@@ -54,6 +54,9 @@ class PddlPlannerRos:
         # TODO: topic name should depend on the config (i.e. what domain is specified)
         return PddlGoalMsg, "pddl_goal", self.pddl_callback
 
+    def get_plugin_feedback(self, node):
+      return None
+
     def pddl_callback(self, msg, robot_poses):
         logger.info(f"Received PDDL goal {msg.pddl_goal} for robot {msg.robot_id}")
         goal = PddlGoal(pddl_goal=msg.pddl_goal, robot_id=msg.robot_id)

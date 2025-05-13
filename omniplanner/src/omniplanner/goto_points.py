@@ -53,7 +53,7 @@ def ground_problem(domain, dsg, robot_states, goal, feedback=None) -> GroundedGo
 
     referenced_points = np.array([get_loc(symbol) for symbol in goal.goal_points])
     return ground_problem(
-        domain, referenced_points, start, [i for i in range(len(goal.goal_points))]
+        domain, referenced_points, start, [i for i in range(len(goal.goal_points))], feedback
     )
 
 
