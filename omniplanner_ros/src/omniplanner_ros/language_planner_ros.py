@@ -81,6 +81,6 @@ class LanguagePlannerRos:
 )
 @dataclass
 class LanguagePlannerConfig(sc.Config):
-    domain_type: str = "pddl"
+    domain_type: str = "Pddl"
     pddl_domain_name: str = "GotoObjectDomain"
     llm_config: str = ""
