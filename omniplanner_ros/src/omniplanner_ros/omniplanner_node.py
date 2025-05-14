@@ -152,6 +152,10 @@ class OmniPlannerRos(Node):
         config_path = self.get_parameter("plugin_config_path").value
         assert config_path != "", "plugin_config_path cannot be empty"
 
+        #TODO: params...
+        self.spot_fixed_frame = "map"
+        self.spot_body_frame = "spot/body"
+
         # Initialize a feedback collector to be populated by plugins
         self.feedback = OmniplannerFeedbackCollector()
 
@@ -203,9 +207,8 @@ class OmniPlannerRos(Node):
         self.heartbeat_pub.publish(msg)
 
     def get_spot_pose(self):
-        # TODO: parameters
         return get_robot_pose(
-            self.tf_buffer, target_frame="map", source_frame="spot/base_link"
+            self.tf_buffer, target_frame=self.spot_fixed_frame, source_frame=self.spot_body_frame
         )
 
     def register_plugin(self, name, plugin):

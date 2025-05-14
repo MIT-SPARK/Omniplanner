@@ -57,7 +57,7 @@ def ground_problem(domain, dsg, robot_states, goal, feedback=None):
         return ground_problem(problem_type, dsg, robot_states, language_grounded_goal)
     elif domain.domain_type == "Pddl":
         # Inject labelspaces -- This is temporary for testing purposes only.
-        dsg = inject_labelspaces(dsg)
+        # dsg = inject_labelspaces(dsg)
         # Query the LLM & Parse the response
         response = domain.llm_interface.request_plan_specification(goal.command, dsg)
         goal_dict = ast.literal_eval(response)
