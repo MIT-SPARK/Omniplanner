@@ -337,8 +337,10 @@ class PddlPlan:
 
 
 @overload
-@dispatch(PddlDomain, object, dict, PddlGoal)
-def ground_problem(domain, dsg, robot_states, goal) -> GroundedPddlProblem:
+@dispatch(PddlDomain, object, dict, PddlGoal, object)
+def ground_problem(
+    domain, dsg, robot_states, goal, feedback=None
+) -> GroundedPddlProblem:
     logger.info(f"Grounding PDDL Problem {domain.domain_name}")
 
     start = robot_states[goal.robot_id][:2]

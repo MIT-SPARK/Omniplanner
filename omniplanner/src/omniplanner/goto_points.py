@@ -41,8 +41,10 @@ class GotoPointsGoal:
 
 
 @overload
-@dispatch(GotoPointsDomain, object, dict, GotoPointsGoal)
-def ground_problem(domain, dsg, robot_states, goal) -> GroundedGotoPointsProblem:
+@dispatch(GotoPointsDomain, object, dict, GotoPointsGoal, object)
+def ground_problem(
+    domain, dsg, robot_states, goal, feedback=None
+) -> GroundedGotoPointsProblem:
     start = robot_states[goal.robot_id]
 
     def get_loc(symbol):
@@ -53,12 +55,18 @@ def ground_problem(domain, dsg, robot_states, goal) -> GroundedGotoPointsProblem
 
     referenced_points = np.array([get_loc(symbol) for symbol in goal.goal_points])
     return ground_problem(
-        domain, referenced_points, start, [i for i in range(len(goal.goal_points))]
+        domain,
+        referenced_points,
+        start,
+        [i for i in range(len(goal.goal_points))],
+        feedback,
     )
 
 
-@dispatch(GotoPointsDomain, np.ndarray, np.ndarray, list)
-def ground_problem(domain, map_context, start, goal) -> GroundedGotoPointsProblem:
+@dispatch(GotoPointsDomain, np.ndarray, np.ndarray, list, object)
+def ground_problem(
+    domain, map_context, start, goal, feedback=None
+) -> GroundedGotoPointsProblem:
     point_sequence = map_context[goal]
     return GroundedGotoPointsProblem(start, point_sequence)
 

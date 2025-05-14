@@ -31,6 +31,20 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class PluginFeedbackCollector:
+    # k,v: feedback name, publish function
+    publish: Dict[str, object] = field(default_factory=dict)
+
+
+@dataclass
+class OmniplannerFeedbackCollector:
+    # k,v: plugin name, plugin feedback content
+    plugin_feedback_collectors: Dict[str, PluginFeedbackCollector] = field(
+        default_factory=dict
+    )
+
+
+@dataclass
 class PlannerConfig(Config):
     plugin: Any = config_field("omniplanner_pipeline", required=False)
 
@@ -138,6 +152,13 @@ class OmniPlannerRos(Node):
         config_path = self.get_parameter("plugin_config_path").value
         assert config_path != "", "plugin_config_path cannot be empty"
 
+        #TODO: params...
+        self.spot_fixed_frame = "map"
+        self.spot_body_frame = "spot/body"
+
+        # Initialize a feedback collector to be populated by plugins
+        self.feedback = OmniplannerFeedbackCollector()
+
         self.config = OmniplannerNodeConfig.load(config_path)
         for name, planner in self.config.planners.items():
             plugin = planner.plugin.create()
@@ -186,14 +207,16 @@ class OmniPlannerRos(Node):
         self.heartbeat_pub.publish(msg)
 
     def get_spot_pose(self):
-        # TODO: parameters
         return get_robot_pose(
-            self.tf_buffer, target_frame="map", source_frame="spot/base_link"
+            self.tf_buffer, target_frame=self.spot_fixed_frame, source_frame=self.spot_body_frame
         )
 
     def register_plugin(self, name, plugin):
         self.get_logger().info(f"Registering subscription plugin {name}")
         msg_type, topic, callback = plugin.get_plan_callback()
+        self.feedback.plugin_feedback_collectors[name] = plugin.get_plugin_feedback(
+            self
+        )
 
         def plan_handler(msg):
             self.get_logger().info(f"Handling plan for plugin {name}")
@@ -210,7 +233,9 @@ class OmniPlannerRos(Node):
 
             plan_request = callback(msg, robot_poses)
             with self.dsg_lock:
-                plan = full_planning_pipeline(plan_request, self.dsg_last)
+                plan = full_planning_pipeline(
+                    plan_request, self.dsg_last, self.feedback
+                )
 
             spot_path_frame = "map"  # TODO: parameter
             compiled_plan = compile_plan(

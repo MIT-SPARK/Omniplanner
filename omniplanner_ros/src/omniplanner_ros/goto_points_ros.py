@@ -30,6 +30,9 @@ class GotoPointsRos:
     def get_plan_callback(self):
         return GotoPointsGoalMsg, "goto_points_goal", self.goto_points_callback
 
+    def get_plugin_feedback(self, node):
+        return None
+
     def goto_points_callback(self, msg, robot_poses):
         goal = GotoPointsGoal(
             goal_points=msg.point_names_to_visit, robot_id=msg.robot_id

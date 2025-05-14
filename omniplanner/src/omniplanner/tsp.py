@@ -141,8 +141,10 @@ class TspGoal:
 
 
 @overload
-@dispatch(TspDomain, object, dict, TspGoal)
-def ground_problem(domain, dsg, robot_states, goal) -> GroundedTspProblem:
+@dispatch(TspDomain, object, dict, TspGoal, object)
+def ground_problem(
+    domain, dsg, robot_states, goal, feedback=None
+) -> GroundedTspProblem:
     logger.info("Grounding TSP Problem")
 
     start = robot_states[goal.robot_id][:2]
