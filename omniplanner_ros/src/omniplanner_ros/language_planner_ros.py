@@ -9,7 +9,7 @@ import spark_config as sc
 from omniplanner.language_planner import LanguageDomain, LanguageGoal
 from omniplanner.omniplanner import PlanRequest
 from omniplanner_msgs.msg import LanguageGoalMsg
-from omniplanner_ros.omniplanner_node import PluginFeedbackCollector, PublisherFeedback
+from omniplanner_ros.omniplanner_node import PluginFeedbackCollector
 import dsg_pddl
 from dsg_pddl.dsg_pddl_interface import PddlDomain, PddlGoal, PddlPlan
 from std_msgs.msg import String
@@ -58,11 +58,11 @@ class LanguagePlannerRos:
         llm_response_pub = node.create_publisher(
           String, "~/llm_response", 1
         )
-        def publish_llm_response(goal_string, publisher):
+        def publish_llm_response(goal_string):
           feedback_msg = String()
           feedback_msg.data = goal_string
-          publisher.publish(feedback_msg)
-        feedback.publisher_feedback["llm_response"] = PublisherFeedback( llm_response_pub, publish_llm_response )
+          llm_response_pub.publish(feedback_msg)
+        feedback.publish["llm_response"] = publish_llm_response
         return feedback
 
     def language_callback(self, msg, robot_poses):
