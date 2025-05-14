@@ -55,7 +55,7 @@ class PddlPlannerRos:
         return PddlGoalMsg, "pddl_goal", self.pddl_callback
 
     def get_plugin_feedback(self, node):
-      return None
+        return None
 
     def pddl_callback(self, msg, robot_poses):
         logger.info(f"Received PDDL goal {msg.pddl_goal} for robot {msg.robot_id}")

@@ -91,7 +91,9 @@ class DispatchException(Exception):
 
 
 @dispatch(PlanningDomain, object, object, PlanningGoal, object)
-def ground_problem(domain, map_context, intial_state, goal, feedback=None) -> GroundedProblem:
+def ground_problem(
+    domain, map_context, intial_state, goal, feedback=None
+) -> GroundedProblem:
     raise DispatchException(ground_problem, domain, map_context, goal, feedback)
 
 
@@ -102,7 +104,11 @@ def make_plan(grounded_problem, map_context) -> Plan:
 
 def full_planning_pipeline(plan_request: PlanRequest, map_context: Any, feedback=None):
     grounded_problem = ground_problem(
-        plan_request.domain, map_context, plan_request.robot_states, plan_request.goal, feedback
+        plan_request.domain,
+        map_context,
+        plan_request.robot_states,
+        plan_request.goal,
+        feedback,
     )
     plan = make_plan(grounded_problem, map_context)
     return plan

@@ -26,9 +26,8 @@ class TspRos:
     def get_plan_callback(self):
         return GotoPointsGoalMsg, "solve_tsp_goal", self.tsp_callback
 
-
     def get_plugin_feedback(self, node):
-      return None
+        return None
 
     def tsp_callback(self, msg, robot_poses):
         goal = TspGoal(goal_points=msg.point_names_to_visit, robot_id=msg.robot_id)
