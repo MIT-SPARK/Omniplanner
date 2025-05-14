@@ -30,11 +30,18 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 @dataclass
+class PublisherFeedback():
+    publisher: Publisher
+    publish: object
+
+@dataclass
 class PluginFeedbackCollector():
-    publishers: Dict[str, Publisher] = field(default_factory=dict)
+    # k,v: feedback name, publisher+publish func
+    publisher_feedback: Dict[str, PublisherFeedback] = field(default_factory=dict)
 
 @dataclass
 class OmniplannerFeedbackCollector():
+    # k,v: plugin name, plugin feedback content
     plugin_feedback_collectors: Dict[str, PluginFeedbackCollector] = field(default_factory=dict)
 
 @dataclass

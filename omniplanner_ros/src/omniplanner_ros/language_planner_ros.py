@@ -8,13 +8,14 @@ import spark_config as sc
 from omniplanner.language_planner import LanguageDomain, LanguageGoal
 from omniplanner.omniplanner import PlanRequest
 from omniplanner_msgs.msg import LanguageGoalMsg
-from omniplanner_ros.omniplanner_node import PluginFeedbackCollector
+from omniplanner_ros.omniplanner_node import PluginFeedbackCollector, PublisherFeedback
 import dsg_pddl
 from dsg_pddl.dsg_pddl_interface import PddlDomain, PddlGoal, PddlPlan
 from std_msgs.msg import String
 
 from nlu_interface.llm_interface import LLMInterface
-import yaml
+from ruamel.yaml import YAML
+yaml=YAML(typ='safe')
 
 
 logger = logging.getLogger(__name__)
@@ -33,9 +34,9 @@ class LanguagePlannerRos:
                 self.domain = PddlDomain(fo.read())
 
         with open(config.llm_config, 'r') as file:
-            self.llm_config = yaml.safe_load(file)
+            self.llm_config = yaml.load(file)
         with open(self.llm_config["prompt"], 'r') as file:
-            prompt = yaml.safe_load(file)
+            prompt = yaml.load(file)
         self.llm_interface = LLMInterface(
             model_name = self.llm_config["model_name"],
             prompt_mode = self.llm_config["prompt_mode"],
@@ -52,17 +53,19 @@ class LanguagePlannerRos:
 
     def get_plugin_feedback(self, node):
         feedback = PluginFeedbackCollector()
-        feedback.publishers["llm_response"] = node.create_publisher(
-            String, "/rviz2_node/llm_response", 1
+        llm_response_pub = node.create_publisher(
+          String, "~/llm_response", 1
         )
+        def publish_llm_response(goal_string, publisher):
+          feedback_msg = String()
+          feedback_msg.data = goal_string
+          publisher.publish(feedback_msg)
+        feedback.publisher_feedback["llm_response"] = PublisherFeedback( llm_response_pub, publish_llm_response )
         return feedback
 
     def language_callback(self, msg, robot_poses):
-        ### TODO: Any information that we need to add to the LanguageGoalMsg needs to get piped through
-        ### to this language goal
-        logger.info("In language_callback()")
+        logger.info("In language_callback()") # TODO: remove after testing on robot
         goal = LanguageGoal(command=msg.command, robot_id=msg.robot_id)
-
         req = PlanRequest(
             domain=LanguageDomain(self.config.domain_type, self.domain, self.llm_interface),
             goal=goal,

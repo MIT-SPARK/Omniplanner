@@ -55,9 +55,13 @@ def ground_problem(domain, dsg, robot_states, goal, feedback=None):
         )
         goal_dict = ast.literal_eval(response)
         # Publish feedback to the rviz interface
-        feedback_msg = String()
-        feedback_msg.data = str(goal_dict)
-        feedback.plugin_feedback_collectors["language_planner"].publishers["llm_response"].publish(feedback_msg)
+        publisher_feedback = feedback.plugin_feedback_collectors["language_planner"].publisher_feedback["llm_response"]
+        publisher_feedback.publish( str(goal_dict), publisher_feedback.publisher )
+
+
+        #feedback_msg = String()
+        #feedback_msg.data = str(goal_dict)
+        #feedback.plugin_feedback_collectors["language_planner"].publishers["llm_response"].publish(feedback_msg)
         # Construct the PddlGoal object for the PDDL planner
         pddl_language_grounded_goal = PddlGoal(pddl_goal=goal_dict["spot"], robot_id="spot")
         return ground_problem(domain.pddl_domain, dsg, robot_states, pddl_language_grounded_goal, feedback)
