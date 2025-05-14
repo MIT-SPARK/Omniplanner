@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 
 import logging
 from importlib.resources import as_file, files
@@ -33,7 +34,8 @@ class LanguagePlannerRos:
                 # Currently, we have a fixed domain. In the future, could make adjustments based on goal message?
                 self.domain = PddlDomain(fo.read())
 
-        with open(config.llm_config, 'r') as file:
+        llm_config_fp = os.path.expandvars(config.llm_config)
+        with open(llm_config_fp, 'r') as file:
             self.llm_config = yaml.load(file)
         with open(self.llm_config["prompt"], 'r') as file:
             prompt = yaml.load(file)
