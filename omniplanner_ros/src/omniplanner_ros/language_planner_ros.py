@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from importlib.resources import as_file, files
 
 import dsg_pddl
+import nlu_interface.resources
 import spark_config as sc
 from dsg_pddl.dsg_pddl_interface import PddlDomain
 from nlu_interface.llm_interface import LLMInterface
@@ -38,8 +39,13 @@ class LanguagePlannerRos:
         llm_config_fp = os.path.expandvars(config.llm_config)
         with open(llm_config_fp, "r") as file:
             self.llm_config = yaml.load(file)
-        with open(self.llm_config["prompt"], "r") as file:
-            prompt = yaml.load(file)
+
+        with as_file(
+            files(nlu_interface.resources).joinpath(self.llm_config["prompt"] + ".yaml")
+        ) as path:
+            logger.info(f'Loading prompt from "{path}"')
+            with open(str(path), "r") as file:
+                prompt = yaml.load(file)
         self.llm_interface = LLMInterface(
             model_name=self.llm_config["model_name"],
             prompt_mode=self.llm_config["prompt_mode"],
