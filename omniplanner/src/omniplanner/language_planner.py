@@ -24,12 +24,14 @@ class LanguageGoal:
 
 @dispatch(LanguageDomain, object, dict, LanguageGoal, object)
 def ground_problem(domain, dsg, robot_states, goal, feedback=None):
-    if domain.domain_type == "goto_point":
+    if domain.domain_type == "goto_points":
         language_grounded_goal = GotoPointsGoal(
             goal_points=goal.command.split(" "), robot_id=goal.robot_id
         )
         problem_type = GotoPointsDomain()
-        return ground_problem(problem_type, dsg, robot_states, language_grounded_goal)
+        return ground_problem(
+            problem_type, dsg, robot_states, language_grounded_goal, feedback
+        )
     elif domain.domain_type == "Pddl":
         # Query the LLM & Parse the response
         response = domain.llm_interface.request_plan_specification(goal.command, dsg)
