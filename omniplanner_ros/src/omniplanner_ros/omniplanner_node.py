@@ -3,7 +3,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import numpy as np
 import rclpy
@@ -50,7 +50,16 @@ class PlannerConfig(Config):
 
 
 @dataclass
+class RobotConfig(Config):
+    robot_name: str = ""
+    robot_type: str = ""
+    fixed_frame: str = ""
+    body_frame: str = ""
+
+
+@dataclass
 class OmniplannerNodeConfig(Config):
+    robots: List[RobotConfig] = field(default_factory=list)
     planners: Dict[str, PlannerConfig] = field(default_factory=dict)
 
     @classmethod
@@ -89,16 +98,24 @@ def get_robot_pose(tf_buffer, parent_frame: str, child_frame: str) -> np.ndarray
 
 
 class RobotPlanningAdaptor:
-    def __init__(self, node, tf_buffer, name, parent_frame, child_frame):
+    def __init__(self, node, tf_buffer, name, robot_type, parent_frame, child_frame):
         self.tf_buffer = tf_buffer
         self.name = name
+        self.robot_type = robot_type
         self.parent_frame = parent_frame
         self.child_frame = child_frame
+        self.ros_logger = node.get_logger()
+
+        self.plan_pub = node.create_publisher(
+            ActionSequenceMsg, f"~/{name}/compiled_plan_out", 1
+        )
 
     def get_pose(self):
+        self.ros_logger.info(f"Looking up pose for {self.name} ({self.parent_frame}->{self.child_frame})")
         try:
-            get_robot_pose(self.tf_buffer, self.parent_frame, self.child_frame)
-        except tf2_ros.TransformException:
+            return get_robot_pose(self.tf_buffer, self.parent_frame, self.child_frame)
+        except tf2_ros.TransformException as e:
+            self.ros_logger.warning(str(e))
             return None
 
     def publish_plan(self, plan):
@@ -145,10 +162,6 @@ class OmniPlannerRos(Node):
         # When we discover a new robot, we should create a new
         # publisher based on the information that the robot provides.
         # Then we can look up the relevant publisher in the {name: publishers} map
-        self.compiled_plan_pub = self.create_publisher(
-            ActionSequenceMsg, "~/compiled_plan_out", 1
-        )
-
         latching_qos = QoSProfile(
             depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL
         )
@@ -168,24 +181,25 @@ class OmniPlannerRos(Node):
         config_path = self.get_parameter("plugin_config_path").value
         assert config_path != "", "plugin_config_path cannot be empty"
 
-        # TODO: params...
-        self.spot_fixed_frame = "map"
-        self.spot_body_frame = "spot/body"
-        self.robot_adaptors = {
-            "spot",
-            RobotPlanningAdaptor(
+        self.config = OmniplannerNodeConfig.load(config_path)
+
+        self.robot_adaptors = {}
+        for robot_config in self.config.robots:
+            self.get_logger().info(
+                f"I know about {robot_config.robot_name}, a {robot_config.robot_type} robot"
+            )
+            self.robot_adaptors[robot_config.robot_name] = RobotPlanningAdaptor(
                 self,
                 self.tf_buffer,
-                "spot",
-                self.spot_fixed_frame,
-                self.spot_body_frame,
-            ),
-        }
+                robot_config.robot_name,
+                robot_config.robot_type,
+                robot_config.fixed_frame,
+                robot_config.body_frame,
+            )
 
         # Initialize a feedback collector to be populated by plugins
         self.feedback = OmniplannerFeedbackCollector()
 
-        self.config = OmniplannerNodeConfig.load(config_path)
         for name, planner in self.config.planners.items():
             plugin = planner.plugin.create()
             if plugin is None:
@@ -234,8 +248,8 @@ class OmniPlannerRos(Node):
 
     def get_robot_poses(self):
         pose_dict = {}
-        for pose_adaptor in self.robot_adaptors:
-            pose_dict[pose_adaptor.name] = pose_adaptor.get_pose()
+        for name, pose_adaptor in self.robot_adaptors.items():
+            pose_dict[name] = pose_adaptor.get_pose()
         return pose_dict
 
     def register_plugin(self, name, plugin):
@@ -257,6 +271,7 @@ class OmniPlannerRos(Node):
                 self.plan_time_start = time.time()
 
             robot_poses = self.get_robot_poses()
+            self.get_logger().info(f"Planning with robot poses {robot_poses}")
 
             plan_request = callback(msg, robot_poses)
             with self.dsg_lock:
