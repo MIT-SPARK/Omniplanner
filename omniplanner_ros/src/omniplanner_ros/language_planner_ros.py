@@ -76,10 +76,11 @@ class LanguagePlannerRos:
     def language_callback(self, msg, robot_poses):
         logger.info("In language_callback()")  # TODO: remove after testing on robot
         goal = LanguageGoal(command=msg.command, robot_id=msg.robot_id)
+        domain_type = (
+            self.config.domain_type if msg.domain_type == "default" else msg.domain_type
+        )
         req = PlanRequest(
-            domain=LanguageDomain(
-                self.config.domain_type, self.domain, self.llm_interface
-            ),
+            domain=LanguageDomain(domain_type, self.domain, self.llm_interface),
             goal=goal,
             robot_states=robot_poses,
         )
