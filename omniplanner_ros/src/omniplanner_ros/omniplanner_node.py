@@ -111,7 +111,9 @@ class RobotPlanningAdaptor:
         )
 
     def get_pose(self):
-        self.ros_logger.info(f"Looking up pose for {self.name} ({self.parent_frame}->{self.child_frame})")
+        self.ros_logger.info(
+            f"Looking up pose for {self.name} ({self.parent_frame}->{self.child_frame})"
+        )
         try:
             return get_robot_pose(self.tf_buffer, self.parent_frame, self.child_frame)
         except tf2_ros.TransformException as e:
@@ -283,7 +285,7 @@ class OmniPlannerRos(Node):
                 robot_adaptor = self.robot_adaptors[robot_name]
                 command_frame = robot_adaptor.parent_frame
                 compiled_plan = compile_plan(
-                    plan, str(uuid.uuid4()), robot_name, command_frame
+                    robot_plan, str(uuid.uuid4()), robot_name, command_frame
                 )
                 robot_adaptor.publish_plan(to_msg(compiled_plan))
 

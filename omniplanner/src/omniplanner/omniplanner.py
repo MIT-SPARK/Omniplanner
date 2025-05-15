@@ -1,9 +1,13 @@
 # examples of planning combinations:
+import logging
 from dataclasses import dataclass
 from functools import singledispatch
-from typing import Any
+from typing import Any, Dict, overload
 
 from multipledispatch import dispatch
+
+logger = logging.getLogger(__name__)
+
 
 # 0. GotoPoints Domain, ListOfPoints goal, PointLocations
 # 0.5 GotoPoints Domain, ListOfSymbols goal, DSG
@@ -82,6 +86,18 @@ class Plan:
     pass
 
 
+@dataclass
+class RobotPlanningDomain:
+    robot_name: str
+    domain: Any
+
+
+@dataclass
+class RobotProblem:
+    robot_name: str
+    problem: Any
+
+
 class DispatchException(Exception):
     def __init__(self, function_name, *objects):
         arg_type_string = ", ".join(map(lambda x: x.__name__, map(type, objects)))
@@ -90,6 +106,7 @@ class DispatchException(Exception):
         )
 
 
+@overload
 @dispatch(PlanningDomain, object, object, PlanningGoal, object)
 def ground_problem(
     domain, map_context, intial_state, goal, feedback=None
@@ -97,9 +114,28 @@ def ground_problem(
     raise DispatchException(ground_problem, domain, map_context, goal, feedback)
 
 
+@overload
 @dispatch(GroundedProblem, object)
 def make_plan(grounded_problem, map_context) -> Plan:
     raise DispatchException(make_plan, grounded_problem, map_context)
+
+
+@dispatch(RobotPlanningDomain, object, object, object, object)
+def ground_problem(
+    domain, map_context, initial_state, goal, feedback=None
+) -> RobotProblem:
+    logger.warning("grounding RobotPlanningDomain")
+    grounded_problem = ground_problem(
+        domain.domain, map_context, initial_state, goal, feedback
+    )
+    return RobotProblem(domain.robot_name, grounded_problem)
+
+
+@dispatch(RobotProblem, object)
+def make_plan(grounded_problem, map_context) -> Dict[str, Plan]:
+    logger.warning("Solving RobotProblem")
+    plan = make_plan(grounded_problem.problem, map_context)
+    return {grounded_problem.robot_name: plan}
 
 
 def full_planning_pipeline(plan_request: PlanRequest, map_context: Any, feedback=None):
