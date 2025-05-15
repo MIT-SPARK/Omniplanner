@@ -59,21 +59,22 @@ class OmniplannerNodeConfig(Config):
 
 
 def get_robot_pose(
-    tf_buffer, target_frame: str = "map", source_frame: str = "spot/base_link"
+    tf_buffer, parent_frame: str, child_frame: str
 ) -> np.ndarray:
     """
-    Looks up the transform from target_frame to source_frame and returns [x, y, z, yaw].
+    Looks up the transform from parent_frame to child_frame and returns [x, y, z, yaw].
 
     """
+    # TODO: use Time(0) instead of now?
     try:
         now = rclpy.time.Time()
         tf_buffer.can_transform(
-            target_frame,
-            source_frame,
+            parent_frame,
+            child_frame,
             now,
             timeout=rclpy.duration.Duration(seconds=1.0),
         )
-        transform = tf_buffer.lookup_transform(target_frame, source_frame, now)
+        transform = tf_buffer.lookup_transform(parent_frame, child_frame, now)
 
         translation = transform.transform.translation
         rotation = transform.transform.rotation
@@ -88,6 +89,23 @@ def get_robot_pose(
         print(f"Transform error: {e}")
         raise
 
+
+class RobotPlanningAdaptor:
+    def __init__(self, node, tf_buffer, name, parent_frame, child_frame):
+
+        self.tf_buffer = tf_buffer
+        self.name = name
+        self.parent_frame = parent_frame
+        self.child_frame = child_frame
+
+    def get_pose(self):
+        try:
+            get_robot_pose(self.tf_buffer, self.parent_frame, self.child_frame)
+        except tf2_ros.TransformException:
+            return None
+
+    def publish_plan(self, plan):
+        self.plan_pub.publish(plan)
 
 # NOTE: What's the best way to deal with multiple robots / robot discovery?
 # Probably tie into the general robot discovery mechanism we were thinking
@@ -155,6 +173,7 @@ class OmniPlannerRos(Node):
         #TODO: params...
         self.spot_fixed_frame = "map"
         self.spot_body_frame = "spot/body"
+        self.robot_adaptors = {"spot", RobotPlanningAdaptor(self, self.tf_buffer, "spot", self.spot_fixed_frame, self.spot_body_frame)}
 
         # Initialize a feedback collector to be populated by plugins
         self.feedback = OmniplannerFeedbackCollector()
@@ -206,10 +225,11 @@ class OmniPlannerRos(Node):
         msg.notes = notes
         self.heartbeat_pub.publish(msg)
 
-    def get_spot_pose(self):
-        return get_robot_pose(
-            self.tf_buffer, target_frame=self.spot_fixed_frame, source_frame=self.spot_body_frame
-        )
+    def get_robot_poses(self):
+        pose_dict = {}
+        for pose_adaptor in self.robot_adaptors:
+            pose_dict[pose_adaptor.name] = pose_adaptor.get_pose()
+        return pose_dict
 
     def register_plugin(self, name, plugin):
         self.get_logger().info(f"Registering subscription plugin {name}")
@@ -229,7 +249,7 @@ class OmniPlannerRos(Node):
                 self.current_planner = name
                 self.plan_time_start = time.time()
 
-            robot_poses = {"spot": self.get_spot_pose()}
+            robot_poses = self.get_robot_poses()
 
             plan_request = callback(msg, robot_poses)
             with self.dsg_lock:
@@ -237,13 +257,16 @@ class OmniPlannerRos(Node):
                     plan_request, self.dsg_last, self.feedback
                 )
 
-            spot_path_frame = "map"  # TODO: parameter
-            compiled_plan = compile_plan(
-                plan, str(uuid.uuid4()), "spot", spot_path_frame
-            )
+            for robot_name, robot_plan in plan.items():
 
-            self.compiled_plan_pub.publish(to_msg(compiled_plan))
-            self.compiled_plan_viz_pub.publish(to_viz_msg(compiled_plan, name))
+                robot_adaptor = self.robot_adaptors[robot_name]
+                command_frame = robot_adaptor.parent_frame
+                compiled_plan = compile_plan(
+                    plan, str(uuid.uuid4()), robot_name, command_frame
+                )
+                robot_adaptor.publish_plan(to_msg(compiled_plan))
+
+                self.compiled_plan_viz_pub.publish(to_viz_msg(compiled_plan, robot_name))
 
             with self.current_planner_lock and self.plan_time_start_lock:
                 self.current_planner = None
