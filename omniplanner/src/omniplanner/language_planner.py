@@ -6,6 +6,7 @@ from multipledispatch import dispatch
 from nlu_interface.llm_interface import LLMInterface
 
 from omniplanner.goto_points import GotoPointsDomain, GotoPointsGoal
+from omniplanner.omniplanner import RobotProblem, RobotProblems
 
 
 @dataclass
@@ -38,12 +39,22 @@ def ground_problem(domain, dsg, robot_states, goal, feedback=None):
             "llm_response"
         ]
         publish(str(goal_dict))
-        # Construct the PddlGoal object for the PDDL planner
-        pddl_language_grounded_goal = PddlGoal(
-            pddl_goal=goal_dict["spot"], robot_id="spot"
-        )
-        return ground_problem(
-            domain.pddl_domain, dsg, robot_states, pddl_language_grounded_goal, feedback
-        )
+
+        problems = RobotProblems()
+        for robot_name, goal in goal_dict.items():
+            # Construct the PddlGoal object for the PDDL planner
+            pddl_language_grounded_goal = PddlGoal(pddl_goal=goal, robot_id=robot_name)
+
+            grounded_problem = ground_problem(
+                domain.pddl_domain,
+                dsg,
+                robot_states,
+                pddl_language_grounded_goal,
+                feedback,
+            )
+            problems.append(RobotProblem(robot_name, grounded_problem))
+
+        return problems
+
     else:
         raise Exception(f"Unexpected domain_type: {domain.domain_type}")

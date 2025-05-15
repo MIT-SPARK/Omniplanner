@@ -98,6 +98,10 @@ class RobotProblem:
     problem: Any
 
 
+class RobotProblems(list):
+    pass
+
+
 class DispatchException(Exception):
     def __init__(self, function_name, *objects):
         arg_type_string = ", ".join(map(lambda x: x.__name__, map(type, objects)))
@@ -129,6 +133,17 @@ def ground_problem(
         domain.domain, map_context, initial_state, goal, feedback
     )
     return RobotProblem(domain.robot_name, grounded_problem)
+
+
+@overload
+@dispatch(RobotProblems, object)
+def make_plan(problems, map_context) -> Dict[str, Plan]:
+    logger.warning("Solving List of {type(problems[0])}")
+    name_to_plan = {}
+    for p in problems:
+        logger.warning(f"Making plan for {p.robot_name}")
+        name_to_plan |= make_plan(p, map_context)
+    return name_to_plan
 
 
 @dispatch(RobotProblem, object)
