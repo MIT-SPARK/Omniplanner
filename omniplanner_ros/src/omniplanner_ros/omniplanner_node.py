@@ -107,7 +107,7 @@ class RobotPlanningAdaptor:
         self.ros_logger = node.get_logger()
 
         self.plan_pub = node.create_publisher(
-            ActionSequenceMsg, f"~/{name}/compiled_plan_out", 1
+            ActionSequenceMsg, f"/{name}/omniplanner_node/compiled_plan_out", 1
         )
 
     def get_pose(self):
