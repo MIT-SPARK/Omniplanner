@@ -58,9 +58,7 @@ class OmniplannerNodeConfig(Config):
         return Config.load(OmniplannerNodeConfig, path)
 
 
-def get_robot_pose(
-    tf_buffer, parent_frame: str, child_frame: str
-) -> np.ndarray:
+def get_robot_pose(tf_buffer, parent_frame: str, child_frame: str) -> np.ndarray:
     """
     Looks up the transform from parent_frame to child_frame and returns [x, y, z, yaw].
 
@@ -92,7 +90,6 @@ def get_robot_pose(
 
 class RobotPlanningAdaptor:
     def __init__(self, node, tf_buffer, name, parent_frame, child_frame):
-
         self.tf_buffer = tf_buffer
         self.name = name
         self.parent_frame = parent_frame
@@ -106,6 +103,7 @@ class RobotPlanningAdaptor:
 
     def publish_plan(self, plan):
         self.plan_pub.publish(plan)
+
 
 # NOTE: What's the best way to deal with multiple robots / robot discovery?
 # Probably tie into the general robot discovery mechanism we were thinking
@@ -170,10 +168,19 @@ class OmniPlannerRos(Node):
         config_path = self.get_parameter("plugin_config_path").value
         assert config_path != "", "plugin_config_path cannot be empty"
 
-        #TODO: params...
+        # TODO: params...
         self.spot_fixed_frame = "map"
         self.spot_body_frame = "spot/body"
-        self.robot_adaptors = {"spot", RobotPlanningAdaptor(self, self.tf_buffer, "spot", self.spot_fixed_frame, self.spot_body_frame)}
+        self.robot_adaptors = {
+            "spot",
+            RobotPlanningAdaptor(
+                self,
+                self.tf_buffer,
+                "spot",
+                self.spot_fixed_frame,
+                self.spot_body_frame,
+            ),
+        }
 
         # Initialize a feedback collector to be populated by plugins
         self.feedback = OmniplannerFeedbackCollector()
@@ -258,7 +265,6 @@ class OmniPlannerRos(Node):
                 )
 
             for robot_name, robot_plan in plan.items():
-
                 robot_adaptor = self.robot_adaptors[robot_name]
                 command_frame = robot_adaptor.parent_frame
                 compiled_plan = compile_plan(
@@ -266,7 +272,9 @@ class OmniPlannerRos(Node):
                 )
                 robot_adaptor.publish_plan(to_msg(compiled_plan))
 
-                self.compiled_plan_viz_pub.publish(to_viz_msg(compiled_plan, robot_name))
+                self.compiled_plan_viz_pub.publish(
+                    to_viz_msg(compiled_plan, robot_name)
+                )
 
             with self.current_planner_lock and self.plan_time_start_lock:
                 self.current_planner = None
