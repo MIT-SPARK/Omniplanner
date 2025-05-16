@@ -25,15 +25,39 @@ from tf2_ros.transform_listener import TransformListener
 from visualization_msgs.msg import MarkerArray
 
 from omniplanner_ros.ros_logging import setup_ros_log_forwarding
+from robot_vocalizer.llm_test import PlanVocalizer
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def get_plan_vocalizer(node):
+
+    node.declare_parameter("ultra_mode", False)
+    ultra_mode = node.get_parameter("ultra_mode").value
+    if not ultra_mode:
+        return None
+
+    node.declare_parameter("openai_api_key", "")
+    openai_api_key = node.get_parameter("openai_api_key").value
+    if openai_api_key == "":
+        openai_api_key = None
+
+    node.declare_parameter("deepgram_api_key", "")
+    deepgram_api_key = node.get_parameter("deepgram_api_key").value
+    if deepgram_api_key == "":
+        deepgram_api_key = None
+
+    if openai_api_key is not None and deepgram_api_key is not None:
+        return PlanVocalizer(openai_api_key, deepgram_api_key)
+    else:
+        return None
 
 
 def plan_to_string(robot_plan):
     # TODO: generalize. Currently assumes robot_plan is a list of tuples
     plan_string = ""
-    for a in robot_plan:
+    for a in robot_plan.symbolic_actions:
         plan_string += str(a) + "\n"
     return plan_string
 
@@ -190,20 +214,7 @@ class OmniPlannerRos(Node):
         config_path = self.get_parameter("plugin_config_path").value
         assert config_path != "", "plugin_config_path cannot be empty"
 
-        self.declare_parameter("openai_api_key", "")
-        openai_api_key = self.get_parameter("openai_api_key").value
-        if openai_api_key == "":
-            openai_api_key = None
-
-        self.declare_parameter("deepgram_api_key", "")
-        deepgram_api_key = self.get_parameter("deepgram_api_key").value
-        if deepgram_api_key == "":
-            deepgram_api_key = None
-
-        if openai_api_key is not None and deepgram_api_key is not None:
-            self.plan_vocalizer = PlanVocalizer(openai_api_key, deepgram_api_key)
-        else:
-            self.plan_vocalizer = None
+        self.plan_vocalizer = get_plan_vocalizer(self)
 
         self.config = OmniplannerNodeConfig.load(config_path)
 
