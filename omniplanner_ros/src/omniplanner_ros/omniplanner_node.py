@@ -30,6 +30,13 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def plan_to_string(robot_plan):
+    # TODO: generalize. Currently assumes robot_plan is a list of tuples
+    plan_string = ""
+    for a in robot_plan:
+        plan_string += str(a) + "\n"
+    return plan_string
+
 @dataclass
 class PluginFeedbackCollector:
     # k,v: feedback name, publish function
@@ -183,6 +190,21 @@ class OmniPlannerRos(Node):
         config_path = self.get_parameter("plugin_config_path").value
         assert config_path != "", "plugin_config_path cannot be empty"
 
+        self.declare_parameter("openai_api_key", "")
+        openai_api_key = self.get_parameter("openai_api_key").value
+        if openai_api_key == "":
+            openai_api_key = None
+
+        self.declare_parameter("deepgram_api_key", "")
+        deepgram_api_key = self.get_parameter("deepgram_api_key").value
+        if deepgram_api_key == "":
+            deepgram_api_key = None
+
+        if openai_api_key is not None and deepgram_api_key is not None:
+            self.plan_vocalizer = PlanVocalizer(openai_api_key, deepgram_api_key)
+        else:
+            self.plan_vocalizer = None
+
         self.config = OmniplannerNodeConfig.load(config_path)
 
         self.robot_adaptors = {}
@@ -284,6 +306,8 @@ class OmniPlannerRos(Node):
             for robot_name, robot_plan in plan.items():
                 robot_adaptor = self.robot_adaptors[robot_name]
                 command_frame = robot_adaptor.parent_frame
+                if self.plan_vocalizer is not None:
+                    self.plan_vocalizer.vocalize(robot_name, plan_to_string(robot_plan))
                 compiled_plan = compile_plan(
                     robot_plan, str(uuid.uuid4()), robot_name, command_frame
                 )
