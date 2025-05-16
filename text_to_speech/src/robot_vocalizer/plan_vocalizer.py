@@ -19,17 +19,18 @@ The robot name is Jerry.
 (goto-poi O32 P42)
 
 The output should be:
-Jerry is going to P123 to inspect O32. Then, Jerry is going to O32 to P42.
+Jerry is going to P123 to inspect O32. Then, Jerry is going from O32 to P42.
 
 If the plan is:
 The robot's name is Aaron.
 (goto-poi P11 P12)
 (goto-poi P12 O42)
 
-The output should be:
-Aaron is going to P11 to P12. Then, Aaron is going to P12 to O42.
+The output might be:
+Aaron is going from P11 to P12. Then, Aaron is going from P12 to O42.
 
 Make sure to include the user provided robot name in the summary. If the user does not provide a robot name, use "the robot" in the summary.
+At the end, say "And that's the plan", or a similar summary statement.
 
 """
 
