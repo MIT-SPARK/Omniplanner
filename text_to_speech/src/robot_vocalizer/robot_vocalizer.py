@@ -20,6 +20,7 @@ class RobotVocalizer:
         with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
             response = self.deepgram.speak.rest.v("1").save(tmp_file.name, {"text": text}, self.options)
             logger.debug(f"Vocalized response: {response.to_json(indent=4)}")
-            subprocess.run(["afplay", tmp_file.name])
+            # subprocess.run(["afplay", tmp_file.name]) # Mac
+            subprocess.run(["ffplay", tmp_file.name])
 
 

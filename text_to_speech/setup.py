@@ -1,7 +1,7 @@
 from setuptools import find_packages, setup
 
 setup(
-    name="speech_to_text",
+    name="robot_vocalizer",
     version="0.0.1",
     url="",
     author="",
@@ -15,3 +15,4 @@ setup(
         "openai==1.78.1 ",
     ],
 )
+
