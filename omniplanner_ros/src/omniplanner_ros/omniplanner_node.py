@@ -18,6 +18,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 from robot_executor_interface_ros.action_descriptions_ros import to_msg, to_viz_msg
 from robot_executor_msgs.msg import ActionSequenceMsg
+from robot_vocalizer.plan_vocalizer import PlanVocalizer
 from ros_system_monitor_msgs.msg import NodeInfoMsg
 from spark_config import Config, config_field
 from tf2_ros.buffer import Buffer
@@ -25,14 +26,12 @@ from tf2_ros.transform_listener import TransformListener
 from visualization_msgs.msg import MarkerArray
 
 from omniplanner_ros.ros_logging import setup_ros_log_forwarding
-from robot_vocalizer.llm_test import PlanVocalizer
-
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def get_plan_vocalizer(node):
 
+def get_plan_vocalizer(node):
     node.declare_parameter("ultra_mode", False)
     ultra_mode = node.get_parameter("ultra_mode").value
     if not ultra_mode:
@@ -60,6 +59,7 @@ def plan_to_string(robot_plan):
     for a in robot_plan.symbolic_actions:
         plan_string += str(a) + "\n"
     return plan_string
+
 
 @dataclass
 class PluginFeedbackCollector:
