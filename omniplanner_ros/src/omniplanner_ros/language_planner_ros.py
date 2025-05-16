@@ -9,7 +9,7 @@ import dsg_pddl
 import nlu_interface.resources
 import spark_config as sc
 from dsg_pddl.dsg_pddl_interface import PddlDomain
-from nlu_interface.llm_interface import LLMInterface
+from nlu_interface.llm_interface import OpenAIWrapper
 from omniplanner.language_planner import LanguageDomain, LanguageGoal
 from omniplanner.omniplanner import PlanRequest
 from omniplanner_msgs.msg import LanguageGoalMsg
@@ -46,14 +46,15 @@ class LanguagePlannerRos:
             logger.info(f'Loading prompt from "{path}"')
             with open(str(path), "r") as file:
                 prompt = yaml.load(file)
-        self.llm_interface = LLMInterface(
-            model_name=self.llm_config["model_name"],
-            prompt_mode=self.llm_config["prompt_mode"],
+        self.llm_interface = OpenAIWrapper(
+            model=self.llm_config["model"],
+            mode=self.llm_config["mode"],
             prompt=prompt,
             num_incontext_examples=self.llm_config["num_incontext_examples"],
             temperature=self.llm_config["temperature"],
-            seed=self.llm_config["seed"],
             api_timeout=self.llm_config["api_timeout"],
+            seed=self.llm_config["seed"],
+            api_key_env_var=self.llm_config["api_key_env_var"],
             debug=self.llm_config["debug"],
         )
 
@@ -75,10 +76,11 @@ class LanguagePlannerRos:
     def language_callback(self, msg, robot_poses):
         logger.info("In language_callback()")  # TODO: remove after testing on robot
         goal = LanguageGoal(command=msg.command, robot_id=msg.robot_id)
+        domain_type = (
+            self.config.domain_type if msg.domain_type == "default" else msg.domain_type
+        )
         req = PlanRequest(
-            domain=LanguageDomain(
-                self.config.domain_type, self.domain, self.llm_interface
-            ),
+            domain=LanguageDomain(domain_type, self.domain, self.llm_interface),
             goal=goal,
             robot_states=robot_poses,
         )

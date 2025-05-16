@@ -3,7 +3,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import numpy as np
 import rclpy
@@ -50,7 +50,16 @@ class PlannerConfig(Config):
 
 
 @dataclass
+class RobotConfig(Config):
+    robot_name: str = ""
+    robot_type: str = ""
+    fixed_frame: str = ""
+    body_frame: str = ""
+
+
+@dataclass
 class OmniplannerNodeConfig(Config):
+    robots: List[RobotConfig] = field(default_factory=list)
     planners: Dict[str, PlannerConfig] = field(default_factory=dict)
 
     @classmethod
@@ -58,22 +67,21 @@ class OmniplannerNodeConfig(Config):
         return Config.load(OmniplannerNodeConfig, path)
 
 
-def get_robot_pose(
-    tf_buffer, target_frame: str = "map", source_frame: str = "spot/base_link"
-) -> np.ndarray:
+def get_robot_pose(tf_buffer, parent_frame: str, child_frame: str) -> np.ndarray:
     """
-    Looks up the transform from target_frame to source_frame and returns [x, y, z, yaw].
+    Looks up the transform from parent_frame to child_frame and returns [x, y, z, yaw].
 
     """
+    # TODO: use Time(0) instead of now?
     try:
         now = rclpy.time.Time()
         tf_buffer.can_transform(
-            target_frame,
-            source_frame,
+            parent_frame,
+            child_frame,
             now,
             timeout=rclpy.duration.Duration(seconds=1.0),
         )
-        transform = tf_buffer.lookup_transform(target_frame, source_frame, now)
+        transform = tf_buffer.lookup_transform(parent_frame, child_frame, now)
 
         translation = transform.transform.translation
         rotation = transform.transform.rotation
@@ -87,6 +95,33 @@ def get_robot_pose(
     except tf2_ros.TransformException as e:
         print(f"Transform error: {e}")
         raise
+
+
+class RobotPlanningAdaptor:
+    def __init__(self, node, tf_buffer, name, robot_type, parent_frame, child_frame):
+        self.tf_buffer = tf_buffer
+        self.name = name
+        self.robot_type = robot_type
+        self.parent_frame = parent_frame
+        self.child_frame = child_frame
+        self.ros_logger = node.get_logger()
+
+        self.plan_pub = node.create_publisher(
+            ActionSequenceMsg, f"/{name}/omniplanner_node/compiled_plan_out", 1
+        )
+
+    def get_pose(self):
+        self.ros_logger.info(
+            f"Looking up pose for {self.name} ({self.parent_frame}->{self.child_frame})"
+        )
+        try:
+            return get_robot_pose(self.tf_buffer, self.parent_frame, self.child_frame)
+        except tf2_ros.TransformException as e:
+            self.ros_logger.warning(str(e))
+            return None
+
+    def publish_plan(self, plan):
+        self.plan_pub.publish(plan)
 
 
 # NOTE: What's the best way to deal with multiple robots / robot discovery?
@@ -129,10 +164,6 @@ class OmniPlannerRos(Node):
         # When we discover a new robot, we should create a new
         # publisher based on the information that the robot provides.
         # Then we can look up the relevant publisher in the {name: publishers} map
-        self.compiled_plan_pub = self.create_publisher(
-            ActionSequenceMsg, "~/compiled_plan_out", 1
-        )
-
         latching_qos = QoSProfile(
             depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL
         )
@@ -152,14 +183,25 @@ class OmniPlannerRos(Node):
         config_path = self.get_parameter("plugin_config_path").value
         assert config_path != "", "plugin_config_path cannot be empty"
 
-        #TODO: params...
-        self.spot_fixed_frame = "map"
-        self.spot_body_frame = "spot/body"
+        self.config = OmniplannerNodeConfig.load(config_path)
+
+        self.robot_adaptors = {}
+        for robot_config in self.config.robots:
+            self.get_logger().info(
+                f"I know about {robot_config.robot_name}, a {robot_config.robot_type} robot"
+            )
+            self.robot_adaptors[robot_config.robot_name] = RobotPlanningAdaptor(
+                self,
+                self.tf_buffer,
+                robot_config.robot_name,
+                robot_config.robot_type,
+                robot_config.fixed_frame,
+                robot_config.body_frame,
+            )
 
         # Initialize a feedback collector to be populated by plugins
         self.feedback = OmniplannerFeedbackCollector()
 
-        self.config = OmniplannerNodeConfig.load(config_path)
         for name, planner in self.config.planners.items():
             plugin = planner.plugin.create()
             if plugin is None:
@@ -206,10 +248,11 @@ class OmniPlannerRos(Node):
         msg.notes = notes
         self.heartbeat_pub.publish(msg)
 
-    def get_spot_pose(self):
-        return get_robot_pose(
-            self.tf_buffer, target_frame=self.spot_fixed_frame, source_frame=self.spot_body_frame
-        )
+    def get_robot_poses(self):
+        pose_dict = {}
+        for name, pose_adaptor in self.robot_adaptors.items():
+            pose_dict[name] = pose_adaptor.get_pose()
+        return pose_dict
 
     def register_plugin(self, name, plugin):
         self.get_logger().info(f"Registering subscription plugin {name}")
@@ -229,7 +272,8 @@ class OmniPlannerRos(Node):
                 self.current_planner = name
                 self.plan_time_start = time.time()
 
-            robot_poses = {"spot": self.get_spot_pose()}
+            robot_poses = self.get_robot_poses()
+            self.get_logger().info(f"Planning with robot poses {robot_poses}")
 
             plan_request = callback(msg, robot_poses)
             with self.dsg_lock:
@@ -237,13 +281,17 @@ class OmniPlannerRos(Node):
                     plan_request, self.dsg_last, self.feedback
                 )
 
-            spot_path_frame = "map"  # TODO: parameter
-            compiled_plan = compile_plan(
-                plan, str(uuid.uuid4()), "spot", spot_path_frame
-            )
+            for robot_name, robot_plan in plan.items():
+                robot_adaptor = self.robot_adaptors[robot_name]
+                command_frame = robot_adaptor.parent_frame
+                compiled_plan = compile_plan(
+                    robot_plan, str(uuid.uuid4()), robot_name, command_frame
+                )
+                robot_adaptor.publish_plan(to_msg(compiled_plan))
 
-            self.compiled_plan_pub.publish(to_msg(compiled_plan))
-            self.compiled_plan_viz_pub.publish(to_viz_msg(compiled_plan, name))
+                self.compiled_plan_viz_pub.publish(
+                    to_viz_msg(compiled_plan, robot_name)
+                )
 
             with self.current_planner_lock and self.plan_time_start_lock:
                 self.current_planner = None
