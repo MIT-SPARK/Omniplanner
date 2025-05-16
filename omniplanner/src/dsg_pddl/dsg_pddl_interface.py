@@ -51,6 +51,15 @@ def lisp_string_to_ast(string):
     return get_lisp_ast(tokenize_lisp(string))
 
 
+def generate_unary_predicates(symbols):
+    unary_preds = []
+    for symbol in symbols:
+        for unary_pred in symbol.unary_predicates_to_apply:
+            pred_str = f"({unary_pred} {symbol.symbol})"
+            unary_preds.append(pred_str)
+    return "\n".join(unary_preds)
+
+
 def generate_symbol_connectivity(G, symbols):
     layer_planner = LayerPlanner(G, spark_dsg.DsgLayers.MESH_PLACES)
 
@@ -88,11 +97,13 @@ def symbol_connectivity_to_pddl(connectivity):
 def generate_initial_pddl(G, symbols_of_interest, start_symbol):
     connectivity = generate_symbol_connectivity(G, symbols_of_interest)
     connectivity_pddl = symbol_connectivity_to_pddl(connectivity)
+    unary_preds_pddl = generate_unary_predicates(symbols_of_interest)
 
     init_pddl = f"""(:init
   (= (total-cost) 0)
   (at-poi {start_symbol.symbol})
   {connectivity_pddl}
+  {unary_preds_pddl}
   )"""
     return init_pddl
 
@@ -118,9 +129,19 @@ def extract_symbols_of_interest(G, pddl_goal):
 
     object_facts = extract_facts(pddl_goal, "visited-object")
     object_facts += extract_facts(pddl_goal, "at-object")
+    object_facts += extract_facts(pddl_goal, "suspicious")
+    object_facts += extract_facts(pddl_goal, "safe")
+    logger.info(f"Extract objects facts: {object_facts}")
 
     place_symbols = [PddlSymbol(f[1], "place", []) for f in place_facts]
-    object_symbols = [PddlSymbol(f[1], "object", []) for f in object_facts]
+    # object_symbols = [PddlSymbol(f[1], "object", []) for f in object_facts]
+    # object_symbols = [PddlSymbol(f[1], "object", ["suspicious"]) for f in object_facts]
+    object_symbols = []
+    for fact in object_facts:
+        if fact[0] == "suspicious" or fact[0] == "safe":
+            object_symbol = PddlSymbol(fact[1], "objects", [fact[0]])
+            object_symbols.append(object_symbol)
+    logger.info(f"Got object symbols: {object_symbols}")
 
     return place_symbols + object_symbols
 
@@ -350,6 +371,8 @@ def ground_problem(
     # ground_problem function.
     if domain.domain_name == "goto-object-domain":
         pddl_problem, symbols = generate_inspection_pddl(dsg, goal.pddl_goal, start)
+        with open("/tmp/problem.pddl", "w") as file:
+            file.write(pddl_problem)
     else:
         raise NotImplementedError(
             f"I don't know how to ground a domain of type {domain.domain_name}!"
