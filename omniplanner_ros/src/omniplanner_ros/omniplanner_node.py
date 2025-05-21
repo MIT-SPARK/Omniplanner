@@ -18,6 +18,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 from robot_executor_interface_ros.action_descriptions_ros import to_msg, to_viz_msg
 from robot_executor_msgs.msg import ActionSequenceMsg
+from robot_vocalizer.plan_vocalizer import PlanVocalizer
 from ros_system_monitor_msgs.msg import NodeInfoMsg
 from spark_config import Config, config_field
 from tf2_ros.buffer import Buffer
@@ -28,6 +29,36 @@ from omniplanner_ros.ros_logging import setup_ros_log_forwarding
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def get_plan_vocalizer(node):
+    node.declare_parameter("vocalize", False)
+    vocalize = node.get_parameter("vocalize").value
+    if not vocalize:
+        return None
+
+    node.declare_parameter("openai_api_key", "")
+    openai_api_key = node.get_parameter("openai_api_key").value
+    if openai_api_key == "":
+        openai_api_key = None
+
+    node.declare_parameter("deepgram_api_key", "")
+    deepgram_api_key = node.get_parameter("deepgram_api_key").value
+    if deepgram_api_key == "":
+        deepgram_api_key = None
+
+    if openai_api_key is not None and deepgram_api_key is not None:
+        return PlanVocalizer(openai_api_key, deepgram_api_key)
+    else:
+        return None
+
+
+def plan_to_string(robot_plan):
+    # TODO: generalize. Currently assumes robot_plan is a list of tuples
+    plan_string = ""
+    for a in robot_plan.symbolic_actions:
+        plan_string += str(a) + "\n"
+    return plan_string
 
 
 @dataclass
@@ -183,6 +214,8 @@ class OmniPlannerRos(Node):
         config_path = self.get_parameter("plugin_config_path").value
         assert config_path != "", "plugin_config_path cannot be empty"
 
+        self.plan_vocalizer = get_plan_vocalizer(self)
+
         self.config = OmniplannerNodeConfig.load(config_path)
 
         self.robot_adaptors = {}
@@ -284,6 +317,8 @@ class OmniPlannerRos(Node):
             for robot_name, robot_plan in plan.items():
                 robot_adaptor = self.robot_adaptors[robot_name]
                 command_frame = robot_adaptor.parent_frame
+                if self.plan_vocalizer is not None:
+                    self.plan_vocalizer.vocalize(robot_name, plan_to_string(robot_plan))
                 compiled_plan = compile_plan(
                     robot_plan, str(uuid.uuid4()), robot_name, command_frame
                 )
