@@ -32,9 +32,9 @@ logger = logging.getLogger(__name__)
 
 
 def get_plan_vocalizer(node):
-    node.declare_parameter("ultra_mode", False)
-    ultra_mode = node.get_parameter("ultra_mode").value
-    if not ultra_mode:
+    node.declare_parameter("vocalize", False)
+    vocalize = node.get_parameter("vocalize").value
+    if not vocalize:
         return None
 
     node.declare_parameter("openai_api_key", "")
