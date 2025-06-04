@@ -46,7 +46,12 @@ class LayerPlanner:
 
     def get_shortest_distance(self, s, t):
         if self.stored_shortest_path_lengths is None:
-            return nx.shortest_path_length(self.nx_layer, s, t)
+            try:
+                length = nx.shortest_path_length(self.nx_layer, s, t)
+            except nx.exception.NetworkXNoPath:
+                logger.warning(f"No connection in DSG between {s} and {t}")
+                length = np.inf
+            return length
         else:
             return self.stored_shortest_path_lengths[s][t]
 

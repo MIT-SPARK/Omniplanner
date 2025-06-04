@@ -2,7 +2,7 @@ import ast
 from dataclasses import dataclass
 from typing import Any
 
-from dsg_pddl.dsg_pddl_interface import PddlDomain, PddlGoal
+from dsg_pddl.pddl_grounding import PddlDomain, PddlGoal
 from nlu_interface.llm_interface import LLMInterface
 from plum import dispatch
 
