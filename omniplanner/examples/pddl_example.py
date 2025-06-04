@@ -1,0 +1,78 @@
+import logging
+from importlib.resources import as_file, files
+
+import dsg_pddl.domains
+import numpy as np
+from dsg_pddl.dsg_pddl_interface import PddlDomain, PddlPlan, PddlGoal
+from robot_executor_interface.action_descriptions import ActionSequence, Follow, Gaze
+from ruamel.yaml import YAML
+from utils import build_test_dsg
+
+from omniplanner.omniplanner import (
+    PlanRequest,
+    full_planning_pipeline,
+)
+
+logging.basicConfig()
+logging.getLogger().setLevel(logging.INFO)
+
+yaml = YAML(typ="safe")
+
+
+def compile_plan(plan: PddlPlan, plan_id, robot_name, frame_id):
+    actions = []
+    for symbolic_action, parameters in zip(
+        plan.symbolic_actions, plan.parameterized_actions
+    ):
+        match symbolic_action[0]:
+            case "goto-poi":
+                actions.append(Follow(frame=frame_id, path2d=parameters))
+            case "inspect":
+                robot_point, gaze_point = parameters
+                actions.append(
+                    Gaze(
+                        frame=frame_id,
+                        robot_point=robot_point,
+                        gaze_point=gaze_point,
+                        stow_after=True,
+                    )
+                )
+
+    seq = ActionSequence(plan_id=plan_id, robot_name=robot_name, actions=actions)
+    return seq
+
+
+print("================================")
+print("==   PDDL Domain              ==")
+print("================================")
+print("")
+
+goal = PddlGoal(robot_id="euclid", pddl_goal="(and (visited-object o0) (visited-object o1))")
+robot_poses = {"euclid": np.array([0.0, 0.1])}
+
+# Load the PDDL domain you want to use
+with as_file(files(dsg_pddl.domains).joinpath("GotoObjectDomain.pddl")) as path:
+    print(f"Loading domain {path}")
+    with open(str(path), "r") as fo:
+        domain = PddlDomain(fo.read())
+
+
+# Build the plan request
+req = PlanRequest(
+    domain=domain,
+    goal=goal,
+    robot_states=robot_poses,
+)
+
+G = build_test_dsg()
+plan = full_planning_pipeline(req, G)
+
+print("Plan from planning domain:")
+print(plan)
+
+
+compiled_plan = compile_plan(
+    plan.value, "abc123", plan.name, "a_coordinate_frame"
+)
+print("compiled plan:")
+print(compiled_plan)
