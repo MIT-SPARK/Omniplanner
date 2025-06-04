@@ -3,8 +3,15 @@ from importlib.resources import as_file, files
 
 import dsg_pddl.domains
 import numpy as np
-from dsg_pddl.dsg_pddl_interface import PddlDomain, PddlPlan, PddlGoal
-from robot_executor_interface.action_descriptions import ActionSequence, Follow, Gaze
+from dsg_pddl.dsg_pddl_planning import PddlPlan
+from dsg_pddl.pddl_grounding import PddlDomain, PddlGoal
+from robot_executor_interface.action_descriptions import (
+    ActionSequence,
+    Follow,
+    Gaze,
+    Pick,
+    Place,
+)
 from ruamel.yaml import YAML
 from utils import build_test_dsg
 
@@ -37,6 +44,30 @@ def compile_plan(plan: PddlPlan, plan_id, robot_name, frame_id):
                         stow_after=True,
                     )
                 )
+            case "pick-object":
+                robot_point, pick_point = parameters
+                actions.append(
+                    Pick(
+                        frame=frame_id,
+                        object_class="",
+                        robot_point=robot_point,
+                        object_point=pick_point,
+                    )
+                )
+            case "place-object":
+                robot_point, place_point = parameters
+                actions.append(
+                    Place(
+                        frame=frame_id,
+                        object_class="",
+                        robot_point=robot_point,
+                        object_point=place_point,
+                    )
+                )
+            case _:
+                raise NotImplementedError(
+                    f"I don't know how to compile {symbolic_action[0]}"
+                )
 
     seq = ActionSequence(plan_id=plan_id, robot_name=robot_name, actions=actions)
     return seq
@@ -47,11 +78,19 @@ print("==   PDDL Domain              ==")
 print("================================")
 print("")
 
-goal = PddlGoal(robot_id="euclid", pddl_goal="(and (visited-object o0) (visited-object o1))")
+# goal = PddlGoal(robot_id="euclid", pddl_goal="(and (visited-object o0) (visited-object o1))")
+goal = PddlGoal(robot_id="euclid", pddl_goal="(object-in-place o1 p0)")
+# (object-in-place o0 p0)
+# (object-in-place o1 p1) )
+
+
 robot_poses = {"euclid": np.array([0.0, 0.1])}
 
 # Load the PDDL domain you want to use
-with as_file(files(dsg_pddl.domains).joinpath("GotoObjectDomain.pddl")) as path:
+# with as_file(files(dsg_pddl.domains).joinpath("GotoObjectDomain.pddl")) as path:
+with as_file(
+    files(dsg_pddl.domains).joinpath("ObjectRearrangementDomain.pddl")
+) as path:
     print(f"Loading domain {path}")
     with open(str(path), "r") as fo:
         domain = PddlDomain(fo.read())
@@ -71,8 +110,6 @@ print("Plan from planning domain:")
 print(plan)
 
 
-compiled_plan = compile_plan(
-    plan.value, "abc123", plan.name, "a_coordinate_frame"
-)
+compiled_plan = compile_plan(plan.value, "abc123", plan.name, "a_coordinate_frame")
 print("compiled plan:")
 print(compiled_plan)
