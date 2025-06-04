@@ -2,9 +2,11 @@
 import logging
 from dataclasses import dataclass
 from functools import singledispatch
-from typing import Any, Dict, overload
+from typing import Any, Callable, overload
 
-from multipledispatch import dispatch
+from plum import dispatch
+
+from omniplanner.functor import Functor, FunctorTrait, dispatchable_parametric
 
 logger = logging.getLogger(__name__)
 
@@ -20,39 +22,6 @@ logger = logging.getLogger(__name__)
 # 7. BSP domain, BSP goal, DSG
 
 # And then, all of the above but the goal is given in natural language
-
-
-def tokenize_lisp(string):
-    return string.replace("\n", "").replace("(", "( ").replace(")", " )").split()
-
-
-def get_lisp_ast(toks):
-    t = toks.pop(0)
-    if t == "(":
-        exp = ()
-        while toks[0] != ")":
-            exp += (get_lisp_ast(toks),)
-        toks.pop(0)
-        return exp
-    elif t != ")":
-        return t
-    else:
-        raise SyntaxError("Unexpected )")
-
-
-def lisp_string_to_ast(string):
-    return get_lisp_ast(tokenize_lisp(string))
-
-
-class PddlGoal(tuple):
-    def __new__(self, t):
-        if isinstance(t, str):
-            t = lisp_string_to_ast(t)
-        return tuple.__new__(PddlGoal, t)
-
-
-class NaturalLanguageGoal(str):
-    pass
 
 
 class PlanningDomain:
@@ -86,20 +55,15 @@ class Plan:
     pass
 
 
-@dataclass
-class RobotPlanningDomain:
-    robot_name: str
-    domain: Any
+@dispatchable_parametric
+class RobotWrapper[T](FunctorTrait):
+    name: str
+    value: T
 
 
-@dataclass
-class RobotProblem:
-    robot_name: str
-    problem: Any
-
-
-class RobotProblems(list):
-    pass
+@dispatch
+def fmap(fn: Callable, robot_wrapper: RobotWrapper):
+    return RobotWrapper(robot_wrapper.name, fn(robot_wrapper.value))
 
 
 class DispatchException(Exception):
@@ -110,47 +74,26 @@ class DispatchException(Exception):
         )
 
 
-@overload
-@dispatch(PlanningDomain, object, object, PlanningGoal, object)
+@dispatch
 def ground_problem(
-    domain, map_context, intial_state, goal, feedback=None
+    domain: PlanningDomain,
+    map_context: Any,
+    intial_state: Any,
+    goal: PlanningGoal,
+    feedback: Any = None,
 ) -> GroundedProblem:
     raise DispatchException(ground_problem, domain, map_context, goal, feedback)
 
 
 @overload
-@dispatch(GroundedProblem, object)
-def make_plan(grounded_problem, map_context) -> Plan:
+@dispatch
+def make_plan(grounded_problem: GroundedProblem, map_context: Any) -> Plan:
     raise DispatchException(make_plan, grounded_problem, map_context)
 
 
-@dispatch(RobotPlanningDomain, object, object, object, object)
-def ground_problem(
-    domain, map_context, initial_state, goal, feedback=None
-) -> RobotProblem:
-    logger.warning("grounding RobotPlanningDomain")
-    grounded_problem = ground_problem(
-        domain.domain, map_context, initial_state, goal, feedback
-    )
-    return RobotProblem(domain.robot_name, grounded_problem)
-
-
-@overload
-@dispatch(RobotProblems, object)
-def make_plan(problems, map_context) -> Dict[str, Plan]:
-    logger.warning("Solving List of {type(problems[0])}")
-    name_to_plan = {}
-    for p in problems:
-        logger.warning(f"Making plan for {p.robot_name}")
-        name_to_plan |= make_plan(p, map_context)
-    return name_to_plan
-
-
-@dispatch(RobotProblem, object)
-def make_plan(grounded_problem, map_context) -> Dict[str, Plan]:
-    logger.warning("Solving RobotProblem")
-    plan = make_plan(grounded_problem.problem, map_context)
-    return {grounded_problem.robot_name: plan}
+@dispatch
+def make_plan(grounded_problem: Functor, map_context: Any):
+    return fmap(lambda e: make_plan(e, map_context), grounded_problem)
 
 
 def full_planning_pipeline(plan_request: PlanRequest, map_context: Any, feedback=None):
@@ -161,7 +104,9 @@ def full_planning_pipeline(plan_request: PlanRequest, map_context: Any, feedback
         plan_request.goal,
         feedback,
     )
+    logger.debug("Grounded Problem")
     plan = make_plan(grounded_problem, map_context)
+    logger.debug(f"Made plan {plan}")
     return plan
 
 

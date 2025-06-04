@@ -23,4 +23,4 @@ class RobotVocalizer:
             )
             logger.debug(f"Vocalized response: {response.to_json(indent=4)}")
             # subprocess.run(["afplay", tmp_file.name]) # Mac
-            subprocess.run(["ffplay", '-autoexit', tmp_file.name])
+            subprocess.run(["ffplay", "-autoexit", tmp_file.name])

@@ -4,11 +4,11 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from functools import reduce, total_ordering
-from typing import Dict, List, Optional, overload
+from typing import Any, Dict, List, Optional, overload
 
 import numpy as np
 import spark_dsg
-from multipledispatch import dispatch
+from plum import dispatch
 
 from omniplanner.tsp import LayerPlanner
 
@@ -337,9 +337,13 @@ class PddlPlan:
 
 
 @overload
-@dispatch(PddlDomain, object, dict, PddlGoal, object)
+@dispatch
 def ground_problem(
-    domain, dsg, robot_states, goal, feedback=None
+    domain: PddlDomain,
+    dsg: spark_dsg.DynamicSceneGraph,
+    robot_states: dict,
+    goal: PddlGoal,
+    feedback: Any = None,
 ) -> GroundedPddlProblem:
     logger.info(f"Grounding PDDL Problem {domain.domain_name}")
 
@@ -359,8 +363,8 @@ def ground_problem(
     return GroundedPddlProblem(domain, pddl_problem, symbol_dict)
 
 
-@dispatch(GroundedPddlProblem, object)
-def make_plan(grounded_problem, map_context) -> PddlPlan:
+@dispatch
+def make_plan(grounded_problem: GroundedPddlProblem, map_context: Any) -> PddlPlan:
     plan = []
 
     with tempfile.TemporaryDirectory() as tmpdirname:
