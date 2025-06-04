@@ -3,6 +3,7 @@ from importlib.resources import as_file, files
 
 import dsg_pddl.domains
 import numpy as np
+import spark_dsg
 from dsg_pddl.dsg_pddl_planning import PddlPlan
 from dsg_pddl.pddl_grounding import PddlDomain, PddlGoal
 from robot_executor_interface.action_descriptions import (
@@ -13,7 +14,6 @@ from robot_executor_interface.action_descriptions import (
     Place,
 )
 from ruamel.yaml import YAML
-from utils import build_test_dsg
 
 from omniplanner.omniplanner import (
     PlanRequest,
@@ -79,7 +79,12 @@ print("================================")
 print("")
 
 # goal = PddlGoal(robot_id="euclid", pddl_goal="(and (visited-object o0) (visited-object o1))")
-goal = PddlGoal(robot_id="euclid", pddl_goal="(object-in-place o1 p0)")
+# goal = PddlGoal(robot_id="euclid", pddl_goal="(object-in-place o1 p0)")
+
+# goal = PddlGoal(robot_id="euclid", pddl_goal="(or (visited-place r116) (and (visited-place r69) (visited-place r83)))")
+# goal = PddlGoal(robot_id="euclid", pddl_goal="(object-in-place o94 r5)")
+goal = PddlGoal(robot_id="euclid", pddl_goal="(visited-poi o61)")
+
 # (object-in-place o0 p0)
 # (object-in-place o1 p1) )
 
@@ -103,7 +108,13 @@ req = PlanRequest(
     robot_states=robot_poses,
 )
 
-G = build_test_dsg()
+
+# G = build_test_dsg()
+
+G = spark_dsg.DynamicSceneGraph.load(
+    "/home/ubuntu/lxc_datashare/west_point_fused_map_wregions.json"
+)
+
 plan = full_planning_pipeline(req, G)
 
 print("Plan from planning domain:")
