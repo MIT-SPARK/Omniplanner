@@ -1,11 +1,12 @@
 import time
 from dataclasses import dataclass
-from typing import List, overload
+from typing import Any, List, overload
 
 import numpy as np
-from multipledispatch import dispatch
+from plum import dispatch
+from spark_dsg import DynamicSceneGraph
 
-from omniplanner.omniplanner import PlanningDomain
+from omniplanner.omniplanner import PlanningDomain, RobotWrapper
 from omniplanner.utils import str_to_ns_value
 
 
@@ -41,10 +42,14 @@ class GotoPointsGoal:
 
 
 @overload
-@dispatch(GotoPointsDomain, object, dict, GotoPointsGoal, object)
+@dispatch
 def ground_problem(
-    domain, dsg, robot_states, goal, feedback=None
-) -> GroundedGotoPointsProblem:
+    domain: GotoPointsDomain,
+    dsg: DynamicSceneGraph,
+    robot_states: dict,
+    goal: GotoPointsGoal,
+    feedback: Any = None,
+) -> RobotWrapper[GroundedGotoPointsProblem]:
     start = robot_states[goal.robot_id]
 
     def get_loc(symbol):
@@ -54,25 +59,34 @@ def ground_problem(
         return node.attributes.position[:2]
 
     referenced_points = np.array([get_loc(symbol) for symbol in goal.goal_points])
-    return ground_problem(
-        domain,
-        referenced_points,
-        start,
-        [i for i in range(len(goal.goal_points))],
-        feedback,
+    return RobotWrapper(
+        goal.robot_id,
+        ground_problem(
+            domain,
+            referenced_points,
+            start,
+            [i for i in range(len(goal.goal_points))],
+            feedback,
+        ),
     )
 
 
-@dispatch(GotoPointsDomain, np.ndarray, np.ndarray, list, object)
+@dispatch
 def ground_problem(
-    domain, map_context, start, goal, feedback=None
+    domain: GotoPointsDomain,
+    map_context: np.ndarray,
+    start: np.ndarray,
+    goal: list,
+    feedback: Any = None,
 ) -> GroundedGotoPointsProblem:
     point_sequence = map_context[goal]
     return GroundedGotoPointsProblem(start, point_sequence)
 
 
-@dispatch(GroundedGotoPointsProblem, object)
-def make_plan(grounded_problem, map_context) -> GotoPointsPlan:
+@dispatch
+def make_plan(
+    grounded_problem: GroundedGotoPointsProblem, map_context: Any
+) -> GotoPointsPlan:
     time.sleep(3)
     plan = []
     p = GotoPointPrimitive(

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 import spark_config as sc
 from omniplanner.goto_points import GotoPointsDomain, GotoPointsGoal, GotoPointsPlan
-from omniplanner.omniplanner import PlanRequest, RobotPlanningDomain, compile_plan
+from omniplanner.omniplanner import PlanRequest, compile_plan
 from omniplanner_msgs.msg import GotoPointsGoalMsg
 from robot_executor_interface.action_descriptions import ActionSequence, Follow
 
@@ -37,7 +37,7 @@ class GotoPointsRos:
         goal = GotoPointsGoal(
             goal_points=msg.point_names_to_visit, robot_id=msg.robot_id
         )
-        domain = RobotPlanningDomain(msg.robot_id, GotoPointsDomain())
+        domain = GotoPointsDomain()
         req = PlanRequest(
             domain=domain,
             goal=goal,

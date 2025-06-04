@@ -155,6 +155,23 @@ class RobotPlanningAdaptor:
         self.plan_pub.publish(plan)
 
 
+def collect_plans(plans) -> dict:
+    """Currently assumes plans is either a RobotWrapper or a list of RobotWrappers."""
+    robot_to_plan = {}
+    if isinstance(plans, list):
+        for p in plans:
+            if p.name not in robot_to_plan:
+                robot_to_plan[p.name] = p.value
+            else:
+                raise Exception(
+                    f"Received duplicate plans for robot {p.name}: {p.value} vs. {robot_to_plan[p.name]}"
+                )
+    else:
+        robot_to_plan[plans.name] = plans.value
+
+    return robot_to_plan
+
+
 # NOTE: What's the best way to deal with multiple robots / robot discovery?
 # Probably tie into the general robot discovery mechanism we were thinking
 # about for multi-robot SLAM. Listen for messages broadcast from each robot on
@@ -310,11 +327,13 @@ class OmniPlannerRos(Node):
 
             plan_request = callback(msg, robot_poses)
             with self.dsg_lock:
-                plan = full_planning_pipeline(
+                plans = full_planning_pipeline(
                     plan_request, self.dsg_last, self.feedback
                 )
 
-            for robot_name, robot_plan in plan.items():
+            robot_to_plan = collect_plans(plans)
+
+            for robot_name, robot_plan in robot_to_plan.items():
                 robot_adaptor = self.robot_adaptors[robot_name]
                 command_frame = robot_adaptor.parent_frame
                 if self.plan_vocalizer is not None:

@@ -1,14 +1,14 @@
 import logging
 from dataclasses import dataclass
-from typing import List, overload
+from typing import Any, List, overload
 
 import networkx as nx
 import numpy as np
 import spark_dsg
 import spark_dsg.networkx as dsg_nx
-from multipledispatch import dispatch
+from plum import dispatch
 
-from omniplanner.omniplanner import PlanningDomain
+from omniplanner.omniplanner import PlanningDomain, RobotWrapper
 from omniplanner.utils import str_to_ns_value
 
 logger = logging.getLogger(__name__)
@@ -141,10 +141,10 @@ class TspGoal:
 
 
 @overload
-@dispatch(TspDomain, object, dict, TspGoal, object)
+@dispatch
 def ground_problem(
-    domain, dsg, robot_states, goal, feedback=None
-) -> GroundedTspProblem:
+    domain: TspDomain, dsg: Any, robot_states: dict, goal: TspGoal, feedback: Any = None
+) -> RobotWrapper[GroundedTspProblem]:
     logger.info("Grounding TSP Problem")
 
     start = robot_states[goal.robot_id][:2]
@@ -171,12 +171,16 @@ def ground_problem(
             )
     distance_matrix += distance_matrix.T
 
-    return GroundedTspProblem(start, referenced_points, distance_matrix, domain.solver)
+    return RobotWrapper(
+        goal.robot_id,
+        GroundedTspProblem(start, referenced_points, distance_matrix, domain.solver),
+    )
 
 
-@dispatch(GroundedTspProblem, object)
-def make_plan(grounded_problem, map_context) -> FollowPathPlan:
+@dispatch
+def make_plan(grounded_problem: GroundedTspProblem, map_context: Any) -> FollowPathPlan:
     logger.info("Making TSP Plan")
+    logger.info(f"goal points: {grounded_problem.goal_points}")
 
     match grounded_problem.solver:
         case "2opt":
@@ -186,6 +190,7 @@ def make_plan(grounded_problem, map_context) -> FollowPathPlan:
                 f"Requested TSP Solver not implemented: {grounded_problem.solver})"
             )
 
+    logger.info(f"tsp order: {tsp_order}")
     tsp_points = grounded_problem.goal_points[tsp_order]
 
     plan = FollowPathPlan()

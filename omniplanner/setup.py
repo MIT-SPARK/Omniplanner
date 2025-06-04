@@ -11,6 +11,6 @@ setup(
     packages=find_packages("src"),
     package_data={"": ["*.yaml", "*.pddl"]},
     install_requires=[
-        "multipledispatch",
+        "plum",
     ],
 )

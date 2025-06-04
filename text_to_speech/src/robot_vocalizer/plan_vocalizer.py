@@ -1,5 +1,6 @@
-from openai import OpenAI
 import logging
+
+from openai import OpenAI
 
 from robot_vocalizer.robot_vocalizer import RobotVocalizer
 
@@ -34,6 +35,7 @@ At the end, say "And that's the plan", or a similar summary statement.
 
 """
 
+
 class PlanVocalizer:
     def __init__(self, openai_api_key: str, deepgram_api_key: str):
         self.client = OpenAI(api_key=openai_api_key)
@@ -42,11 +44,12 @@ class PlanVocalizer:
     def vocalize(self, robot_name: str, plan: str):
         response = self.client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "system", "content": SYSTEM_PROMPT},
-                      {"role": "user", "content": plan},
-                      {"role": "user", "content": f"The robot's name is {robot_name}"}],
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": plan},
+                {"role": "user", "content": f"The robot's name is {robot_name}"},
+            ],
         )
         text = response.choices[0].message.content
         logger.debug(f"Model response: {text}")
         self.vocalizer.vocalize(text)
-

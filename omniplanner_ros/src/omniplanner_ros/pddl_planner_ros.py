@@ -7,7 +7,7 @@ from importlib.resources import as_file, files
 import dsg_pddl.domains
 import spark_config as sc
 from dsg_pddl.dsg_pddl_interface import PddlDomain, PddlGoal, PddlPlan
-from omniplanner.omniplanner import PlanRequest, RobotPlanningDomain, compile_plan
+from omniplanner.omniplanner import PlanRequest, compile_plan
 from omniplanner_msgs.msg import PddlGoalMsg
 from robot_executor_interface.action_descriptions import ActionSequence, Follow, Gaze
 
@@ -60,7 +60,7 @@ class PddlPlannerRos:
     def pddl_callback(self, msg, robot_poses):
         logger.info(f"Received PDDL goal {msg.pddl_goal} for robot {msg.robot_id}")
         goal = PddlGoal(pddl_goal=msg.pddl_goal, robot_id=msg.robot_id)
-        robot_domain = RobotPlanningDomain(msg.robot_id, self.domain)
+        robot_domain = self.domain
         req = PlanRequest(
             domain=robot_domain,
             goal=goal,
