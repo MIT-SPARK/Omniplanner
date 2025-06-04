@@ -8,7 +8,7 @@ from importlib.resources import as_file, files
 import dsg_pddl
 import nlu_interface.resources
 import spark_config as sc
-from dsg_pddl.dsg_pddl_interface import PddlDomain
+from dsg_pddl.pddl_grounding import PddlDomain
 from nlu_interface.llm_interface import OpenAIWrapper
 from omniplanner.language_planner import LanguageDomain, LanguageGoal
 from omniplanner.omniplanner import PlanRequest

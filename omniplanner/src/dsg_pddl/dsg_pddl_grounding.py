@@ -69,22 +69,36 @@ def generate_dense_symbol_connectivity(G, symbols):
         places_layer = G.get_layer(spark_dsg.DsgLayers.MESH_PLACES)
     except Exception:
         places_layer = G.get_layer(20)
+    places_layer = G.get_layer(spark_dsg.DsgLayers.ROOMS)  # TODO
 
     edges = []
 
     # Add connection between scene graph place neighbors
-    for node in places_layer.nodes:
-        p1 = node.attributes.position
-        normalized_symbol = symbol_lookup[normalize_symbol(node.id.str(True))]
-        for neighbor in node.siblings():
-            if node.id.value < neighbor:
+    # for node in places_layer.nodes:
+    #    p1 = node.attributes.position
+    #    normalized_symbol = symbol_lookup[normalize_symbol(node.id.str(True))]
+    #    for neighbor in node.siblings():
+    #        if node.id.value < neighbor:
+    #            continue
+    #        n = G.get_node(neighbor)
+    #        p2 = n.attributes.position
+    #        normalized_symbol2 = symbol_lookup[normalize_symbol(n.id.str(True))]
+    #        edges.append(
+    #            (normalized_symbol, normalized_symbol2, np.linalg.norm(p1 - p2))
+    #        )
+    for n1 in places_layer.nodes:
+        p1 = n1.attributes.position
+        normalized_symbol = symbol_lookup[normalize_symbol(n1.id.str(True))]
+        for n2 in places_layer.nodes:
+            if n1.id.value <= n2.id.value:
                 continue
-            n = G.get_node(neighbor)
-            p2 = n.attributes.position
-            normalized_symbol2 = symbol_lookup[normalize_symbol(n.id.str(True))]
-            edges.append(
-                (normalized_symbol, normalized_symbol2, np.linalg.norm(p1 - p2))
-            )
+            p2 = n2.attributes.position
+            d_l2 = np.linalg.norm(p1 - p2)
+            if d_l2 > 20:
+                continue
+
+            normalized_symbol2 = symbol_lookup[normalize_symbol(n2.id.str(True))]
+            edges.append((normalized_symbol, normalized_symbol2, d_l2))
 
     layer_planner = LayerPlanner(G, spark_dsg.DsgLayers.MESH_PLACES)
     # Connections between objects
@@ -107,24 +121,31 @@ def generate_dense_symbol_connectivity(G, symbols):
             normalized_symbol2 = symbol_lookup[normalize_symbol(n2.id.str(True))]
             edges.append((normalized_symbol, normalized_symbol2, d_geodesic))
 
+    object_place_distance = 10
+    # Connection between objects and places
     for n1 in G.get_layer(spark_dsg.DsgLayers.OBJECTS).nodes:
         p1 = n1.attributes.position
         normalized_symbol = symbol_lookup[normalize_symbol(n1.id.str(True))]
         for n2 in places_layer.nodes:
             p2 = n2.attributes.position
             d_l2 = np.linalg.norm(p1 - p2)
-            if d_l2 > object_edge_threshold:
+            if d_l2 > object_place_distance:
                 continue
 
             d_geodesic = layer_planner.get_external_distance(p1[:2], p2[:2])
-            if d_geodesic > object_edge_threshold:
+            if d_geodesic > object_place_distance:
                 continue
             normalized_symbol2 = symbol_lookup[normalize_symbol(n2.id.str(True))]
             edges.append((normalized_symbol, normalized_symbol2, d_geodesic))
 
+    # TODO:
+    # Connection between regions
+    # Connection between places and regions
+
     start_symbol = symbol_lookup["pstart"]
     start_position = start_symbol.position
 
+    # Connection between starting place and other symbols
     start_connection_threshold = 3
     for s in symbols:
         if s.symbol == "pstart":
@@ -142,6 +163,7 @@ def generate_object_containment(G):
         places_layer = G.get_layer(spark_dsg.DsgLayers.MESH_PLACES)
     except Exception:
         places_layer = G.get_layer(20)
+    places_layer = G.get_layer(spark_dsg.DsgLayers.ROOMS)  # TODO
 
     containments = []
 
@@ -157,7 +179,6 @@ def generate_object_containment(G):
             np.linalg.norm(centers - node.attributes.position, axis=1)
         )
         closest_place = symbols[closest_idx]
-        # (object-in-place ?o - dsg_object ?p - place)
         containments.append(
             ("object-in-place", normalize_symbol(node.id.str(True)), closest_place)
         )
@@ -283,10 +304,15 @@ def extract_all_symbols(G):
         places_layer = G.get_layer(spark_dsg.DsgLayers.MESH_PLACES)
     except Exception:
         places_layer = G.get_layer(20)
+    places_layer = G.get_layer(spark_dsg.DsgLayers.ROOMS)  # TODO
 
     place_symbols = []
     for node in places_layer.nodes:
         place_symbols.append(PddlSymbol(node.id.str(True), "place", []))
+
+    ## TODO: deal with rooms vs. regions
+    # for node in G.get_layer(spark_dsg.DsgLayers.ROOMS).nodes:
+    #    place_symbols.append(PddlSymbol(node.id.str(True), "place", []))
 
     object_symbols = []
     for node in G.get_layer(spark_dsg.DsgLayers.OBJECTS).nodes:
