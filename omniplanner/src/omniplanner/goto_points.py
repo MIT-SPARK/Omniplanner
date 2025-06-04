@@ -6,7 +6,7 @@ import numpy as np
 from plum import dispatch
 from spark_dsg import DynamicSceneGraph
 
-from omniplanner.omniplanner import PlanningDomain
+from omniplanner.omniplanner import PlanningDomain, RobotWrapper
 from omniplanner.utils import str_to_ns_value
 
 
@@ -49,7 +49,7 @@ def ground_problem(
     robot_states: dict,
     goal: GotoPointsGoal,
     feedback: Any = None,
-) -> GroundedGotoPointsProblem:
+) -> RobotWrapper[GroundedGotoPointsProblem]:
     start = robot_states[goal.robot_id]
 
     def get_loc(symbol):
@@ -59,12 +59,15 @@ def ground_problem(
         return node.attributes.position[:2]
 
     referenced_points = np.array([get_loc(symbol) for symbol in goal.goal_points])
-    return ground_problem(
-        domain,
-        referenced_points,
-        start,
-        [i for i in range(len(goal.goal_points))],
-        feedback,
+    return RobotWrapper(
+        goal.robot_id,
+        ground_problem(
+            domain,
+            referenced_points,
+            start,
+            [i for i in range(len(goal.goal_points))],
+            feedback,
+        ),
     )
 
 

@@ -1,5 +1,6 @@
 import numpy as np
 from robot_executor_interface.action_descriptions import ActionSequence, Follow
+from utils import build_test_dsg
 
 from omniplanner.goto_points import GotoPointsDomain, GotoPointsGoal
 from omniplanner.omniplanner import (
@@ -7,11 +8,9 @@ from omniplanner.omniplanner import (
     full_planning_pipeline,
 )
 
-from utils import build_test_dsg
-
 
 def compile_plan(plan, plan_id, robot_name, frame_id):
-    """ This function turns the output of the planner into a ROS message that is ingestible by a robot"""
+    """This function turns the output of the planner into a ROS message that is ingestible by a robot"""
     actions = []
     for p in plan.plan:
         xs = np.interp(np.linspace(0, 1, 10), [0, 1], [p.start[0], p.goal[0]])
@@ -44,9 +43,7 @@ points = np.array(
 
 
 req = PlanRequest(
-    domain=GotoPointsDomain(),
-    goal=[1, 2, 3, 4],
-    robot_states=np.array([0.0, 0.1])
+    domain=GotoPointsDomain(), goal=[1, 2, 3, 4], robot_states=np.array([0.0, 0.1])
 )
 plan = full_planning_pipeline(req, points)
 
@@ -64,9 +61,9 @@ print("== Goto Points Domain, with DSG ==")
 print("==================================")
 
 robot_poses = {"spot": np.array([0.0, 0.1])}
-goal = GotoPointsGoal(['o(0)', 'o(1)'], "spot")
+goal = GotoPointsGoal(["o(0)", "o(1)"], "spot")
 
-robot_states=robot_poses
+robot_states = robot_poses
 req = PlanRequest(domain=GotoPointsDomain(), goal=goal, robot_states=robot_states)
 
 G = build_test_dsg()
@@ -78,4 +75,3 @@ print(plan)
 compiled_plan = compile_plan(plan, "abc123", "spot", "a_coordinate_frame")
 print("compiled plan:")
 print(compiled_plan)
-

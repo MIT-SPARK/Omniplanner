@@ -1,23 +1,25 @@
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Iterable, List, Set, TypeVar, Union, overload
+
 from plum import dispatch, parametric
 
-from dataclasses import dataclass
-from collections.abc import Callable
-from typing import overload, TypeVar, Union, Iterable, List, Set
 
 class FunctorTrait:
     pass
 
+
 Functor = Union[FunctorTrait, Iterable]
+
 
 # This function will do type inferences properly for dataclass in plum,
 # but I don't think we actually need that functionality right now?
 def generic_inference(K):
-
     @classmethod
     def inference_function(self, *args):
         type_params = K.__type_params__
         field_types = [v.type for v in K.__dataclass_fields__.values()]
-       
+
         type_bindings = {}
         for arg, typ in zip(args, field_types):
             if issubclass(type(typ), TypeVar):
@@ -27,7 +29,9 @@ def generic_inference(K):
                     if issubclass(type_bindings[typ], type(arg)):
                         type_bindings[typ] = type(arg)
                     else:
-                        raise Exception(f"Incompatible concrete types ({type(arg)} vs {type_bindings[typ]}) for generic type {typ}")
+                        raise Exception(
+                            f"Incompatible concrete types ({type(arg)} vs {type_bindings[typ]}) for generic type {typ}"
+                        )
                 else:
                     type_bindings[typ] = type(arg)
 
@@ -38,11 +42,11 @@ def generic_inference(K):
             else:
                 raise Exception(f"No field supplied concrete type for {t}")
 
-
         return concrete_type
 
     setattr(K, "__infer_type_parameter__", inference_function)
     return K
+
 
 def dispatchable_parametric(f):
     return parametric(generic_inference(dataclass(f)))
@@ -51,20 +55,23 @@ def dispatchable_parametric(f):
 @overload
 @dispatch
 def fmap(fn: Callable, iterable: Iterable):
-    raise Exception(f"fmap not implemented for {type(iterable)}, but you can implement it!")
+    raise Exception(
+        f"fmap not implemented for {type(iterable)}, but you can implement it!"
+    )
+
 
 @overload
 @dispatch
 def fmap(fn: Callable, lst: List):
     return [fn(e) for e in lst]
 
+
 @dispatch
 def fmap(fn: Callable, s: Set):
     return set(fn(e) for e in s)
 
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
 
     @dispatchable_parametric
     class GenericTest1[T]:
@@ -89,5 +96,3 @@ if __name__ == '__main__':
     @dispatch
     def test(val):
         print("test with fallback type")
-
-

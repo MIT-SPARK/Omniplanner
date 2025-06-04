@@ -1,5 +1,5 @@
-import spark_dsg
 import numpy as np
+import spark_dsg
 
 
 def build_test_dsg():

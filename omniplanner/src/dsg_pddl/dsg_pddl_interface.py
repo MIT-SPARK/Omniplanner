@@ -10,6 +10,7 @@ import numpy as np
 import spark_dsg
 from plum import dispatch
 
+from omniplanner.omniplanner import RobotWrapper
 from omniplanner.tsp import LayerPlanner
 
 logger = logging.getLogger(__name__)
@@ -344,7 +345,7 @@ def ground_problem(
     robot_states: dict,
     goal: PddlGoal,
     feedback: Any = None,
-) -> GroundedPddlProblem:
+) -> RobotWrapper[GroundedPddlProblem]:
     logger.info(f"Grounding PDDL Problem {domain.domain_name}")
 
     start = robot_states[goal.robot_id][:2]
@@ -360,7 +361,9 @@ def ground_problem(
         )
 
     symbol_dict = {s.symbol: s for s in symbols}
-    return GroundedPddlProblem(domain, pddl_problem, symbol_dict)
+    return RobotWrapper(
+        goal.robot_id, GroundedPddlProblem(domain, pddl_problem, symbol_dict)
+    )
 
 
 @dispatch
