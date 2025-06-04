@@ -1,7 +1,8 @@
 import numpy as np
 from robot_executor_interface.action_descriptions import ActionSequence, Follow
+from utils import build_test_dsg
 
-from omniplanner.goto_points import GotoPointsDomain
+from omniplanner.goto_points import GotoPointsDomain, GotoPointsGoal
 from omniplanner.omniplanner import (
     PlanRequest,
     full_planning_pipeline,
@@ -9,6 +10,7 @@ from omniplanner.omniplanner import (
 
 
 def compile_plan(plan, plan_id, robot_name, frame_id):
+    """This function turns the output of the planner into a ROS message that is ingestible by a robot"""
     actions = []
     for p in plan.plan:
         xs = np.interp(np.linspace(0, 1, 10), [0, 1], [p.start[0], p.goal[0]])
@@ -19,6 +21,10 @@ def compile_plan(plan, plan_id, robot_name, frame_id):
     seq = ActionSequence(plan_id=plan_id, robot_name=robot_name, actions=actions)
     return seq
 
+
+print("================================")
+print("== Goto Points Domain, no DSG ==")
+print("================================")
 
 points = np.array(
     [
@@ -35,24 +41,33 @@ points = np.array(
     ]
 )
 
-# robot_poses = {"spot", self.get_spot_pose}
 
 req = PlanRequest(
-    domain=GotoPointsDomain(),
-    goal=[1, 2, 3, 4],
-    initial_state=np.array([0.0, 0.1]),
+    domain=GotoPointsDomain(), goal=[1, 2, 3, 4], robot_states=np.array([0.0, 0.1])
 )
 plan = full_planning_pipeline(req, points)
 
-#        goal = GotoPointsGoal(
-#            goal_points=msg.point_names_to_visit, robot_id=msg.robot_id
-#        )
-#        req = PlanRequest(
-#            domain=GotoPointsDomain(),
-#            goal=goal,
-#            robot_states=robot_poses,
-#        )
 
+print("Plan from planning domain:")
+print(plan)
+
+compiled_plan = compile_plan(plan, "abc123", "spot", "a_coordinate_frame")
+print("compiled plan:")
+print(compiled_plan)
+
+
+print("==================================")
+print("== Goto Points Domain, with DSG ==")
+print("==================================")
+
+robot_poses = {"spot": np.array([0.0, 0.1])}
+goal = GotoPointsGoal(["o(0)", "o(1)"], "spot")
+
+robot_states = robot_poses
+req = PlanRequest(domain=GotoPointsDomain(), goal=goal, robot_states=robot_states)
+
+G = build_test_dsg()
+plan = full_planning_pipeline(req, G)
 
 print("Plan from planning domain:")
 print(plan)

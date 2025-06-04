@@ -4,12 +4,13 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from functools import reduce, total_ordering
-from typing import Dict, List, Optional, overload
+from typing import Any, Dict, List, Optional, overload
 
 import numpy as np
 import spark_dsg
-from multipledispatch import dispatch
+from plum import dispatch
 
+from omniplanner.omniplanner import RobotWrapper
 from omniplanner.tsp import LayerPlanner
 
 logger = logging.getLogger(__name__)
@@ -337,10 +338,14 @@ class PddlPlan:
 
 
 @overload
-@dispatch(PddlDomain, object, dict, PddlGoal, object)
+@dispatch
 def ground_problem(
-    domain, dsg, robot_states, goal, feedback=None
-) -> GroundedPddlProblem:
+    domain: PddlDomain,
+    dsg: spark_dsg.DynamicSceneGraph,
+    robot_states: dict,
+    goal: PddlGoal,
+    feedback: Any = None,
+) -> RobotWrapper[GroundedPddlProblem]:
     logger.info(f"Grounding PDDL Problem {domain.domain_name}")
 
     start = robot_states[goal.robot_id][:2]
@@ -356,11 +361,13 @@ def ground_problem(
         )
 
     symbol_dict = {s.symbol: s for s in symbols}
-    return GroundedPddlProblem(domain, pddl_problem, symbol_dict)
+    return RobotWrapper(
+        goal.robot_id, GroundedPddlProblem(domain, pddl_problem, symbol_dict)
+    )
 
 
-@dispatch(GroundedPddlProblem, object)
-def make_plan(grounded_problem, map_context) -> PddlPlan:
+@dispatch
+def make_plan(grounded_problem: GroundedPddlProblem, map_context: Any) -> PddlPlan:
     plan = []
 
     with tempfile.TemporaryDirectory() as tmpdirname:

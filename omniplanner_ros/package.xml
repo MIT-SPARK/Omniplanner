@@ -8,7 +8,6 @@
   <license>TODO: License declaration</license>
 
   <depend>omniplanner_msgs</depend>
-  <depend>python3-multipledispatch</depend>
   <depend>python3-parse</depend>
 
   <export>
