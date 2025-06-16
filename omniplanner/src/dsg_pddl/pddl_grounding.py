@@ -70,7 +70,7 @@ class PddlProblem:
                     line = " ".join(objects) + "\n"
                 else:
                     line = " ".join(objects) + f" - {typ}\n"
-            object_pddl += line
+                object_pddl += line
         object_pddl += ")"
 
         return object_pddl
