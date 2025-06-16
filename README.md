@@ -13,7 +13,7 @@ constraints may lead us to used LTL or STL, some problems reduce to
 special-purpose solvers like a TSP, if there is state or observation
 uncertainty we may need to consider POMDP formulations. Each of these problem
 types has a large research community surrounding it, and there are many solvers
-to choose from. 
+to choose from.
 
 It is claimed that these problems are hard, but existing solvers do well enough
 on instances that arise in practice. However, when we take a real robot and try
@@ -21,13 +21,13 @@ to solve a real user's task, we run into difficulties that are orthogonal to
 the hardness considered *within* each of these domains:
 
 *  How do we ground the user's instructions to symbols that the robot has (or
-   has not) perceived? 
+   has not) perceived?
 
 * How do we decide which kind of problem formulation best captures the desired
   task?
 
 * What is the relationship between the output of a planner and the API call we
-  make to get a robot moving? 
+  make to get a robot moving?
 
 * How do we connect the perception system, planner implementation, and
   downstream robot execution into a production-ready pipeline that supports
@@ -96,7 +96,7 @@ Note that you do not necessarily need to implement the full grounding and
 planning pipeline for a new plugin. You can leverage existing plugins. For
 example, if you want to add a new method for grounding user commands and scene
 representations to PDDL, you can implement `ground_problem`, but let an
-existing PDDL solver plugin solve the actual problem. 
+existing PDDL solver plugin solve the actual problem.
 
 ### Half of what I say is meaningless
 
@@ -177,7 +177,7 @@ that takes in a function that operates on type `a` and returns type `b`. `fmap`
 will return a new function that operates on type `F a` and returns type `F b`.
 This is the mostly useful way of *thinking* about `fmap`. However, the normal
 way that we use `fmap` is as a function that takes two arguments, a function
-and an instance of the functor `F a`, and returns `F b`. 
+and an instance of the functor `F a`, and returns `F b`.
 
 ### The Solution
 We can get a lot of flexibility in the Omniplanner pipeline by adding a little
@@ -189,7 +189,7 @@ because it means that we can have an arbitrarily complicated container class
 we pass to the planning pipeline, and the pipeline will solve the problem even
 though it doesn't know anything about the structure of this class. The only
 requirement is that the creator of this complicated container class defined
-`fmap`. 
+`fmap`.
 
 ### Our Implementation
 
@@ -213,6 +213,60 @@ which wraps a value with a robot name. The builtin `list` type also gets picked
 up and [treated as a
 functor](https://github.com/MIT-SPARK/Omniplanner/blob/3353262d0e8cadab0528a6a1861c3e246076df5e/omniplanner/src/omniplanner/functor.py#L65).
 
+### Multi-robot Support
+
+Omniplanner supports multi-robot planning. We aim to support assignment of
+goals to robots either as part of the initial goal that is sent to Omniplanner,
+during the problem grounding process, or during the planning process. For
+simple problems or single-robot shakeouts, it is very useful to directly
+command a given robot with a goal. Other times, multiple robots are involved
+but the multi-robot problem goal is trivially separable (e.g., by an LLM), and
+the goal can be divided between the robots during the initial grounding phase.
+If the problem is truly a difficult multi-robot coordination problem, then
+the input to `make_plan` may be a grounded multi-robot problem and only at
+the output of `make_plan` are we able to separate responsibility between
+robots.
+
+There are three firm requirements to get multi-robot planning working:
+
+* Robots need to be listed in the Omniplanner config file (see below)
+* The robot<-> map transform between the frames given in the config needs to exist.
+* The output of `make_plan` needs to be a [RobotWrapper](https://github.com/MIT-SPARK/Omniplanner/blob/3353262d0e8cadab0528a6a1861c3e246076df5e/omniplanner/src/omniplanner/omniplanner.py#L59),
+  and the associated robot name is used to send the plan to the right place
+
+
+### Example Configuration
+
+The following is an example configuration file for Omniplanner to load.
+A new element in the `robots` list needs to be added for each additional
+robot. Each item in the `planners` list defines an Omniplanner ROS plugin.
+
+```yaml
+robots:
+  - robot_name: euclid
+    robot_type: spot
+    fixed_frame: map
+    body_frame: euclid/body
+  - robot_name: hamilton
+    robot_type: spot
+    fixed_frame: map
+    body_frame: hamilton/body
+planners:
+  language_planner:
+    plugin:
+      type: LanguagePlanner
+      domain_type: Pddl
+      pddl_domain_name: GotoObjectDomain
+      llm_config: ${ADT4_DLS_PKG}/config/${config}/llm_config.yaml
+  tsp_planner:
+    plugin:
+      type: Tsp
+      solver: 2opt
+  region_rearrange_objects_pddl:
+    plugin:
+      type: Pddl
+      domain_name: RegionObjectRearrangementDomain
+```
 
 ## Notes
 
@@ -230,7 +284,7 @@ touching the omniplanner node.
 Omniplanner is inherently experimental in nature, but it seems to work pretty
 well for now. We intend to keep the interface reasonably stable, but currently
 there are no API stability guarantees. If you use Omniplanner, please let us
-know, and we will try slightly harder to not break comptability. 
+know, and we will try slightly harder to not break comptability.
 
 There are two directional choices to note -- we currently only care about Hydra
 3D scene graphs as the world model for kicking off the grounding/planning
@@ -246,7 +300,7 @@ methods, but currently it is difficult to statically understand what the
 sequence of grounding/planning calls will be for a given problem. It is
 probably possible to statically analyze the possible flow of calls to different
 planning/grounding functions, but it would require some rather tight
-integration with Mypy and probably the Python AST. 
+integration with Mypy and probably the Python AST.
 
 Finally, Omniplanner has been built with reasonably low-rate planning in mind
 (on the order of 10 seconds per plan). There is no specific obstacle to
