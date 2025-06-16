@@ -73,26 +73,58 @@ def compile_plan(plan: PddlPlan, plan_id, robot_name, frame_id):
     return seq
 
 
-print("================================")
-print("==   PDDL Domain              ==")
-print("================================")
-print("")
-
+# G = build_test_dsg()
 # goal = PddlGoal(robot_id="euclid", pddl_goal="(and (visited-object o0) (visited-object o1))")
 # goal = PddlGoal(robot_id="euclid", pddl_goal="(object-in-place o1 p0)")
-
-# goal = PddlGoal(robot_id="euclid", pddl_goal="(or (visited-place r116) (and (visited-place r69) (visited-place r83)))")
-# goal = PddlGoal(robot_id="euclid", pddl_goal="(object-in-place o94 r5)")
-goal = PddlGoal(robot_id="euclid", pddl_goal="(visited-poi o61)")
-
-# (object-in-place o0 p0)
-# (object-in-place o1 p1) )
-
+G = spark_dsg.DynamicSceneGraph.load(
+    "/home/ubuntu/lxc_datashare/west_point_fused_map_wregions.json"
+)
 
 robot_poses = {"euclid": np.array([0.0, 0.1])}
 
+print("================================")
+print("==   PDDL Domain (Simple)     ==")
+print("================================")
+print("")
+
+# TODO: Currently the simple domain has no notion of regions. I intend to add regions here,
+# but in a simple way that doesn't reflect the fact that a place is "in" a region.
+goal = PddlGoal(
+    robot_id="euclid", pddl_goal="(and (visited-place p1042) (visited-object o94))"
+)
+
 # Load the PDDL domain you want to use
-# with as_file(files(dsg_pddl.domains).joinpath("GotoObjectDomain.pddl")) as path:
+with as_file(files(dsg_pddl.domains).joinpath("GotoObjectDomain.pddl")) as path:
+    print(f"Loading domain {path}")
+    with open(str(path), "r") as fo:
+        domain = PddlDomain(fo.read())
+
+
+# Build the plan request
+req = PlanRequest(
+    domain=domain,
+    goal=goal,
+    robot_states=robot_poses,
+)
+
+
+plan = full_planning_pipeline(req, G)
+
+print("Plan from planning domain:")
+print(plan)
+
+compiled_plan = compile_plan(plan.value, "abc123", plan.name, "a_coordinate_frame")
+print("compiled plan:")
+print(compiled_plan)
+
+
+print("================================")
+print("==   PDDL Domain (Pick/Place) ==")
+print("================================")
+print("")
+goal = PddlGoal(robot_id="euclid", pddl_goal="(and (object-in-place o94 p2157))")
+
+# Load the PDDL domain you want to use
 with as_file(
     files(dsg_pddl.domains).joinpath("ObjectRearrangementDomain.pddl")
 ) as path:
@@ -109,17 +141,50 @@ req = PlanRequest(
 )
 
 
-# G = build_test_dsg()
-
-G = spark_dsg.DynamicSceneGraph.load(
-    "/home/ubuntu/lxc_datashare/west_point_fused_map_wregions.json"
-)
-
 plan = full_planning_pipeline(req, G)
 
 print("Plan from planning domain:")
 print(plan)
 
+compiled_plan = compile_plan(plan.value, "abc123", plan.name, "a_coordinate_frame")
+print("compiled plan:")
+print(compiled_plan)
+
+print("================================")
+print("==   PDDL Domain (Regions)    ==")
+print("================================")
+print("")
+
+
+# goal = PddlGoal(robot_id="euclid", pddl_goal="(or (visited-place r116) (and (visited-place r69) (visited-place r83)))")
+# goal = PddlGoal(robot_id="euclid", pddl_goal="(object-in-place o94 r5)")
+# goal = PddlGoal(robot_id="euclid", pddl_goal="(visited-poi o61)")
+goal = PddlGoal(
+    robot_id="euclid",
+    pddl_goal="(and (visited-region r70) (at-place p1042) (object-in-place o94 p2157))",
+)
+
+# Load the PDDL domain you want to use
+with as_file(
+    files(dsg_pddl.domains).joinpath("RegionObjectRearrangementDomain.pddl")
+) as path:
+    print(f"Loading domain {path}")
+    with open(str(path), "r") as fo:
+        domain = PddlDomain(fo.read())
+
+
+# Build the plan request
+req = PlanRequest(
+    domain=domain,
+    goal=goal,
+    robot_states=robot_poses,
+)
+
+
+plan = full_planning_pipeline(req, G)
+
+print("Plan from planning domain:")
+print(plan)
 
 compiled_plan = compile_plan(plan.value, "abc123", plan.name, "a_coordinate_frame")
 print("compiled plan:")
