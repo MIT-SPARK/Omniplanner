@@ -48,3 +48,18 @@ def ast_to_string(ast):
             return f"({elements_str})"
         case _:
             return str(ast)
+
+
+# PDDL is case-insensitive, but spark_dsg is case sensitive.
+# Here to convert back and forth, but this is *extremely* brittle.
+def pddl_char_to_dsg_char(c):
+    match c:
+        case "r":
+            return "R"
+        case "o":
+            return "O"
+        case "p":
+            # NOTE: this means we can only ground to 2d places, not 3d places
+            return "P"
+        case _:
+            return c

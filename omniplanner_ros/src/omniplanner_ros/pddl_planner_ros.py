@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass
 from importlib.resources import as_file, files
+from typing import overload
 
 import dsg_pddl.domains
 import numpy as np
 import spark_config as sc
 from dsg_pddl.dsg_pddl_planning import PddlPlan
 from dsg_pddl.pddl_grounding import PddlDomain, PddlGoal
-from omniplanner.omniplanner import PlanRequest, compile_plan
+from omniplanner.omniplanner import PlanRequest, SymbolicContext
 from omniplanner_msgs.msg import PddlGoalMsg
+from plum import dispatch
 from robot_executor_interface.action_descriptions import (
     ActionSequence,
     Follow,
@@ -32,8 +35,24 @@ def ensure_3d(pt):
     return pt
 
 
-@compile_plan.register
-def compile_plan(plan: PddlPlan, plan_id, robot_name, frame_id):
+@overload
+@dispatch
+def compile_plan(adaptor, plan: PddlPlan):
+    return compile_plan(adaptor, SymbolicContext({}, plan))
+
+
+# TODO: if we wanted to compile a pddl plan to a different target (e.g. Phoenix macroactions), we would dispatch
+# on the type of `adaptor`
+@dispatch
+def compile_plan(adaptor, p: SymbolicContext[PddlPlan]):
+    return compile_pddl_plan(p, str(uuid.uuid4()), adaptor.name, adaptor.parent_frame)
+
+
+def compile_pddl_plan(
+    contextualized_plan: SymbolicContext[PddlPlan], plan_id, robot_name, frame_id
+):
+    plan = contextualized_plan.value
+    context = contextualized_plan.context
     actions = []
     for symbolic_action, parameters in zip(
         plan.symbolic_actions, plan.parameterized_actions
@@ -53,10 +72,15 @@ def compile_plan(plan: PddlPlan, plan_id, robot_name, frame_id):
                 )
             case "pick-object":
                 robot_point, pick_point = parameters
+                object_class = ""
+                if symbolic_action[1] in context:
+                    attrs = context[symbolic_action[1]]
+                    if "semantic_label" in attrs:
+                        object_class = attrs["semantic_label"]
                 actions.append(
                     Pick(
                         frame=frame_id,
-                        object_class="",
+                        object_class=object_class,
                         robot_point=ensure_3d(robot_point),
                         object_point=ensure_3d(pick_point),
                     )
@@ -66,7 +90,7 @@ def compile_plan(plan: PddlPlan, plan_id, robot_name, frame_id):
                 actions.append(
                     Place(
                         frame=frame_id,
-                        object_class="",
+                        object_class=object_class,
                         robot_point=ensure_3d(robot_point),
                         object_point=ensure_3d(place_point),
                     )

@@ -1,22 +1,28 @@
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 
 import spark_config as sc
-from omniplanner.omniplanner import PlanRequest, compile_plan
+from omniplanner.omniplanner import PlanRequest
 from omniplanner.tsp import FollowPathPlan, TspDomain, TspGoal
 from omniplanner_msgs.msg import GotoPointsGoalMsg
+from plum import dispatch
 from robot_executor_interface.action_descriptions import ActionSequence, Follow
 
 
-@compile_plan.register
-def compile_plan(plan: FollowPathPlan, plan_id, robot_name, frame_id):
+def compile_path_plan(plan: FollowPathPlan, plan_id, robot_name, frame_id):
     actions = []
-    for p in plan:
+    for p in plan.steps:
         actions.append(Follow(frame=frame_id, path2d=p.path))
 
     seq = ActionSequence(plan_id=plan_id, robot_name=robot_name, actions=actions)
     return seq
+
+
+@dispatch
+def compile_plan(adaptor, p: FollowPathPlan):
+    return compile_path_plan(p, str(uuid.uuid4()), adaptor.name, adaptor.parent_frame)
 
 
 class TspRos:

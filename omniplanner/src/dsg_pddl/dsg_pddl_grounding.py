@@ -12,7 +12,7 @@ from dsg_pddl.pddl_grounding import (
     PddlProblem,
     PddlSymbol,
 )
-from dsg_pddl.pddl_utils import extract_facts, lisp_string_to_ast
+from dsg_pddl.pddl_utils import extract_facts, lisp_string_to_ast, pddl_char_to_dsg_char
 from omniplanner.omniplanner import RobotWrapper
 from omniplanner.tsp import LayerPlanner
 
@@ -321,21 +321,6 @@ def extract_symbols_of_interest(G, pddl_goal):
 
 def simplify(pddl):
     return pddl
-
-
-# PDDL is case-insensitive, but spark_dsg is case sensitive.
-# Here to convert back and forth, but this is *extremely* brittle.
-def pddl_char_to_dsg_char(c):
-    match c:
-        case "r":
-            return "R"
-        case "o":
-            return "O"
-        case "p":
-            # NOTE: this means we can only ground to 2d places, not 3d places
-            return "P"
-        case _:
-            return c
 
 
 def add_symbol_positions(G, symbols):
