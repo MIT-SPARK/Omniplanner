@@ -104,12 +104,10 @@ def two_opt(route, cost_mat):
                 if j - i == 1:
                     continue
                 delta = cost_change(best[i - 1], best[i], best[j - 1], best[j])
-                logger.warning(f"Delta: {delta}")
                 if delta < -0.0001:
                     best[i:j] = best[j - 1 : i - 1 : -1]
                     improved = True
         route = best
-        logger.warning(f"Best: {best}")
     return best
 
 
@@ -168,7 +166,6 @@ def ground_problem(
     referenced_points = np.vstack([start, referenced_points])
 
     layer_planner = LayerPlanner(dsg, spark_dsg.DsgLayers.MESH_PLACES)
-    logger.warning("Made layer planner")
 
     # Compute pairwise distance matrix based on places
     n = len(referenced_points)
@@ -180,7 +177,6 @@ def ground_problem(
                 referenced_points[ix], referenced_points[jx]
             )
     distance_matrix += distance_matrix.T
-    logger.warning("Computed distance matrix")
 
     return RobotWrapper(
         goal.robot_id,
@@ -191,7 +187,6 @@ def ground_problem(
 @dispatch
 def make_plan(grounded_problem: GroundedTspProblem, map_context: Any) -> FollowPathPlan:
     logger.warning("Making TSP Plan")
-    logger.info(f"goal points: {grounded_problem.goal_points}")
 
     match grounded_problem.solver:
         case "2opt":
@@ -202,14 +197,12 @@ def make_plan(grounded_problem: GroundedTspProblem, map_context: Any) -> FollowP
                 f"Requested TSP Solver not implemented: {grounded_problem.solver})"
             )
 
-    logger.warning(f"tsp order: {tsp_order}")
     tsp_points = grounded_problem.goal_points[tsp_order]
 
     plan = FollowPathPlan([])
 
     layer_planner = LayerPlanner(map_context, spark_dsg.DsgLayers.MESH_PLACES)
     for idx in range(len(tsp_points) - 1):
-        logger.warning(f"Computed external path {idx}")
         path = layer_planner.get_external_path(tsp_points[idx], tsp_points[idx + 1])
         p = FollowPathPrimitive(path)
         plan.steps.append(p)

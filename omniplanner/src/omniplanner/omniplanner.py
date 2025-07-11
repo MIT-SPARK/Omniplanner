@@ -110,7 +110,6 @@ def string_as_nodesymbol(string):
 
 
 @dispatchable_parametric
-# class SymbolicContext[T](FunctorTrait):
 class SymbolicContext[T](Wrapper):
     context: dict
     value: T
@@ -187,28 +186,6 @@ class DsgContextProvider(dict):
         return self.dsg.find_node(ns) is not None
 
 
-def collect_plans(plans) -> dict:
-    """Currently assumes plans is either a RobotWrapper or a list of RobotWrappers."""
-    robot_to_plan = {}
-    match plans:
-        case list() | set():
-            for p in plans:
-                if p.name not in robot_to_plan:
-                    robot_to_plan[p.name] = p.value
-                else:
-                    raise Exception(
-                        f"Received duplicate plans for robot {p.name}: {p.value} vs. {robot_to_plan[p.name]}"
-                    )
-        case RobotWrapper():
-            robot_to_plan[plans.name] = plans.value
-        case FunctorTrait():
-            robot_to_plan = fmap(collect_plans, plans)
-        case _:
-            raise Exception(f"Unsure how to process plans of type: {type(plans)}")
-
-    return robot_to_plan
-
-
 class DispatchException(Exception):
     def __init__(self, function_name, *objects):
         arg_type_string = ", ".join(map(lambda x: x.__name__, map(type, objects)))
@@ -256,10 +233,3 @@ def full_planning_pipeline(plan_request: PlanRequest, map_context: Any, feedback
     plan = make_plan(contextualized_problem, map_context)
     logger.debug(f"Made plan {plan}")
     return plan
-
-
-# TODO: probably want sort of "identity" fallback for compile_plan, so that we
-# can test the compile_plan pipeline without the ROS-specific targeting?
-# @dispatch
-# def compile_plan(plan, plan_id, robot_name, frame_id):
-#    raise NotImplementedError(f"No `compile_plan` implementation for {type(plan)}")
