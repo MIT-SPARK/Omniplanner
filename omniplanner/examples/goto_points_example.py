@@ -1,6 +1,4 @@
 import numpy as np
-
-# from robot_executor_interface.action_descriptions import ActionSequence, Follow
 from utils import DummyRobotPlanningAdaptor, build_test_dsg
 
 from omniplanner.goto_points import GotoPointsDomain, GotoPointsGoal
