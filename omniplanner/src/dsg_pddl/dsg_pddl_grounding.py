@@ -261,6 +261,9 @@ def generate_place_containment(G):
         place_centers.append(node.attributes.position)
         place_nodes.append(node)
     place_centers = np.array(place_centers)
+    if len(place_centers) == 0:
+        # there are no 3d places, so we don't need to worry about place/region containment
+        return []
 
     for node in places_layer_2d.nodes:
         closest_idx = np.argmin(
