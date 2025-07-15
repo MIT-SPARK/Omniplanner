@@ -1,5 +1,15 @@
+from dataclasses import dataclass
+
 import numpy as np
 import spark_dsg
+
+
+@dataclass
+class DummyRobotPlanningAdaptor:
+    name: str
+    robot_type: str
+    parent_frame: str
+    child_frame: str
 
 
 def build_test_dsg():

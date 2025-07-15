@@ -1,26 +1,14 @@
 import numpy as np
-from robot_executor_interface.action_descriptions import ActionSequence, Follow
-from utils import build_test_dsg
+
+# from robot_executor_interface.action_descriptions import ActionSequence, Follow
+from utils import DummyRobotPlanningAdaptor, build_test_dsg
 
 from omniplanner.goto_points import GotoPointsDomain, GotoPointsGoal
 from omniplanner.omniplanner import (
     PlanRequest,
     full_planning_pipeline,
 )
-
-
-def compile_plan(plan, plan_id, robot_name, frame_id):
-    """This function turns the output of the planner into a ROS message that is ingestible by a robot"""
-    actions = []
-    for p in plan.plan:
-        xs = np.interp(np.linspace(0, 1, 10), [0, 1], [p.start[0], p.goal[0]])
-        ys = np.interp(np.linspace(0, 1, 10), [0, 1], [p.start[1], p.goal[1]])
-        p_interp = np.vstack([xs, ys])
-        actions.append(Follow(frame=frame_id, path2d=p_interp.T))
-
-    seq = ActionSequence(plan_id=plan_id, robot_name=robot_name, actions=actions)
-    return seq
-
+from omniplanner_ros.goto_points_ros import compile_plan
 
 print("================================")
 print("== Goto Points Domain, no DSG ==")
@@ -51,7 +39,9 @@ plan = full_planning_pipeline(req, points)
 print("Plan from planning domain:")
 print(plan)
 
-compiled_plan = compile_plan(plan, "abc123", "spot", "a_coordinate_frame")
+adaptor = DummyRobotPlanningAdaptor("spot", "spot", "map", "body")
+
+compiled_plan = compile_plan(adaptor, plan)
 print("compiled plan:")
 print(compiled_plan)
 
@@ -61,7 +51,7 @@ print("== Goto Points Domain, with DSG ==")
 print("==================================")
 
 robot_poses = {"spot": np.array([0.0, 0.1])}
-goal = GotoPointsGoal(["o(0)", "o(1)"], "spot")
+goal = GotoPointsGoal(["O(0)", "O(1)"], "spot")
 
 robot_states = robot_poses
 req = PlanRequest(domain=GotoPointsDomain(), goal=goal, robot_states=robot_states)
@@ -72,6 +62,6 @@ plan = full_planning_pipeline(req, G)
 print("Plan from planning domain:")
 print(plan)
 
-compiled_plan = compile_plan(plan, "abc123", "spot", "a_coordinate_frame")
+compiled_plan = compile_plan(adaptor, plan)
 print("compiled plan:")
 print(compiled_plan)

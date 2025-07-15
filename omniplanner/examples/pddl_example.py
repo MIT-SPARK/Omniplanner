@@ -1,5 +1,4 @@
 import logging
-from dataclasses import dataclass
 from importlib.resources import as_file, files
 
 import dsg_pddl.domains
@@ -7,8 +6,10 @@ import numpy as np
 import spark_dsg
 from dsg_pddl.pddl_grounding import PddlDomain, PddlGoal
 from ruamel.yaml import YAML
+from utils import DummyRobotPlanningAdaptor
 
-from omniplanner.omniplanner import PlanRequest, collect_plans, full_planning_pipeline
+from omniplanner.compile_plan import collect_plans
+from omniplanner.omniplanner import PlanRequest, full_planning_pipeline
 from omniplanner_ros.pddl_planner_ros import compile_plan
 
 logging.basicConfig()
@@ -23,14 +24,6 @@ yaml = YAML(typ="safe")
 G = spark_dsg.DynamicSceneGraph.load(
     "/home/ubuntu/lxc_datashare/west_point_fused_map_wregions_labelspace.json"
 )
-
-
-@dataclass
-class DummyRobotPlanningAdaptor:
-    name: str
-    robot_type: str
-    parent_frame: str
-    child_frame: str
 
 
 adaptor = DummyRobotPlanningAdaptor("euclid", "spot", "map", "body")

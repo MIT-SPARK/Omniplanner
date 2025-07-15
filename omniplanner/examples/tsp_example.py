@@ -1,33 +1,26 @@
 import logging
 
 import numpy as np
-from robot_executor_interface.action_descriptions import ActionSequence, Follow
-from utils import build_test_dsg
+from utils import DummyRobotPlanningAdaptor, build_test_dsg
 
 from omniplanner.omniplanner import (
     PlanRequest,
     full_planning_pipeline,
 )
-from omniplanner.tsp import FollowPathPlan, TspDomain, TspGoal
+from omniplanner.tsp import TspDomain, TspGoal
+from omniplanner_ros.goto_points_ros import compile_plan
 
 logging.basicConfig()
 logging.getLogger().setLevel(logging.DEBUG)
 
-
-def compile_plan(plan: FollowPathPlan, plan_id, robot_name, frame_id):
-    actions = []
-    for p in plan:
-        actions.append(Follow(frame=frame_id, path2d=p.path))
-    seq = ActionSequence(plan_id=plan_id, robot_name=robot_name, actions=actions)
-    return seq
-
+adaptor = DummyRobotPlanningAdaptor("euclid", "spot", "map", "body")
 
 print("==========================")
 print("== TSP Domain           ==")
 print("==========================")
 print("")
 
-goal = TspGoal(goal_points=["o(0)", "o(1)"], robot_id="spot")
+goal = TspGoal(goal_points=["O(0)", "O(1)"], robot_id="spot")
 
 robot_domain = TspDomain(solver="2opt")
 
@@ -45,8 +38,6 @@ robot_plan = full_planning_pipeline(req, G)
 print("Plan from planning domain:")
 print(robot_plan)
 
-compiled_plan = compile_plan(
-    robot_plan.value, "abc123", robot_plan.name, "a_coordinate_frame"
-)
+compiled_plan = compile_plan(adaptor, robot_plan)
 print("compiled plan:")
 print(compiled_plan)

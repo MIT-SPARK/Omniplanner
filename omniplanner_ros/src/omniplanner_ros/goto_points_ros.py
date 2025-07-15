@@ -4,6 +4,7 @@ import uuid
 from dataclasses import dataclass
 
 import numpy as np
+import omniplanner.compile_plan  # NOQA
 import spark_config as sc
 from omniplanner.goto_points import GotoPointsDomain, GotoPointsGoal, GotoPointsPlan
 from omniplanner.omniplanner import PlanRequest

@@ -25,7 +25,9 @@ def compile_plan(adaptors, p: SymbolicContext[List[Any]]) -> List[RobotWrapper[A
 
 @overload
 @dispatch
-def compile_plan(adaptors, p: SymbolicContext[RobotWrapper[Any]]) -> RobotWrapper[Any]:
+def compile_plan(
+    adaptors: dict, p: SymbolicContext[RobotWrapper[Any]]
+) -> RobotWrapper[Any]:
     logger.warning(f"SymbolicContext[RobotWrapper[Any]] with: {type(p)}")
     robot_symbolic = push(p)
     adaptor = adaptors[robot_symbolic.name]

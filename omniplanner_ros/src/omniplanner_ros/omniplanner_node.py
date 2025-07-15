@@ -10,8 +10,8 @@ import rclpy.duration
 import tf2_ros
 import tf_transformations
 from hydra_ros import DsgSubscriber
-from omniplanner.compile_plan import compile_plan
-from omniplanner.omniplanner import collect_plans, full_planning_pipeline
+from omniplanner.compile_plan import collect_plans, compile_plan
+from omniplanner.omniplanner import full_planning_pipeline
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
