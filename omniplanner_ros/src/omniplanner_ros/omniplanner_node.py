@@ -1,7 +1,6 @@
 import logging
 import threading
 import time
-import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
@@ -11,7 +10,8 @@ import rclpy.duration
 import tf2_ros
 import tf_transformations
 from hydra_ros import DsgSubscriber
-from omniplanner.omniplanner import compile_plan, full_planning_pipeline
+from omniplanner.compile_plan import collect_plans, compile_plan
+from omniplanner.omniplanner import full_planning_pipeline
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -155,35 +155,6 @@ class RobotPlanningAdaptor:
         self.plan_pub.publish(plan)
 
 
-def collect_plans(plans) -> dict:
-    """Currently assumes plans is either a RobotWrapper or a list of RobotWrappers."""
-    robot_to_plan = {}
-    if isinstance(plans, list):
-        for p in plans:
-            if p.name not in robot_to_plan:
-                robot_to_plan[p.name] = p.value
-            else:
-                raise Exception(
-                    f"Received duplicate plans for robot {p.name}: {p.value} vs. {robot_to_plan[p.name]}"
-                )
-    else:
-        robot_to_plan[plans.name] = plans.value
-
-    return robot_to_plan
-
-
-# NOTE: What's the best way to deal with multiple robots / robot discovery?
-# Probably tie into the general robot discovery mechanism we were thinking
-# about for multi-robot SLAM. Listen for messages broadcast from each robot on
-# shared "bus" topic that identifies the robot id and its transform names. In
-# this node, we can store a mapping from "robot type" to supported planners (I
-# guess, each plugin specifies what robots it can run on). For each robot that
-# appears, we create a publisher that can publish compiled plans.  If there are
-# multiple robots, goal messages may need to specify which robot they are for.
-# Some, such as NaturalLanguage, don't need to specify which robot they are for
-# because the robot allocation is explicitly part of the planning process.
-
-
 class OmniPlannerRos(Node):
     def __init__(self):
         super().__init__("omniplanner_ros")
@@ -208,10 +179,6 @@ class OmniPlannerRos(Node):
         self.dsg_lock = threading.Lock()
         DsgSubscriber(self, "~/dsg_in", self.dsg_callback)
 
-        # TODO: need to generalize this cross robots.
-        # When we discover a new robot, we should create a new
-        # publisher based on the information that the robot provides.
-        # Then we can look up the relevant publisher in the {name: publishers} map
         latching_qos = QoSProfile(
             depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL
         )
@@ -331,18 +298,12 @@ class OmniPlannerRos(Node):
                     plan_request, self.dsg_last, self.feedback
                 )
 
-            robot_to_plan = collect_plans(plans)
-
-            for robot_name, robot_plan in robot_to_plan.items():
-                robot_adaptor = self.robot_adaptors[robot_name]
-                command_frame = robot_adaptor.parent_frame
-                if self.plan_vocalizer is not None:
-                    self.plan_vocalizer.vocalize(robot_name, plan_to_string(robot_plan))
-                compiled_plan = compile_plan(
-                    robot_plan, str(uuid.uuid4()), robot_name, command_frame
-                )
-                robot_adaptor.publish_plan(to_msg(compiled_plan))
-
+            compiled_plans = compile_plan(self.robot_adaptors, plans)
+            plan_dict = collect_plans(compiled_plans)
+            for robot_name, compiled_plan in plan_dict.items():
+                self.robot_adaptors[robot_name].publish_plan(to_msg(compiled_plan))
+                # TODO: combine markers into single array so that latching works
+                # correctly for multi-robot plans?
                 self.compiled_plan_viz_pub.publish(
                     to_viz_msg(compiled_plan, robot_name)
                 )

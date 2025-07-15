@@ -36,11 +36,8 @@ def ground_problem(
             goal_points=goal.command.split(" "), robot_id=goal.robot_id
         )
         problem_type = GotoPointsDomain()
-        return RobotWrapper(
-            goal.robot_id,
-            ground_problem(
-                problem_type, dsg, robot_states, language_grounded_goal, feedback
-            ),
+        return ground_problem(
+            problem_type, dsg, robot_states, language_grounded_goal, feedback
         )
     elif domain.domain_type == "Pddl":
         # Query the LLM & Parse the response
