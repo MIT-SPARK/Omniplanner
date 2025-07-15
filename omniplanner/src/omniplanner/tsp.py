@@ -103,7 +103,8 @@ def two_opt(route, cost_mat):
             for j in range(i + 1, len(route)):
                 if j - i == 1:
                     continue
-                if cost_change(best[i - 1], best[i], best[j - 1], best[j]) < 0:
+                delta = cost_change(best[i - 1], best[i], best[j - 1], best[j])
+                if delta < -0.0001:
                     best[i:j] = best[j - 1 : i - 1 : -1]
                     improved = True
         route = best
@@ -122,8 +123,9 @@ class FollowPathPrimitive:
     path: np.ndarray
 
 
-class FollowPathPlan(list):
-    pass
+@dataclass
+class FollowPathPlan:
+    steps: list
 
 
 @dataclass
@@ -184,26 +186,25 @@ def ground_problem(
 
 @dispatch
 def make_plan(grounded_problem: GroundedTspProblem, map_context: Any) -> FollowPathPlan:
-    logger.info("Making TSP Plan")
-    logger.info(f"goal points: {grounded_problem.goal_points}")
+    logger.warning("Making TSP Plan")
 
     match grounded_problem.solver:
         case "2opt":
+            logger.warning("Solving with 2opt")
             tsp_order = solve_tsp_2opt(grounded_problem.distances)
         case _:
             raise NotImplementedError(
                 f"Requested TSP Solver not implemented: {grounded_problem.solver})"
             )
 
-    logger.info(f"tsp order: {tsp_order}")
     tsp_points = grounded_problem.goal_points[tsp_order]
 
-    plan = FollowPathPlan()
+    plan = FollowPathPlan([])
 
     layer_planner = LayerPlanner(map_context, spark_dsg.DsgLayers.MESH_PLACES)
     for idx in range(len(tsp_points) - 1):
         path = layer_planner.get_external_path(tsp_points[idx], tsp_points[idx + 1])
         p = FollowPathPrimitive(path)
-        plan.append(p)
+        plan.steps.append(p)
 
     return plan

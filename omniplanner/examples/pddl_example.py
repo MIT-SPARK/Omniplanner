@@ -4,21 +4,13 @@ from importlib.resources import as_file, files
 import dsg_pddl.domains
 import numpy as np
 import spark_dsg
-from dsg_pddl.dsg_pddl_planning import PddlPlan
 from dsg_pddl.pddl_grounding import PddlDomain, PddlGoal
-from robot_executor_interface.action_descriptions import (
-    ActionSequence,
-    Follow,
-    Gaze,
-    Pick,
-    Place,
-)
 from ruamel.yaml import YAML
+from utils import DummyRobotPlanningAdaptor
 
-from omniplanner.omniplanner import (
-    PlanRequest,
-    full_planning_pipeline,
-)
+from omniplanner.compile_plan import collect_plans
+from omniplanner.omniplanner import PlanRequest, full_planning_pipeline
+from omniplanner_ros.pddl_planner_ros import compile_plan
 
 logging.basicConfig()
 logging.getLogger().setLevel(logging.INFO)
@@ -26,59 +18,16 @@ logging.getLogger().setLevel(logging.INFO)
 yaml = YAML(typ="safe")
 
 
-def compile_plan(plan: PddlPlan, plan_id, robot_name, frame_id):
-    actions = []
-    for symbolic_action, parameters in zip(
-        plan.symbolic_actions, plan.parameterized_actions
-    ):
-        match symbolic_action[0]:
-            case "goto-poi":
-                actions.append(Follow(frame=frame_id, path2d=parameters))
-            case "inspect":
-                robot_point, gaze_point = parameters
-                actions.append(
-                    Gaze(
-                        frame=frame_id,
-                        robot_point=robot_point,
-                        gaze_point=gaze_point,
-                        stow_after=True,
-                    )
-                )
-            case "pick-object":
-                robot_point, pick_point = parameters
-                actions.append(
-                    Pick(
-                        frame=frame_id,
-                        object_class="",
-                        robot_point=robot_point,
-                        object_point=pick_point,
-                    )
-                )
-            case "place-object":
-                robot_point, place_point = parameters
-                actions.append(
-                    Place(
-                        frame=frame_id,
-                        object_class="",
-                        robot_point=robot_point,
-                        object_point=place_point,
-                    )
-                )
-            case _:
-                raise NotImplementedError(
-                    f"I don't know how to compile {symbolic_action[0]}"
-                )
-
-    seq = ActionSequence(plan_id=plan_id, robot_name=robot_name, actions=actions)
-    return seq
-
-
 # G = build_test_dsg()
 # goal = PddlGoal(robot_id="euclid", pddl_goal="(and (visited-object o0) (visited-object o1))")
 # goal = PddlGoal(robot_id="euclid", pddl_goal="(object-in-place o1 p0)")
 G = spark_dsg.DynamicSceneGraph.load(
-    "/home/ubuntu/lxc_datashare/west_point_fused_map_wregions.json"
+    "/home/ubuntu/lxc_datashare/west_point_fused_map_wregions_labelspace.json"
 )
+
+
+adaptor = DummyRobotPlanningAdaptor("euclid", "spot", "map", "body")
+adaptors = {"euclid": adaptor}
 
 robot_poses = {"euclid": np.array([0.0, 0.1])}
 
@@ -113,9 +62,12 @@ plan = full_planning_pipeline(req, G)
 print("Plan from planning domain:")
 print(plan)
 
-compiled_plan = compile_plan(plan.value, "abc123", plan.name, "a_coordinate_frame")
-print("compiled plan:")
+compiled_plan = compile_plan(adaptors, plan)
 print(compiled_plan)
+
+collected_plans = collect_plans(compiled_plan)
+print("Collected plans:")
+print(collected_plans)
 
 
 print("================================")
@@ -146,9 +98,9 @@ plan = full_planning_pipeline(req, G)
 print("Plan from planning domain:")
 print(plan)
 
-compiled_plan = compile_plan(plan.value, "abc123", plan.name, "a_coordinate_frame")
-print("compiled plan:")
-print(compiled_plan)
+collected_plan = collect_plans(compile_plan(adaptors, plan))
+print("collected plan: ", collected_plan)
+
 
 print("================================")
 print("==   PDDL Domain (Regions)    ==")
@@ -186,6 +138,6 @@ plan = full_planning_pipeline(req, G)
 print("Plan from planning domain:")
 print(plan)
 
-compiled_plan = compile_plan(plan.value, "abc123", plan.name, "a_coordinate_frame")
-print("compiled plan:")
-print(compiled_plan)
+
+collected_plan = collect_plans(compile_plan(adaptors, plan))
+print("collected plan: ", collected_plan)

@@ -12,8 +12,6 @@ class FunctorTrait:
 Functor = Union[FunctorTrait, Iterable]
 
 
-# This function will do type inferences properly for dataclass in plum,
-# but I don't think we actually need that functionality right now?
 def generic_inference(K):
     @classmethod
     def inference_function(self, *args):

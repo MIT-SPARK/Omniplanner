@@ -279,6 +279,14 @@ but the intention is to do automatic plugin discovery. Automatic plugin
 discovery will enable all downstream planning plugins to be implemented without
 touching the omniplanner node.
 
+There's an edge case in `compile_plan` that may require special care: If the
+output from your planner (your "plan" type) is a subclass of list, then you
+need to implement a `compile_plan` override for `compile_plan(adaptor,
+SymbolicContext[YourPlanType])` *even if you do not need the symbolic context*.
+This issue is caused by limitations of generic type inference of parameterized
+types. You can choose to either not inherit from list, or ensure that you have
+this compile plan override implemented.
+
 ### Is Omniplanner right for me?
 
 Omniplanner is inherently experimental in nature, but it seems to work pretty
