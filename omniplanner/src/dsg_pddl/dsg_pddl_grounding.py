@@ -512,8 +512,6 @@ def ground_problem(
             )
         case "region-object-rearrangement-domain":
             pddl_problem, symbols = generate_region_pddl(dsg, goal.pddl_goal, start)
-            with open("/home/ubuntu/pddl_test.pddl", "w") as fo:
-                fo.write(pddl_problem)
         case _:
             raise NotImplementedError(
                 f"I don't know how to ground a domain of type {domain.domain_name}!"
