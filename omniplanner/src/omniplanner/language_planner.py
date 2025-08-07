@@ -62,7 +62,7 @@ def ground_problem(
                 pddl_language_grounded_goal,
                 feedback,
             )
-            problems.append(RobotWrapper(robot_name, grounded_problem))
+            problems.append(grounded_problem)
 
         return problems
 
