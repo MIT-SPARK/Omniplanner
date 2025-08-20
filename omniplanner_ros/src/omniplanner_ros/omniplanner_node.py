@@ -84,7 +84,6 @@ class PlannerConfig(Config):
 class RobotConfig(Config):
     robot_name: str = ""
     robot_type: str = ""
-    fixed_frame: str = ""
     body_frame: str = ""
 
 
@@ -129,11 +128,10 @@ def get_robot_pose(tf_buffer, parent_frame: str, child_frame: str) -> np.ndarray
 
 
 class RobotPlanningAdaptor:
-    def __init__(self, node, tf_buffer, name, robot_type, parent_frame, child_frame):
+    def __init__(self, node, tf_buffer, name, robot_type, child_frame):
         self.tf_buffer = tf_buffer
         self.name = name
         self.robot_type = robot_type
-        self.parent_frame = parent_frame
         self.child_frame = child_frame
         self.ros_logger = node.get_logger()
 
@@ -141,12 +139,12 @@ class RobotPlanningAdaptor:
             ActionSequenceMsg, f"/{name}/omniplanner_node/compiled_plan_out", 1
         )
 
-    def get_pose(self):
+    def get_pose(self, parent_frame):
         self.ros_logger.info(
-            f"Looking up pose for {self.name} ({self.parent_frame}->{self.child_frame})"
+            f"Looking up pose for {self.name} ({parent_frame}->{self.child_frame})"
         )
         try:
-            return get_robot_pose(self.tf_buffer, self.parent_frame, self.child_frame)
+            return get_robot_pose(self.tf_buffer, parent_frame, self.child_frame)
         except tf2_ros.TransformException as e:
             self.ros_logger.warning(str(e))
             return None
@@ -171,6 +169,7 @@ class OmniPlannerRos(Node):
         self.current_planner = None
         self.plan_time_start = None
         self.dsg_last = None
+        self.dsg_frame = None
 
         self.last_dsg_time_lock = threading.Lock()
         self.current_planner_lock = threading.Lock()
@@ -212,7 +211,6 @@ class OmniPlannerRos(Node):
                 self.tf_buffer,
                 robot_config.robot_name,
                 robot_config.robot_type,
-                robot_config.fixed_frame,
                 robot_config.body_frame,
             )
 
@@ -232,6 +230,7 @@ class OmniPlannerRos(Node):
 
         with self.last_dsg_time_lock and self.dsg_lock:
             self.dsg_last = dsg
+            self.dsg_frame = header.frame_id
             self.last_dsg_time = time.time()
 
     def hb_callback(self):
@@ -265,10 +264,10 @@ class OmniPlannerRos(Node):
         msg.notes = notes
         self.heartbeat_pub.publish(msg)
 
-    def get_robot_poses(self):
+    def get_robot_poses(self, dsg_frame):
         pose_dict = {}
         for name, pose_adaptor in self.robot_adaptors.items():
-            pose_dict[name] = pose_adaptor.get_pose()
+            pose_dict[name] = pose_adaptor.get_pose(dsg_frame)
         return pose_dict
 
     def register_plugin(self, name, plugin):
@@ -289,7 +288,7 @@ class OmniPlannerRos(Node):
                 self.current_planner = name
                 self.plan_time_start = time.time()
 
-            robot_poses = self.get_robot_poses()
+            robot_poses = self.get_robot_poses(self.dsg_frame)
             self.get_logger().info(f"Planning with robot poses {robot_poses}")
 
             plan_request = callback(msg, robot_poses)
