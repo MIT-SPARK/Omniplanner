@@ -53,12 +53,16 @@ def solve_pddl(problem: GroundedPddlProblem):
             with open(plan_fn, "r") as fo:
                 lines = fo.readlines()
         else:
-            output_dir = os.getenv('ADT4_OUTPUT_DIR', '')
+            output_dir = os.getenv("ADT4_OUTPUT_DIR", "")
             debug_fn = os.path.join(output_dir, "pddl_problem_debugging.pddl")
-            logger.warning(f"Planning failed. Please see {debug_fn} for the failed problem file.")
+            logger.warning(
+                f"Planning failed. Please see {debug_fn} for the failed problem file."
+            )
             with open(debug_fn, "w") as fo:
                 fo.write(problem.problem_str)
-            raise Exception(f"Planning failed, please see {debug_fn} for failed problem file.")
+            raise Exception(
+                f"Planning failed, please see {debug_fn} for failed problem file."
+            )
 
     plan = [lisp_string_to_ast(line) for line in lines[:-1]]
     return plan
