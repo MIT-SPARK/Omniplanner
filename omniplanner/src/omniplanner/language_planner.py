@@ -7,7 +7,6 @@ from nlu_interface.llm_interface import LLMInterface
 from plum import dispatch
 
 from omniplanner.goto_points import GotoPointsDomain, GotoPointsGoal
-from omniplanner.omniplanner import RobotWrapper
 
 
 @dataclass
