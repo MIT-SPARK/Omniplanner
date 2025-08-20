@@ -18,20 +18,22 @@ logger = logging.getLogger(__name__)
 
 @overload
 @dispatch
-def compile_plan(adaptors, p: SymbolicContext[List[Any]]) -> List[RobotWrapper[Any]]:
+def compile_plan(
+    adaptors, plan_frame: str, p: SymbolicContext[List[Any]]
+) -> List[RobotWrapper[Any]]:
     logger.warning(f"SymbolicContext[List[Any]] with: {type(p)}")
-    return fmap(partial(compile_plan, adaptors), push(p))
+    return fmap(partial(compile_plan, adaptors, plan_frame), push(p))
 
 
 @overload
 @dispatch
 def compile_plan(
-    adaptors: dict, p: SymbolicContext[RobotWrapper[Any]]
+    adaptors: dict, plan_frame: str, p: SymbolicContext[RobotWrapper[Any]]
 ) -> RobotWrapper[Any]:
     logger.warning(f"SymbolicContext[RobotWrapper[Any]] with: {type(p)}")
     robot_symbolic = push(p)
     adaptor = adaptors[robot_symbolic.name]
-    return fmap(partial(compile_plan, adaptor), robot_symbolic)
+    return fmap(partial(compile_plan, adaptor, plan_frame), robot_symbolic)
 
 
 # NOTE: this is the signature that you would modify to introduce a compiler for
@@ -59,5 +61,5 @@ def collect_plans(p: RobotWrapper[Any]):
 
 # This implementation lets the compilation process transparently "skip" unused wrappers
 @dispatch
-def compile_plan(adaptor, p: Wrapper):
-    return compile_plan(adaptor, extract(p))
+def compile_plan(adaptor, plan_frame: str, p: Wrapper):
+    return compile_plan(adaptor, plan_frame, extract(p))

@@ -26,8 +26,8 @@ def compile_points_plan(plan: GotoPointsPlan, plan_id, robot_name, frame_id):
 
 
 @dispatch
-def compile_plan(adaptor, p: GotoPointsPlan):
-    return compile_points_plan(p, str(uuid.uuid4()), adaptor.name, adaptor.parent_frame)
+def compile_plan(adaptor, plan_frame: str, p: GotoPointsPlan):
+    return compile_points_plan(p, str(uuid.uuid4()), adaptor.name, plan_frame)
 
 
 class GotoPointsRos:

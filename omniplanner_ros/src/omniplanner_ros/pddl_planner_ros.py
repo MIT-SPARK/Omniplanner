@@ -37,15 +37,15 @@ def ensure_3d(pt):
 
 @overload
 @dispatch
-def compile_plan(adaptor, plan: PddlPlan):
-    return compile_plan(adaptor, SymbolicContext({}, plan))
+def compile_plan(adaptor, plan_frame: str, plan: PddlPlan):
+    return compile_plan(adaptor, plan_frame, SymbolicContext({}, plan))
 
 
 # TODO: if we wanted to compile a pddl plan to a different target (e.g. Phoenix macroactions), we would dispatch
 # on the type of `adaptor`
 @dispatch
-def compile_plan(adaptor, p: SymbolicContext[PddlPlan]):
-    return compile_pddl_plan(p, str(uuid.uuid4()), adaptor.name, adaptor.parent_frame)
+def compile_plan(adaptor, plan_frame: str, p: SymbolicContext[PddlPlan]):
+    return compile_pddl_plan(p, str(uuid.uuid4()), adaptor.name, plan_frame)
 
 
 def compile_pddl_plan(
