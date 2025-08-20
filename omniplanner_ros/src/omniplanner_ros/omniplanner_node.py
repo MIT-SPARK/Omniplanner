@@ -297,7 +297,7 @@ class OmniPlannerRos(Node):
                     plan_request, self.dsg_last, self.feedback
                 )
 
-            compiled_plans = compile_plan(self.robot_adaptors, plans)
+            compiled_plans = compile_plan(self.robot_adaptors, self.dsg_frame, plans)
             plan_dict = collect_plans(compiled_plans)
             for robot_name, compiled_plan in plan_dict.items():
                 self.robot_adaptors[robot_name].publish_plan(to_msg(compiled_plan))

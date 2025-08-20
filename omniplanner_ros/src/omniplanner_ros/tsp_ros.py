@@ -21,8 +21,8 @@ def compile_path_plan(plan: FollowPathPlan, plan_id, robot_name, frame_id):
 
 
 @dispatch
-def compile_plan(adaptor, p: FollowPathPlan):
-    return compile_path_plan(p, str(uuid.uuid4()), adaptor.name, adaptor.parent_frame)
+def compile_plan(adaptor, plan_frame: str, p: FollowPathPlan):
+    return compile_path_plan(p, str(uuid.uuid4()), adaptor.name, plan_frame)
 
 
 class TspRos:
