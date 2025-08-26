@@ -11,9 +11,12 @@ import numpy as np
 import spark_config as sc
 from dsg_pddl.dsg_pddl_planning import PddlPlan
 from dsg_pddl.pddl_grounding import PddlDomain, PddlGoal
+from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Path
 from omniplanner.omniplanner import PlanRequest, SymbolicContext
 from omniplanner_msgs.msg import PddlGoalMsg
 from plum import dispatch
+from rclpy.clock import Clock
 from robot_executor_interface.action_descriptions import (
     ActionSequence,
     Follow,
@@ -21,6 +24,8 @@ from robot_executor_interface.action_descriptions import (
     Pick,
     Place,
 )
+
+from omniplanner_ros.omniplanner_node import PhoenixPlanningAdaptor
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +46,7 @@ def compile_plan(adaptor, plan_frame: str, plan: PddlPlan):
     return compile_plan(adaptor, plan_frame, SymbolicContext({}, plan))
 
 
-# TODO: if we wanted to compile a pddl plan to a different target (e.g. Phoenix macroactions), we would dispatch
-# on the type of `adaptor`
+@overload
 @dispatch
 def compile_plan(adaptor, plan_frame: str, p: SymbolicContext[PddlPlan]):
     return compile_pddl_plan(p, str(uuid.uuid4()), adaptor.name, plan_frame)
@@ -102,6 +106,43 @@ def compile_pddl_plan(
 
     seq = ActionSequence(plan_id=plan_id, robot_name=robot_name, actions=actions)
     return seq
+
+
+@dispatch
+def compile_plan(
+    adaptor: PhoenixPlanningAdaptor, plan_frame: str, p: SymbolicContext[PddlPlan]
+):
+    return compile_phoenix_pddl_plan(p, adaptor.name, plan_frame)
+
+
+def compile_phoenix_pddl_plan(contextualized_plan, robot_name, frame_id):
+    path_msg = Path()
+    path_msg.header.frame_id = frame_id
+    path_msg.header.stamp = Clock().now().to_msg()
+    plan = contextualized_plan.value
+    for symbolic_action, parameters in zip(
+        plan.symbolic_actions, plan.parameterized_actions
+    ):
+        match symbolic_action[0]:
+            case "goto-poi":
+                for pose in parameters:
+                    p = PoseStamped()
+                    p.header.frame_id = frame_id
+                    p.pose.position.x = pose[0]
+                    p.pose.position.y = pose[1]
+                    p.pose.orientation.w = 1.0
+                    path_msg.poses.append(p)
+            case "inspect":
+                logger.error("Phoenix doesn't know how to inspect :(. Skipping!")
+            case "pick-object":
+                logger.error("Phoenix doesn't know how to pick-object :(. Skipping!")
+            case "place-object":
+                logger.error("Phoenix doesn't know how to place-object :(. Skipping!")
+            case _:
+                raise NotImplementedError(
+                    f"I don't know how to compile {symbolic_action[0]}"
+                )
+    return path_msg
 
 
 class PddlPlannerRos:
