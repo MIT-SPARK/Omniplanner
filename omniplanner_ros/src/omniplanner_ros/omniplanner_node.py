@@ -82,7 +82,6 @@ class PlannerConfig(Config):
 
 
 class RobotPlanningAdaptor:
-    # def __init__(self, node, tf_buffer, name, robot_type, child_frame):
     def __init__(self, config, node=None, tf_buffer=None):
         self.tf_buffer = tf_buffer
         self.name = config.robot_name

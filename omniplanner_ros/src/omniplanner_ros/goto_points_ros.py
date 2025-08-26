@@ -94,8 +94,7 @@ def compile_points_path(plan: GotoPointsPlan, robot_name, frame_id):
             pose.pose.position.y = y
             pose.pose.position.z = 0.0
 
-            # Assuming no orientation is needed or use a default quaternion
-            pose.pose.orientation.w = 1.0  # Neutral rotation
+            pose.pose.orientation.w = 1.0
 
             path_msg.poses.append(pose)
 
