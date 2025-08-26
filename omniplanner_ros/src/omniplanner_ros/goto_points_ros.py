@@ -2,15 +2,23 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from typing import overload
 
 import numpy as np
 import omniplanner.compile_plan  # NOQA
 import spark_config as sc
+from geometry_msgs.msg import Point, PoseStamped
+from nav_msgs.msg import Path
 from omniplanner.goto_points import GotoPointsDomain, GotoPointsGoal, GotoPointsPlan
 from omniplanner.omniplanner import PlanRequest
 from omniplanner_msgs.msg import GotoPointsGoalMsg
 from plum import dispatch
+from rclpy.clock import Clock
 from robot_executor_interface.action_descriptions import ActionSequence, Follow
+from robot_executor_interface_ros.action_descriptions_ros import to_msg, to_viz_msg
+from visualization_msgs.msg import Marker, MarkerArray
+
+from omniplanner_ros.omniplanner_node import PhoenixPlanningAdaptor
 
 
 def compile_points_plan(plan: GotoPointsPlan, plan_id, robot_name, frame_id):
@@ -25,9 +33,72 @@ def compile_points_plan(plan: GotoPointsPlan, plan_id, robot_name, frame_id):
     return seq
 
 
+@overload
 @dispatch
 def compile_plan(adaptor, plan_frame: str, p: GotoPointsPlan):
     return compile_points_plan(p, str(uuid.uuid4()), adaptor.name, plan_frame)
+
+
+@dispatch
+def compile_plan(adaptor: PhoenixPlanningAdaptor, plan_frame: str, p: GotoPointsPlan):
+    return compile_points_path(p, adaptor.name, plan_frame)
+
+
+@to_msg.register
+def _(action: Path):
+    return action
+
+
+@to_viz_msg.register
+def path_to_marker(path: Path, marker_ns) -> MarkerArray:
+    marker = Marker()
+
+    marker.header.stamp = path.header.stamp
+    marker.header.frame_id = path.header.frame_id
+    marker.ns = marker_ns
+    marker.id = 0
+    marker.type = Marker.LINE_STRIP
+    marker.action = Marker.ADD
+
+    marker.scale.x = 0.05
+    marker.color.r = 0.0
+    marker.color.g = 1.0
+    marker.color.b = 0.0
+    marker.color.a = 1.0
+
+    # Convert poses to points
+    marker.points = [
+        Point(x=pose.pose.position.x, y=pose.pose.position.y, z=pose.pose.position.z)
+        for pose in path.poses
+    ]
+    ma = MarkerArray()
+    ma.markers = [marker]
+
+    return ma
+
+
+def compile_points_path(plan: GotoPointsPlan, robot_name, frame_id):
+    path_msg = Path()
+    path_msg.header.frame_id = frame_id
+    path_msg.header.stamp = Clock().now().to_msg()
+
+    for p in plan.plan:
+        xs = np.interp(np.linspace(0, 1, 10), [0, 1], [p.start[0], p.goal[0]])
+        ys = np.interp(np.linspace(0, 1, 10), [0, 1], [p.start[1], p.goal[1]])
+
+        for x, y in zip(xs, ys):
+            pose = PoseStamped()
+            pose.header.frame_id = frame_id
+            pose.header.stamp = Clock().now().to_msg()
+            pose.pose.position.x = x
+            pose.pose.position.y = y
+            pose.pose.position.z = 0.0
+
+            pose.pose.orientation.w = 1.0
+
+            path_msg.poses.append(pose)
+
+    return path_msg
 
 
 class GotoPointsRos:

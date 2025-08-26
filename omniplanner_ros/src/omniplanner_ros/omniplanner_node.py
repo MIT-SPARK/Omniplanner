@@ -10,6 +10,7 @@ import rclpy.duration
 import tf2_ros
 import tf_transformations
 from hydra_ros import DsgSubscriber
+from nav_msgs.msg import Path
 from omniplanner.compile_plan import collect_plans, compile_plan
 from omniplanner.omniplanner import full_planning_pipeline
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
@@ -20,7 +21,7 @@ from robot_executor_interface_ros.action_descriptions_ros import to_msg, to_viz_
 from robot_executor_msgs.msg import ActionSequenceMsg
 from robot_vocalizer.plan_vocalizer import PlanVocalizer
 from ros_system_monitor_msgs.msg import NodeInfoMsg
-from spark_config import Config, config_field
+from spark_config import Config, config_field, register_config
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 from visualization_msgs.msg import MarkerArray
@@ -80,6 +81,35 @@ class PlannerConfig(Config):
     plugin: Any = config_field("omniplanner_pipeline", required=False)
 
 
+class RobotPlanningAdaptor:
+    def __init__(self, config, node=None, tf_buffer=None):
+        self.tf_buffer = tf_buffer
+        self.name = config.robot_name
+        self.robot_type = config.robot_type
+        self.child_frame = config.body_frame
+        self.ros_logger = node.get_logger()
+
+        self.plan_pub = node.create_publisher(
+            ActionSequenceMsg, f"/{self.name}/omniplanner_node/compiled_plan_out", 1
+        )
+
+    def get_pose(self, parent_frame):
+        self.ros_logger.info(
+            f"Looking up pose for {self.name} ({parent_frame}->{self.child_frame})"
+        )
+        try:
+            return get_robot_pose(self.tf_buffer, parent_frame, self.child_frame)
+        except tf2_ros.TransformException as e:
+            self.ros_logger.warning(str(e))
+            return None
+
+    def publish_plan(self, plan):
+        self.plan_pub.publish(plan)
+
+
+@register_config(
+    "robot_adaptor", name="robot_executor", constructor=RobotPlanningAdaptor
+)
 @dataclass
 class RobotConfig(Config):
     robot_name: str = ""
@@ -87,9 +117,23 @@ class RobotConfig(Config):
     body_frame: str = ""
 
 
+class PhoenixPlanningAdaptor(RobotPlanningAdaptor):
+    def __init__(self, config, **data):
+        super().__init__(config, **data)
+        self.plan_pub = data["node"].create_publisher(
+            Path, f"/{self.name}/omniplanner_node/compiled_plan_out", 1
+        )
+
+
+@register_config("robot_adaptor", name="phoenix", constructor=PhoenixPlanningAdaptor)
+@dataclass
+class PhoenixRobotConfig(RobotConfig):
+    pass
+
+
 @dataclass
 class OmniplannerNodeConfig(Config):
-    robots: List[RobotConfig] = field(default_factory=list)
+    robots: List[config_field("robot_adaptor")] = field(default_factory=list)
     planners: Dict[str, PlannerConfig] = field(default_factory=dict)
 
     @classmethod
@@ -125,32 +169,6 @@ def get_robot_pose(tf_buffer, parent_frame: str, child_frame: str) -> np.ndarray
     except tf2_ros.TransformException as e:
         print(f"Transform error: {e}")
         raise
-
-
-class RobotPlanningAdaptor:
-    def __init__(self, node, tf_buffer, name, robot_type, child_frame):
-        self.tf_buffer = tf_buffer
-        self.name = name
-        self.robot_type = robot_type
-        self.child_frame = child_frame
-        self.ros_logger = node.get_logger()
-
-        self.plan_pub = node.create_publisher(
-            ActionSequenceMsg, f"/{name}/omniplanner_node/compiled_plan_out", 1
-        )
-
-    def get_pose(self, parent_frame):
-        self.ros_logger.info(
-            f"Looking up pose for {self.name} ({parent_frame}->{self.child_frame})"
-        )
-        try:
-            return get_robot_pose(self.tf_buffer, parent_frame, self.child_frame)
-        except tf2_ros.TransformException as e:
-            self.ros_logger.warning(str(e))
-            return None
-
-    def publish_plan(self, plan):
-        self.plan_pub.publish(plan)
 
 
 class OmniPlannerRos(Node):
@@ -203,16 +221,11 @@ class OmniPlannerRos(Node):
 
         self.robot_adaptors = {}
         for robot_config in self.config.robots:
+            robot_adaptor = robot_config.create(node=self, tf_buffer=self.tf_buffer)
             self.get_logger().info(
-                f"I know about {robot_config.robot_name}, a {robot_config.robot_type} robot"
+                f"I know about {robot_adaptor.name}, a {robot_adaptor.robot_type} robot"
             )
-            self.robot_adaptors[robot_config.robot_name] = RobotPlanningAdaptor(
-                self,
-                self.tf_buffer,
-                robot_config.robot_name,
-                robot_config.robot_type,
-                robot_config.body_frame,
-            )
+            self.robot_adaptors[robot_config.robot_name] = robot_adaptor
 
         # Initialize a feedback collector to be populated by plugins
         self.feedback = OmniplannerFeedbackCollector()
