@@ -1,0 +1,3 @@
+llm_config: $OMNIPLANNER_PATH/omniplanner/examples/config/llm_config.yaml
+dcg_config: $OMNIPLANNER_PATH/omniplanner/examples/config/dcg_config.yaml
+pddl_domain: $OMNIPLANNER_PATH/omniplanner/src/dsg_pddl/domains/GotoObjectDomain.pddl
