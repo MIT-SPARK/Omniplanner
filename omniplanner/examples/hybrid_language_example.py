@@ -81,7 +81,7 @@ llm_interface = OpenAIWrapper(
 
 # Build the plan request
 language_domain = LanguageDomain(domain_type, domain, llm_interface)
-dcg_interface = DCGInterface()
+dcg_interface = DCGInterface(debug=dcg_config["debug"])
 hybrid_language_domain = HybridLanguageDomain(language_domain, dcg_interface)
 req = PlanRequest(
     domain=hybrid_language_domain,

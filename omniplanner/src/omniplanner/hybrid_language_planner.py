@@ -18,9 +18,11 @@ class HybridArchitectureException(Exception):
 
 class DCGInterface:
     """A placeholder class implementation for an interface to a Distributed Correspondence Graph"""
+    def __init__(self, debug):
+        self.debug = debug
 
     def request_plan_specification(self, command, dsg) -> tuple[bool, str]:
-        return True, None
+        return False, None
 
 @dataclass
 class HybridLanguageDomain:
@@ -45,8 +47,7 @@ def ground_problem(
         # Handle langauge grounding via Distributed Correspondence Graphs
         success, response = domain.dcg_interface.request_plan_specification(goal.command, dsg)
         # Handle routing if failure
-        if success:
-            error = None
+        if not success:
             try:
                 problems = ground_problem(
                     domain.language_domain,
@@ -56,8 +57,11 @@ def ground_problem(
                     feedback,
                 )
             except Exception as e:
-                error = e
-            raise HybridArchitectureException(f"Hybrid Architecture -- Successfully called LLM. Received an exception {error}")
+                raise HybridArchitectureException(f"Hybrid Architecture -- Routed to the LLM. Received an exception {e}")
+            # If not debug, return problems; otherwise raise an exception
+            if not domain.dcg_interface.debug:
+                return problems
+            raise HybridArchitectureException("Hybrid Architecture -- Successfully called LLM. Debugging, so not returning planning problems.")
         raise HybridArchitectureException("Hybrid Architecture -- Successfully called DCG.")
 
         ############### Below is code that should not run
