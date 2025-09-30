@@ -1,7 +1,17 @@
 from dataclasses import dataclass
+from importlib.resources import as_file, files
 
+import dsg_pddl.domains
 import numpy as np
 import spark_dsg
+
+
+def load_omniplanner_pddl_domain(domain_name):
+    with as_file(files(dsg_pddl.domains).joinpath(domain_name)) as path:
+        print(f"Loading domain {path}")
+        with open(str(path), "r") as fo:
+            domain = fo.read()
+    return domain
 
 
 @dataclass

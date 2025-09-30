@@ -1,12 +1,10 @@
 import logging
-from importlib.resources import as_file, files
 
-import dsg_pddl.domains
 import numpy as np
 import spark_dsg
 from dsg_pddl.pddl_grounding import PddlDomain, PddlGoal
 from ruamel.yaml import YAML
-from utils import DummyRobotPlanningAdaptor
+from utils import DummyRobotPlanningAdaptor, load_omniplanner_pddl_domain
 
 from omniplanner.compile_plan import collect_plans
 from omniplanner.omniplanner import PlanRequest, full_planning_pipeline
@@ -43,10 +41,7 @@ goal = PddlGoal(
 )
 
 # Load the PDDL domain you want to use
-with as_file(files(dsg_pddl.domains).joinpath("GotoObjectDomain.pddl")) as path:
-    print(f"Loading domain {path}")
-    with open(str(path), "r") as fo:
-        domain = PddlDomain(fo.read())
+domain = PddlDomain(load_omniplanner_pddl_domain("GotoObjectDomain.pddl"))
 
 
 # Build the plan request
@@ -62,7 +57,7 @@ plan = full_planning_pipeline(req, G)
 print("Plan from planning domain:")
 print(plan)
 
-compiled_plan = compile_plan(adaptors, plan)
+compiled_plan = compile_plan(adaptors, "map", plan)
 print(compiled_plan)
 
 collected_plans = collect_plans(compiled_plan)
@@ -77,12 +72,7 @@ print("")
 goal = PddlGoal(robot_id="euclid", pddl_goal="(and (object-in-place o94 p2157))")
 
 # Load the PDDL domain you want to use
-with as_file(
-    files(dsg_pddl.domains).joinpath("ObjectRearrangementDomain.pddl")
-) as path:
-    print(f"Loading domain {path}")
-    with open(str(path), "r") as fo:
-        domain = PddlDomain(fo.read())
+domain = PddlDomain(load_omniplanner_pddl_domain("ObjectRearrangementDomain.pddl"))
 
 
 # Build the plan request
@@ -98,7 +88,7 @@ plan = full_planning_pipeline(req, G)
 print("Plan from planning domain:")
 print(plan)
 
-collected_plan = collect_plans(compile_plan(adaptors, plan))
+collected_plan = collect_plans(compile_plan(adaptors, "map", plan))
 print("collected plan: ", collected_plan)
 
 
@@ -117,12 +107,9 @@ goal = PddlGoal(
 )
 
 # Load the PDDL domain you want to use
-with as_file(
-    files(dsg_pddl.domains).joinpath("RegionObjectRearrangementDomain.pddl")
-) as path:
-    print(f"Loading domain {path}")
-    with open(str(path), "r") as fo:
-        domain = PddlDomain(fo.read())
+domain = PddlDomain(
+    load_omniplanner_pddl_domain("RegionObjectRearrangementDomain.pddl")
+)
 
 
 # Build the plan request
@@ -139,5 +126,5 @@ print("Plan from planning domain:")
 print(plan)
 
 
-collected_plan = collect_plans(compile_plan(adaptors, plan))
+collected_plan = collect_plans(compile_plan(adaptors, "map", plan))
 print("collected plan: ", collected_plan)

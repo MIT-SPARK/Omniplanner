@@ -130,6 +130,10 @@ class PddlDomain:
         return ast_to_string(self.domain_ast)
 
 
+class MultiRobotPddlDomain(PddlDomain):
+    pass
+
+
 def get_domain_name(ast):
     return ast[1][1]
 
