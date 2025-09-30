@@ -2,3 +2,6 @@
 *__pycache__*
 *.pyc
 *.egg-info*
+
+# Local scenegraph data
+omniplanner/examples/scenegraph/*.json
