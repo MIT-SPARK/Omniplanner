@@ -1,0 +1,2935 @@
+{
+    "regions": {
+        "R(1)": {
+            "semantic_label": "unknown",
+            "center": "(5.938, -0.921)",
+            "objects": [
+                "O(470)",
+                "O(534)"
+            ]
+        },
+        "R(2)": {
+            "semantic_label": "unknown",
+            "center": "(13.074, 2.352)",
+            "objects": [
+                "O(138)",
+                "O(139)",
+                "O(143)",
+                "O(144)",
+                "O(145)",
+                "O(171)",
+                "O(268)",
+                "O(269)"
+            ]
+        },
+        "R(3)": {
+            "semantic_label": "unknown",
+            "center": "(-2.624, 3.609)",
+            "objects": [
+                "O(215)"
+            ]
+        },
+        "R(4)": {
+            "semantic_label": "unknown",
+            "center": "(-2.815, -7.648)",
+            "objects": []
+        },
+        "R(5)": {
+            "semantic_label": "unknown",
+            "center": "(-37.436, -7.769)",
+            "objects": [
+                "O(56)",
+                "O(59)",
+                "O(60)",
+                "O(61)"
+            ]
+        },
+        "R(6)": {
+            "semantic_label": "unknown",
+            "center": "(-47.627, 9.062)",
+            "objects": []
+        },
+        "R(7)": {
+            "semantic_label": "unknown",
+            "center": "(-70.093, 25.684)",
+            "objects": [
+                "O(92)",
+                "O(93)",
+                "O(94)"
+            ]
+        },
+        "R(8)": {
+            "semantic_label": "unknown",
+            "center": "(-63.716, 39.589)",
+            "objects": [
+                "O(103)"
+            ]
+        },
+        "R(9)": {
+            "semantic_label": "unknown",
+            "center": "(-65.974, 52.127)",
+            "objects": [
+                "O(104)",
+                "O(105)",
+                "O(106)"
+            ]
+        },
+        "R(10)": {
+            "semantic_label": "unknown",
+            "center": "(-68.348, 64.287)",
+            "objects": [
+                "O(108)"
+            ]
+        },
+        "R(11)": {
+            "semantic_label": "unknown",
+            "center": "(-49.371, 64.867)",
+            "objects": [
+                "O(113)"
+            ]
+        },
+        "R(12)": {
+            "semantic_label": "unknown",
+            "center": "(-44.472, 61.212)",
+            "objects": [
+                "O(114)",
+                "O(115)"
+            ]
+        },
+        "R(13)": {
+            "semantic_label": "unknown",
+            "center": "(-6.508, 17.021)",
+            "objects": [
+                "O(119)"
+            ]
+        },
+        "R(14)": {
+            "semantic_label": "unknown",
+            "center": "(-28.458, 49.821)",
+            "objects": [
+                "O(123)",
+                "O(124)"
+            ]
+        },
+        "R(15)": {
+            "semantic_label": "unknown",
+            "center": "(-7.131, 1.812)",
+            "objects": []
+        },
+        "R(16)": {
+            "semantic_label": "unknown",
+            "center": "(43.969, 6.0)",
+            "objects": [
+                "O(148)",
+                "O(149)",
+                "O(151)",
+                "O(228)",
+                "O(229)",
+                "O(231)"
+            ]
+        },
+        "R(17)": {
+            "semantic_label": "unknown",
+            "center": "(-5.019, 4.048)",
+            "objects": []
+        },
+        "R(18)": {
+            "semantic_label": "unknown",
+            "center": "(17.408, -6.452)",
+            "objects": []
+        },
+        "R(19)": {
+            "semantic_label": "unknown",
+            "center": "(29.942, -2.492)",
+            "objects": []
+        },
+        "R(20)": {
+            "semantic_label": "unknown",
+            "center": "(79.453, 3.302)",
+            "objects": [
+                "O(234)",
+                "O(235)",
+                "O(236)",
+                "O(237)",
+                "O(238)",
+                "O(239)",
+                "O(240)",
+                "O(241)",
+                "O(242)",
+                "O(244)",
+                "O(245)",
+                "O(247)",
+                "O(248)",
+                "O(249)",
+                "O(251)",
+                "O(252)",
+                "O(253)",
+                "O(254)"
+            ]
+        },
+        "R(21)": {
+            "semantic_label": "unknown",
+            "center": "(64.072, 20.967)",
+            "objects": [
+                "O(259)"
+            ]
+        },
+        "R(22)": {
+            "semantic_label": "unknown",
+            "center": "(65.493, 24.031)",
+            "objects": [
+                "O(257)"
+            ]
+        },
+        "R(23)": {
+            "semantic_label": "unknown",
+            "center": "(58.903, 24.809)",
+            "objects": []
+        },
+        "R(24)": {
+            "semantic_label": "unknown",
+            "center": "(40.668, 15.274)",
+            "objects": []
+        },
+        "R(25)": {
+            "semantic_label": "unknown",
+            "center": "(36.044, 11.144)",
+            "objects": [
+                "O(261)"
+            ]
+        },
+        "R(26)": {
+            "semantic_label": "unknown",
+            "center": "(-43.207, 35.902)",
+            "objects": [
+                "O(332)",
+                "O(333)",
+                "O(334)",
+                "O(335)"
+            ]
+        },
+        "R(27)": {
+            "semantic_label": "unknown",
+            "center": "(-43.261, 31.521)",
+            "objects": []
+        },
+        "R(28)": {
+            "semantic_label": "unknown",
+            "center": "(-50.199, 17.2)",
+            "objects": [
+                "O(338)",
+                "O(341)",
+                "O(342)"
+            ]
+        },
+        "R(29)": {
+            "semantic_label": "unknown",
+            "center": "(-81.068, -26.808)",
+            "objects": []
+        },
+        "R(30)": {
+            "semantic_label": "unknown",
+            "center": "(-102.399, 11.014)",
+            "objects": [
+                "O(366)",
+                "O(367)",
+                "O(368)",
+                "O(369)",
+                "O(370)",
+                "O(371)",
+                "O(372)"
+            ]
+        },
+        "R(31)": {
+            "semantic_label": "unknown",
+            "center": "(-89.012, 19.34)",
+            "objects": [
+                "O(375)",
+                "O(376)"
+            ]
+        },
+        "R(32)": {
+            "semantic_label": "unknown",
+            "center": "(-73.893, 30.514)",
+            "objects": [
+                "O(377)",
+                "O(379)",
+                "O(381)"
+            ]
+        },
+        "R(33)": {
+            "semantic_label": "unknown",
+            "center": "(-68.413, 37.838)",
+            "objects": [
+                "O(383)"
+            ]
+        },
+        "R(34)": {
+            "semantic_label": "unknown",
+            "center": "(-39.041, 31.541)",
+            "objects": [
+                "O(385)"
+            ]
+        },
+        "R(35)": {
+            "semantic_label": "unknown",
+            "center": "(-0.218, -0.571)",
+            "objects": [
+                "O(970)"
+            ]
+        },
+        "R(36)": {
+            "semantic_label": "unknown",
+            "center": "(-4.663, 5.885)",
+            "objects": []
+        },
+        "R(37)": {
+            "semantic_label": "road",
+            "center": "(3.775, 5.127)",
+            "objects": [
+                "O(4)",
+                "O(5)"
+            ]
+        },
+        "R(38)": {
+            "semantic_label": "road",
+            "center": "(-8.745, -6.344)",
+            "objects": [
+                "O(25)"
+            ]
+        },
+        "R(39)": {
+            "semantic_label": "road",
+            "center": "(-34.94, 35.678)",
+            "objects": []
+        },
+        "R(40)": {
+            "semantic_label": "road",
+            "center": "(-16.102, -15.019)",
+            "objects": [
+                "O(27)",
+                "O(37)"
+            ]
+        },
+        "R(41)": {
+            "semantic_label": "road",
+            "center": "(-28.699, 33.214)",
+            "objects": [
+                "O(391)"
+            ]
+        },
+        "R(42)": {
+            "semantic_label": "road",
+            "center": "(-27.364, -17.843)",
+            "objects": [
+                "O(395)",
+                "O(396)"
+            ]
+        },
+        "R(43)": {
+            "semantic_label": "road",
+            "center": "(-28.802, -17.495)",
+            "objects": [
+                "O(38)",
+                "O(42)",
+                "O(44)"
+            ]
+        },
+        "R(44)": {
+            "semantic_label": "road",
+            "center": "(-13.919, 11.463)",
+            "objects": []
+        },
+        "R(45)": {
+            "semantic_label": "road",
+            "center": "(-16.35, 13.599)",
+            "objects": []
+        },
+        "R(46)": {
+            "semantic_label": "road",
+            "center": "(-24.743, -2.798)",
+            "objects": [
+                "O(393)"
+            ]
+        },
+        "R(47)": {
+            "semantic_label": "road",
+            "center": "(-30.617, 33.398)",
+            "objects": []
+        },
+        "R(48)": {
+            "semantic_label": "road",
+            "center": "(-28.366, 33.379)",
+            "objects": []
+        },
+        "R(49)": {
+            "semantic_label": "road",
+            "center": "(-24.537, 20.099)",
+            "objects": []
+        },
+        "R(50)": {
+            "semantic_label": "road",
+            "center": "(-61.246, -0.222)",
+            "objects": []
+        },
+        "R(51)": {
+            "semantic_label": "road",
+            "center": "(-21.738, 18.909)",
+            "objects": []
+        },
+        "R(52)": {
+            "semantic_label": "road",
+            "center": "(-59.738, -2.31)",
+            "objects": []
+        },
+        "R(53)": {
+            "semantic_label": "road",
+            "center": "(-24.955, 12.921)",
+            "objects": []
+        },
+        "R(54)": {
+            "semantic_label": "road",
+            "center": "(-24.547, -2.438)",
+            "objects": []
+        },
+        "R(55)": {
+            "semantic_label": "road",
+            "center": "(-69.794, 28.074)",
+            "objects": [
+                "O(380)"
+            ]
+        },
+        "R(56)": {
+            "semantic_label": "road",
+            "center": "(-49.443, 34.151)",
+            "objects": []
+        },
+        "R(57)": {
+            "semantic_label": "road",
+            "center": "(-67.385, 70.16)",
+            "objects": []
+        },
+        "R(58)": {
+            "semantic_label": "road",
+            "center": "(-63.168, 73.524)",
+            "objects": []
+        },
+        "R(59)": {
+            "semantic_label": "road",
+            "center": "(-27.092, 28.336)",
+            "objects": []
+        },
+        "R(60)": {
+            "semantic_label": "road",
+            "center": "(-59.324, 74.428)",
+            "objects": []
+        },
+        "R(61)": {
+            "semantic_label": "road",
+            "center": "(-54.579, 64.407)",
+            "objects": []
+        },
+        "R(62)": {
+            "semantic_label": "road",
+            "center": "(-33.598, 42.296)",
+            "objects": []
+        },
+        "R(63)": {
+            "semantic_label": "road",
+            "center": "(-33.94, -30.041)",
+            "objects": []
+        },
+        "R(64)": {
+            "semantic_label": "road",
+            "center": "(-37.338, 46.924)",
+            "objects": []
+        },
+        "R(65)": {
+            "semantic_label": "road",
+            "center": "(-22.871, 27.882)",
+            "objects": [
+                "O(128)"
+            ]
+        },
+        "R(66)": {
+            "semantic_label": "road",
+            "center": "(7.189, -1.279)",
+            "objects": []
+        },
+        "R(67)": {
+            "semantic_label": "road",
+            "center": "(25.713, -8.893)",
+            "objects": []
+        },
+        "R(68)": {
+            "semantic_label": "field",
+            "center": "(-6.639, 0.725)",
+            "objects": [
+                "O(185)"
+            ]
+        },
+        "R(69)": {
+            "semantic_label": "field",
+            "center": "(-15.375, 24.386)",
+            "objects": []
+        },
+        "R(70)": {
+            "semantic_label": "field",
+            "center": "(22.426, 10.114)",
+            "objects": [
+                "O(262)",
+                "O(265)"
+            ]
+        },
+        "R(71)": {
+            "semantic_label": "field",
+            "center": "(54.309, 6.445)",
+            "objects": []
+        },
+        "R(72)": {
+            "semantic_label": "field",
+            "center": "(-66.908, 11.623)",
+            "objects": []
+        },
+        "R(73)": {
+            "semantic_label": "field",
+            "center": "(38.202, 8.241)",
+            "objects": [
+                "O(232)"
+            ]
+        },
+        "R(74)": {
+            "semantic_label": "field",
+            "center": "(-49.747, 27.153)",
+            "objects": [
+                "O(336)",
+                "O(337)"
+            ]
+        },
+        "R(75)": {
+            "semantic_label": "field",
+            "center": "(23.215, -5.18)",
+            "objects": [
+                "O(166)",
+                "O(224)",
+                "O(225)"
+            ]
+        },
+        "R(76)": {
+            "semantic_label": "field",
+            "center": "(-42.09, -4.94)",
+            "objects": [
+                "O(58)"
+            ]
+        },
+        "R(77)": {
+            "semantic_label": "field",
+            "center": "(-44.156, 36.637)",
+            "objects": []
+        },
+        "R(78)": {
+            "semantic_label": "field",
+            "center": "(-67.999, 59.988)",
+            "objects": [
+                "O(107)"
+            ]
+        },
+        "R(79)": {
+            "semantic_label": "field",
+            "center": "(40.788, -1.418)",
+            "objects": []
+        },
+        "R(80)": {
+            "semantic_label": "field",
+            "center": "(45.102, 1.06)",
+            "objects": []
+        },
+        "R(81)": {
+            "semantic_label": "field",
+            "center": "(33.579, -5.376)",
+            "objects": [
+                "O(159)",
+                "O(160)",
+                "O(162)",
+                "O(163)"
+            ]
+        },
+        "R(82)": {
+            "semantic_label": "field",
+            "center": "(79.726, 3.66)",
+            "objects": [
+                "O(246)"
+            ]
+        },
+        "R(83)": {
+            "semantic_label": "shelter",
+            "center": "(86.078, 12.38)",
+            "objects": []
+        },
+        "R(84)": {
+            "semantic_label": "shelter",
+            "center": "(-6.001, 1.51)",
+            "objects": []
+        },
+        "R(85)": {
+            "semantic_label": "shelter",
+            "center": "(-30.902, 45.624)",
+            "objects": []
+        },
+        "R(86)": {
+            "semantic_label": "shelter",
+            "center": "(-4.663, -5.671)",
+            "objects": [
+                "O(963)"
+            ]
+        },
+        "R(87)": {
+            "semantic_label": "shelter",
+            "center": "(-68.573, -0.23)",
+            "objects": [
+                "O(88)",
+                "O(89)",
+                "O(90)",
+                "O(91)"
+            ]
+        },
+        "R(88)": {
+            "semantic_label": "shelter",
+            "center": "(-82.03, 26.31)",
+            "objects": [
+                "O(378)"
+            ]
+        },
+        "R(89)": {
+            "semantic_label": "shelter",
+            "center": "(-64.909, 37.018)",
+            "objects": [
+                "O(98)",
+                "O(99)",
+                "O(100)",
+                "O(101)",
+                "O(102)"
+            ]
+        },
+        "R(90)": {
+            "semantic_label": "shelter",
+            "center": "(66.577, 2.741)",
+            "objects": []
+        },
+        "R(91)": {
+            "semantic_label": "sidewalk",
+            "center": "(-15.13, 2.277)",
+            "objects": [
+                "O(21)"
+            ]
+        },
+        "R(92)": {
+            "semantic_label": "sidewalk",
+            "center": "(-66.815, 82.143)",
+            "objects": [
+                "O(110)",
+                "O(111)"
+            ]
+        },
+        "R(93)": {
+            "semantic_label": "parking",
+            "center": "(-9.42, -0.168)",
+            "objects": [
+                "O(183)",
+                "O(1033)",
+                "O(1162)"
+            ]
+        },
+        "R(94)": {
+            "semantic_label": "parking",
+            "center": "(-13.968, -17.689)",
+            "objects": [
+                "O(29)"
+            ]
+        },
+        "R(95)": {
+            "semantic_label": "parking",
+            "center": "(-10.06, 8.958)",
+            "objects": []
+        },
+        "R(96)": {
+            "semantic_label": "parking",
+            "center": "(-29.554, -5.657)",
+            "objects": [
+                "O(46)",
+                "O(47)",
+                "O(48)",
+                "O(49)",
+                "O(50)",
+                "O(52)",
+                "O(53)",
+                "O(54)",
+                "O(55)",
+                "O(57)"
+            ]
+        },
+        "R(97)": {
+            "semantic_label": "parking",
+            "center": "(-73.481, -18.514)",
+            "objects": [
+                "O(351)"
+            ]
+        },
+        "R(98)": {
+            "semantic_label": "parking",
+            "center": "(-62.987, -13.006)",
+            "objects": [
+                "O(348)"
+            ]
+        },
+        "R(99)": {
+            "semantic_label": "footing",
+            "center": "(-54.43, 2.597)",
+            "objects": [
+                "O(62)",
+                "O(63)",
+                "O(64)",
+                "O(66)",
+                "O(67)",
+                "O(343)",
+                "O(344)"
+            ]
+        },
+        "R(100)": {
+            "semantic_label": "footing",
+            "center": "(1.173, -5.442)",
+            "objects": [
+                "O(2)",
+                "O(3)",
+                "O(10)",
+                "O(14)",
+                "O(30)",
+                "O(167)",
+                "O(169)",
+                "O(170)",
+                "O(177)",
+                "O(193)",
+                "O(194)",
+                "O(195)",
+                "O(498)",
+                "O(501)",
+                "O(502)",
+                "O(506)",
+                "O(515)",
+                "O(579)",
+                "O(580)",
+                "O(989)",
+                "O(1212)",
+                "O(1215)"
+            ]
+        },
+        "R(101)": {
+            "semantic_label": "footing",
+            "center": "(72.906, 13.723)",
+            "objects": [
+                "O(255)",
+                "O(256)"
+            ]
+        },
+        "R(102)": {
+            "semantic_label": "footing",
+            "center": "(-80.28, -20.415)",
+            "objects": [
+                "O(352)",
+                "O(353)",
+                "O(354)",
+                "O(355)",
+                "O(356)",
+                "O(357)",
+                "O(359)"
+            ]
+        },
+        "R(103)": {
+            "semantic_label": "footing",
+            "center": "(-63.462, -10.339)",
+            "objects": [
+                "O(70)",
+                "O(82)",
+                "O(83)",
+                "O(85)",
+                "O(86)",
+                "O(347)"
+            ]
+        },
+        "R(104)": {
+            "semantic_label": "footing",
+            "center": "(-33.581, -18.111)",
+            "objects": []
+        },
+        "R(105)": {
+            "semantic_label": "footing",
+            "center": "(-6.686, 6.261)",
+            "objects": []
+        },
+        "R(106)": {
+            "semantic_label": "footing",
+            "center": "(-16.903, 18.238)",
+            "objects": []
+        },
+        "R(107)": {
+            "semantic_label": "footing",
+            "center": "(-17.541, 26.665)",
+            "objects": []
+        },
+        "R(108)": {
+            "semantic_label": "footing",
+            "center": "(-41.531, 33.995)",
+            "objects": []
+        },
+        "R(109)": {
+            "semantic_label": "footing",
+            "center": "(-73.234, -25.861)",
+            "objects": []
+        },
+        "R(110)": {
+            "semantic_label": "footing",
+            "center": "(-83.114, -38.871)",
+            "objects": []
+        },
+        "R(111)": {
+            "semantic_label": "footing",
+            "center": "(-94.081, -17.921)",
+            "objects": []
+        },
+        "R(112)": {
+            "semantic_label": "footing",
+            "center": "(-79.501, -24.969)",
+            "objects": [
+                "O(75)",
+                "O(76)",
+                "O(78)",
+                "O(79)"
+            ]
+        },
+        "R(113)": {
+            "semantic_label": "footing",
+            "center": "(-100.314, -0.636)",
+            "objects": []
+        },
+        "R(114)": {
+            "semantic_label": "footing",
+            "center": "(-95.365, 16.029)",
+            "objects": [
+                "O(374)"
+            ]
+        },
+        "R(115)": {
+            "semantic_label": "footing",
+            "center": "(-80.436, 23.486)",
+            "objects": []
+        },
+        "R(116)": {
+            "semantic_label": "footing",
+            "center": "(-66.605, 18.388)",
+            "objects": []
+        },
+        "R(117)": {
+            "semantic_label": "footing",
+            "center": "(-67.128, 32.371)",
+            "objects": [
+                "O(95)",
+                "O(96)",
+                "O(97)"
+            ]
+        },
+        "R(118)": {
+            "semantic_label": "footing",
+            "center": "(-58.809, 37.012)",
+            "objects": []
+        },
+        "R(119)": {
+            "semantic_label": "footing",
+            "center": "(-38.508, 35.447)",
+            "objects": [
+                "O(387)"
+            ]
+        },
+        "R(120)": {
+            "semantic_label": "footing",
+            "center": "(-29.539, 40.129)",
+            "objects": []
+        },
+        "R(121)": {
+            "semantic_label": "footing",
+            "center": "(-10.368, 37.266)",
+            "objects": [
+                "O(120)"
+            ]
+        },
+        "R(122)": {
+            "semantic_label": "footing",
+            "center": "(-21.934, 47.521)",
+            "objects": [
+                "O(121)",
+                "O(122)"
+            ]
+        },
+        "R(123)": {
+            "semantic_label": "footing",
+            "center": "(-9.865, -2.468)",
+            "objects": []
+        },
+        "R(124)": {
+            "semantic_label": "footing",
+            "center": "(16.778, -13.471)",
+            "objects": []
+        }
+    },
+    "regions_by_semantic_class": {
+        "unknown": [
+            "R(1)",
+            "R(2)",
+            "R(3)",
+            "R(4)",
+            "R(5)",
+            "R(6)",
+            "R(7)",
+            "R(8)",
+            "R(9)",
+            "R(10)",
+            "R(11)",
+            "R(12)",
+            "R(13)",
+            "R(14)",
+            "R(15)",
+            "R(16)",
+            "R(17)",
+            "R(18)",
+            "R(19)",
+            "R(20)",
+            "R(21)",
+            "R(22)",
+            "R(23)",
+            "R(24)",
+            "R(25)",
+            "R(26)",
+            "R(27)",
+            "R(28)",
+            "R(29)",
+            "R(30)",
+            "R(31)",
+            "R(32)",
+            "R(33)",
+            "R(34)",
+            "R(35)",
+            "R(36)"
+        ],
+        "road": [
+            "R(37)",
+            "R(38)",
+            "R(39)",
+            "R(40)",
+            "R(41)",
+            "R(42)",
+            "R(43)",
+            "R(44)",
+            "R(45)",
+            "R(46)",
+            "R(47)",
+            "R(48)",
+            "R(49)",
+            "R(50)",
+            "R(51)",
+            "R(52)",
+            "R(53)",
+            "R(54)",
+            "R(55)",
+            "R(56)",
+            "R(57)",
+            "R(58)",
+            "R(59)",
+            "R(60)",
+            "R(61)",
+            "R(62)",
+            "R(63)",
+            "R(64)",
+            "R(65)",
+            "R(66)",
+            "R(67)"
+        ],
+        "field": [
+            "R(68)",
+            "R(69)",
+            "R(70)",
+            "R(71)",
+            "R(72)",
+            "R(73)",
+            "R(74)",
+            "R(75)",
+            "R(76)",
+            "R(77)",
+            "R(78)",
+            "R(79)",
+            "R(80)",
+            "R(81)",
+            "R(82)"
+        ],
+        "shelter": [
+            "R(83)",
+            "R(84)",
+            "R(85)",
+            "R(86)",
+            "R(87)",
+            "R(88)",
+            "R(89)",
+            "R(90)"
+        ],
+        "sidewalk": [
+            "R(91)",
+            "R(92)"
+        ],
+        "parking": [
+            "R(93)",
+            "R(94)",
+            "R(95)",
+            "R(96)",
+            "R(97)",
+            "R(98)"
+        ],
+        "footing": [
+            "R(99)",
+            "R(100)",
+            "R(101)",
+            "R(102)",
+            "R(103)",
+            "R(104)",
+            "R(105)",
+            "R(106)",
+            "R(107)",
+            "R(108)",
+            "R(109)",
+            "R(110)",
+            "R(111)",
+            "R(112)",
+            "R(113)",
+            "R(114)",
+            "R(115)",
+            "R(116)",
+            "R(117)",
+            "R(118)",
+            "R(119)",
+            "R(120)",
+            "R(121)",
+            "R(122)",
+            "R(123)",
+            "R(124)"
+        ]
+    },
+    "objects": {
+        "O(2)": {
+            "semantic_label": "tree",
+            "center": "(-0.79, 6.112)",
+            "parent_region": "R(100)"
+        },
+        "O(3)": {
+            "semantic_label": "tree",
+            "center": "(0.119, 6.619)",
+            "parent_region": "R(100)"
+        },
+        "O(4)": {
+            "semantic_label": "tree",
+            "center": "(0.748, 5.343)",
+            "parent_region": "R(37)"
+        },
+        "O(5)": {
+            "semantic_label": "fence",
+            "center": "(0.394, 6.868)",
+            "parent_region": "R(37)"
+        },
+        "O(10)": {
+            "semantic_label": "vehicle",
+            "center": "(-2.437, 2.587)",
+            "parent_region": "R(100)"
+        },
+        "O(12)": {
+            "semantic_label": "seating",
+            "center": "(-5.44, -1.737)",
+            "parent_region": "none"
+        },
+        "O(14)": {
+            "semantic_label": "seating",
+            "center": "(-5.399, -0.823)",
+            "parent_region": "R(100)"
+        },
+        "O(16)": {
+            "semantic_label": "tree",
+            "center": "(-9.672, 0.907)",
+            "parent_region": "none"
+        },
+        "O(18)": {
+            "semantic_label": "tree",
+            "center": "(-15.814, 3.228)",
+            "parent_region": "none"
+        },
+        "O(21)": {
+            "semantic_label": "window",
+            "center": "(-14.607, -0.268)",
+            "parent_region": "R(91)"
+        },
+        "O(25)": {
+            "semantic_label": "tree",
+            "center": "(-7.095, -9.348)",
+            "parent_region": "R(38)"
+        },
+        "O(26)": {
+            "semantic_label": "sign",
+            "center": "(-8.284, -14.207)",
+            "parent_region": "none"
+        },
+        "O(27)": {
+            "semantic_label": "vehicle",
+            "center": "(-13.074, -12.053)",
+            "parent_region": "R(40)"
+        },
+        "O(28)": {
+            "semantic_label": "vehicle",
+            "center": "(-13.112, -12.189)",
+            "parent_region": "none"
+        },
+        "O(29)": {
+            "semantic_label": "vehicle",
+            "center": "(-13.448, -19.252)",
+            "parent_region": "R(94)"
+        },
+        "O(30)": {
+            "semantic_label": "tree",
+            "center": "(-11.954, -23.449)",
+            "parent_region": "R(100)"
+        },
+        "O(31)": {
+            "semantic_label": "tree",
+            "center": "(-12.175, -22.385)",
+            "parent_region": "none"
+        },
+        "O(32)": {
+            "semantic_label": "tree",
+            "center": "(-13.057, -22.589)",
+            "parent_region": "none"
+        },
+        "O(33)": {
+            "semantic_label": "tree",
+            "center": "(-12.761, -23.637)",
+            "parent_region": "none"
+        },
+        "O(34)": {
+            "semantic_label": "tree",
+            "center": "(-13.131, -23.004)",
+            "parent_region": "none"
+        },
+        "O(35)": {
+            "semantic_label": "vehicle",
+            "center": "(-13.694, -22.779)",
+            "parent_region": "none"
+        },
+        "O(36)": {
+            "semantic_label": "pole",
+            "center": "(-13.064, -22.556)",
+            "parent_region": "none"
+        },
+        "O(37)": {
+            "semantic_label": "vehicle",
+            "center": "(-16.279, -16.817)",
+            "parent_region": "R(40)"
+        },
+        "O(38)": {
+            "semantic_label": "door",
+            "center": "(-30.123, -14.814)",
+            "parent_region": "R(43)"
+        },
+        "O(39)": {
+            "semantic_label": "box",
+            "center": "(-30.168, -14.392)",
+            "parent_region": "none"
+        },
+        "O(40)": {
+            "semantic_label": "tree",
+            "center": "(-30.105, -14.199)",
+            "parent_region": "none"
+        },
+        "O(41)": {
+            "semantic_label": "vehicle",
+            "center": "(-30.3, -14.335)",
+            "parent_region": "none"
+        },
+        "O(42)": {
+            "semantic_label": "sign",
+            "center": "(-30.41, -15.736)",
+            "parent_region": "R(43)"
+        },
+        "O(43)": {
+            "semantic_label": "tree",
+            "center": "(-30.594, -15.754)",
+            "parent_region": "none"
+        },
+        "O(44)": {
+            "semantic_label": "vehicle",
+            "center": "(-31.415, -17.826)",
+            "parent_region": "R(43)"
+        },
+        "O(45)": {
+            "semantic_label": "sign",
+            "center": "(-29.527, -11.575)",
+            "parent_region": "none"
+        },
+        "O(46)": {
+            "semantic_label": "vehicle",
+            "center": "(-29.241, -9.722)",
+            "parent_region": "R(96)"
+        },
+        "O(47)": {
+            "semantic_label": "door",
+            "center": "(-29.269, -8.819)",
+            "parent_region": "R(96)"
+        },
+        "O(48)": {
+            "semantic_label": "vehicle",
+            "center": "(-29.173, -7.584)",
+            "parent_region": "R(96)"
+        },
+        "O(49)": {
+            "semantic_label": "sign",
+            "center": "(-29.246, -8.69)",
+            "parent_region": "R(96)"
+        },
+        "O(50)": {
+            "semantic_label": "door",
+            "center": "(-29.246, -8.835)",
+            "parent_region": "R(96)"
+        },
+        "O(51)": {
+            "semantic_label": "tree",
+            "center": "(-29.144, -7.385)",
+            "parent_region": "none"
+        },
+        "O(52)": {
+            "semantic_label": "sign",
+            "center": "(-29.161, -7.293)",
+            "parent_region": "R(96)"
+        },
+        "O(53)": {
+            "semantic_label": "tree",
+            "center": "(-29.058, -3.899)",
+            "parent_region": "R(96)"
+        },
+        "O(54)": {
+            "semantic_label": "trash",
+            "center": "(-29.403, -4.662)",
+            "parent_region": "R(96)"
+        },
+        "O(55)": {
+            "semantic_label": "box",
+            "center": "(-29.14, -4.909)",
+            "parent_region": "R(96)"
+        },
+        "O(56)": {
+            "semantic_label": "tree",
+            "center": "(-35.187, -8.476)",
+            "parent_region": "R(5)"
+        },
+        "O(57)": {
+            "semantic_label": "vehicle",
+            "center": "(-33.743, -1.485)",
+            "parent_region": "R(96)"
+        },
+        "O(58)": {
+            "semantic_label": "tree",
+            "center": "(-39.206, -3.12)",
+            "parent_region": "R(76)"
+        },
+        "O(59)": {
+            "semantic_label": "tree",
+            "center": "(-36.258, -9.83)",
+            "parent_region": "R(5)"
+        },
+        "O(60)": {
+            "semantic_label": "fence",
+            "center": "(-35.205, -10.383)",
+            "parent_region": "R(5)"
+        },
+        "O(61)": {
+            "semantic_label": "tree",
+            "center": "(-40.337, -10.855)",
+            "parent_region": "R(5)"
+        },
+        "O(62)": {
+            "semantic_label": "tree",
+            "center": "(-52.203, 7.698)",
+            "parent_region": "R(99)"
+        },
+        "O(63)": {
+            "semantic_label": "tree",
+            "center": "(-54.002, 9.616)",
+            "parent_region": "R(99)"
+        },
+        "O(64)": {
+            "semantic_label": "tree",
+            "center": "(-58.862, 8.35)",
+            "parent_region": "R(99)"
+        },
+        "O(66)": {
+            "semantic_label": "rock",
+            "center": "(-58.879, 6.561)",
+            "parent_region": "R(99)"
+        },
+        "O(67)": {
+            "semantic_label": "rock",
+            "center": "(-58.818, 2.922)",
+            "parent_region": "R(99)"
+        },
+        "O(68)": {
+            "semantic_label": "pole",
+            "center": "(-61.481, -18.051)",
+            "parent_region": "none"
+        },
+        "O(69)": {
+            "semantic_label": "tree",
+            "center": "(-61.321, -17.888)",
+            "parent_region": "none"
+        },
+        "O(70)": {
+            "semantic_label": "pole",
+            "center": "(-62.16, -17.866)",
+            "parent_region": "R(103)"
+        },
+        "O(71)": {
+            "semantic_label": "tree",
+            "center": "(-61.432, -18.269)",
+            "parent_region": "none"
+        },
+        "O(74)": {
+            "semantic_label": "pole",
+            "center": "(-80.783, -25.791)",
+            "parent_region": "none"
+        },
+        "O(75)": {
+            "semantic_label": "pole",
+            "center": "(-79.473, -25.507)",
+            "parent_region": "R(112)"
+        },
+        "O(76)": {
+            "semantic_label": "rock",
+            "center": "(-82.267, -26.423)",
+            "parent_region": "R(112)"
+        },
+        "O(77)": {
+            "semantic_label": "tree",
+            "center": "(-80.937, -25.853)",
+            "parent_region": "none"
+        },
+        "O(78)": {
+            "semantic_label": "rock",
+            "center": "(-79.742, -24.716)",
+            "parent_region": "R(112)"
+        },
+        "O(79)": {
+            "semantic_label": "rock",
+            "center": "(-79.813, -25.664)",
+            "parent_region": "R(112)"
+        },
+        "O(80)": {
+            "semantic_label": "rock",
+            "center": "(-70.554, -16.634)",
+            "parent_region": "none"
+        },
+        "O(81)": {
+            "semantic_label": "rock",
+            "center": "(-65.977, -19.769)",
+            "parent_region": "none"
+        },
+        "O(82)": {
+            "semantic_label": "pole",
+            "center": "(-62.078, -17.109)",
+            "parent_region": "R(103)"
+        },
+        "O(83)": {
+            "semantic_label": "tree",
+            "center": "(-62.518, -17.127)",
+            "parent_region": "R(103)"
+        },
+        "O(84)": {
+            "semantic_label": "tree",
+            "center": "(-62.421, -16.997)",
+            "parent_region": "none"
+        },
+        "O(85)": {
+            "semantic_label": "bag",
+            "center": "(-61.504, -16.804)",
+            "parent_region": "R(103)"
+        },
+        "O(86)": {
+            "semantic_label": "fence",
+            "center": "(-55.4, -16.341)",
+            "parent_region": "R(103)"
+        },
+        "O(87)": {
+            "semantic_label": "rock",
+            "center": "(-62.483, -4.938)",
+            "parent_region": "none"
+        },
+        "O(88)": {
+            "semantic_label": "rock",
+            "center": "(-67.849, -1.722)",
+            "parent_region": "R(87)"
+        },
+        "O(89)": {
+            "semantic_label": "rock",
+            "center": "(-69.827, -3.069)",
+            "parent_region": "R(87)"
+        },
+        "O(90)": {
+            "semantic_label": "fence",
+            "center": "(-69.763, 0.433)",
+            "parent_region": "R(87)"
+        },
+        "O(91)": {
+            "semantic_label": "fence",
+            "center": "(-69.508, -1.153)",
+            "parent_region": "R(87)"
+        },
+        "O(92)": {
+            "semantic_label": "pole",
+            "center": "(-64.284, 26.442)",
+            "parent_region": "R(7)"
+        },
+        "O(93)": {
+            "semantic_label": "tree",
+            "center": "(-65.564, 25.973)",
+            "parent_region": "R(7)"
+        },
+        "O(94)": {
+            "semantic_label": "tree",
+            "center": "(-65.803, 23.958)",
+            "parent_region": "R(7)"
+        },
+        "O(95)": {
+            "semantic_label": "pole",
+            "center": "(-67.146, 31.699)",
+            "parent_region": "R(117)"
+        },
+        "O(96)": {
+            "semantic_label": "tree",
+            "center": "(-66.218, 34.561)",
+            "parent_region": "R(117)"
+        },
+        "O(97)": {
+            "semantic_label": "fence",
+            "center": "(-64.713, 34.189)",
+            "parent_region": "R(117)"
+        },
+        "O(98)": {
+            "semantic_label": "tree",
+            "center": "(-65.859, 36.926)",
+            "parent_region": "R(89)"
+        },
+        "O(99)": {
+            "semantic_label": "pole",
+            "center": "(-65.856, 36.863)",
+            "parent_region": "R(89)"
+        },
+        "O(100)": {
+            "semantic_label": "tree",
+            "center": "(-63.047, 38.245)",
+            "parent_region": "R(89)"
+        },
+        "O(101)": {
+            "semantic_label": "tree",
+            "center": "(-64.541, 37.407)",
+            "parent_region": "R(89)"
+        },
+        "O(102)": {
+            "semantic_label": "pole",
+            "center": "(-64.607, 37.429)",
+            "parent_region": "R(89)"
+        },
+        "O(103)": {
+            "semantic_label": "rock",
+            "center": "(-63.726, 38.719)",
+            "parent_region": "R(8)"
+        },
+        "O(104)": {
+            "semantic_label": "tree",
+            "center": "(-69.731, 48.265)",
+            "parent_region": "R(9)"
+        },
+        "O(105)": {
+            "semantic_label": "tree",
+            "center": "(-67.059, 55.417)",
+            "parent_region": "R(9)"
+        },
+        "O(106)": {
+            "semantic_label": "tree",
+            "center": "(-68.482, 54.693)",
+            "parent_region": "R(9)"
+        },
+        "O(107)": {
+            "semantic_label": "tree",
+            "center": "(-67.957, 57.917)",
+            "parent_region": "R(78)"
+        },
+        "O(108)": {
+            "semantic_label": "tree",
+            "center": "(-69.284, 63.817)",
+            "parent_region": "R(10)"
+        },
+        "O(109)": {
+            "semantic_label": "tree",
+            "center": "(-64.964, 81.118)",
+            "parent_region": "none"
+        },
+        "O(110)": {
+            "semantic_label": "tree",
+            "center": "(-70.127, 82.587)",
+            "parent_region": "R(92)"
+        },
+        "O(111)": {
+            "semantic_label": "sign",
+            "center": "(-69.231, 83.172)",
+            "parent_region": "R(92)"
+        },
+        "O(112)": {
+            "semantic_label": "rock",
+            "center": "(-48.581, 63.133)",
+            "parent_region": "none"
+        },
+        "O(113)": {
+            "semantic_label": "rock",
+            "center": "(-46.546, 63.22)",
+            "parent_region": "R(11)"
+        },
+        "O(114)": {
+            "semantic_label": "rock",
+            "center": "(-45.169, 60.705)",
+            "parent_region": "R(12)"
+        },
+        "O(115)": {
+            "semantic_label": "rock",
+            "center": "(-44.383, 59.211)",
+            "parent_region": "R(12)"
+        },
+        "O(117)": {
+            "semantic_label": "vehicle",
+            "center": "(-27.713, 30.843)",
+            "parent_region": "none"
+        },
+        "O(118)": {
+            "semantic_label": "rock",
+            "center": "(-23.524, 29.171)",
+            "parent_region": "none"
+        },
+        "O(119)": {
+            "semantic_label": "tree",
+            "center": "(-7.321, 24.172)",
+            "parent_region": "R(13)"
+        },
+        "O(120)": {
+            "semantic_label": "rock",
+            "center": "(-5.441, 30.29)",
+            "parent_region": "R(121)"
+        },
+        "O(121)": {
+            "semantic_label": "tree",
+            "center": "(-21.603, 48.828)",
+            "parent_region": "R(122)"
+        },
+        "O(122)": {
+            "semantic_label": "rock",
+            "center": "(-21.04, 48.349)",
+            "parent_region": "R(122)"
+        },
+        "O(123)": {
+            "semantic_label": "tree",
+            "center": "(-27.89, 48.933)",
+            "parent_region": "R(14)"
+        },
+        "O(124)": {
+            "semantic_label": "tree",
+            "center": "(-27.671, 48.13)",
+            "parent_region": "R(14)"
+        },
+        "O(125)": {
+            "semantic_label": "tree",
+            "center": "(-29.303, 46.514)",
+            "parent_region": "none"
+        },
+        "O(126)": {
+            "semantic_label": "tree",
+            "center": "(-29.75, 45.2)",
+            "parent_region": "none"
+        },
+        "O(128)": {
+            "semantic_label": "rock",
+            "center": "(-23.83, 29.106)",
+            "parent_region": "R(65)"
+        },
+        "O(133)": {
+            "semantic_label": "tree",
+            "center": "(-0.324, 0.988)",
+            "parent_region": "none"
+        },
+        "O(138)": {
+            "semantic_label": "rock",
+            "center": "(19.861, 6.766)",
+            "parent_region": "R(2)"
+        },
+        "O(139)": {
+            "semantic_label": "pole",
+            "center": "(20.293, 6.768)",
+            "parent_region": "R(2)"
+        },
+        "O(143)": {
+            "semantic_label": "pole",
+            "center": "(21.98, 10.053)",
+            "parent_region": "R(2)"
+        },
+        "O(144)": {
+            "semantic_label": "tree",
+            "center": "(22.832, 11.657)",
+            "parent_region": "R(2)"
+        },
+        "O(145)": {
+            "semantic_label": "pole",
+            "center": "(22.71, 11.603)",
+            "parent_region": "R(2)"
+        },
+        "O(146)": {
+            "semantic_label": "rock",
+            "center": "(31.488, 9.665)",
+            "parent_region": "none"
+        },
+        "O(148)": {
+            "semantic_label": "rock",
+            "center": "(39.191, 7.246)",
+            "parent_region": "R(16)"
+        },
+        "O(149)": {
+            "semantic_label": "rock",
+            "center": "(41.83, 8.079)",
+            "parent_region": "R(16)"
+        },
+        "O(151)": {
+            "semantic_label": "rock",
+            "center": "(44.451, 7.092)",
+            "parent_region": "R(16)"
+        },
+        "O(152)": {
+            "semantic_label": "tree",
+            "center": "(44.116, -0.883)",
+            "parent_region": "none"
+        },
+        "O(153)": {
+            "semantic_label": "rock",
+            "center": "(42.947, -3.239)",
+            "parent_region": "none"
+        },
+        "O(154)": {
+            "semantic_label": "rock",
+            "center": "(41.805, -3.481)",
+            "parent_region": "none"
+        },
+        "O(155)": {
+            "semantic_label": "tree",
+            "center": "(38.201, -6.154)",
+            "parent_region": "none"
+        },
+        "O(156)": {
+            "semantic_label": "rock",
+            "center": "(37.593, -4.991)",
+            "parent_region": "none"
+        },
+        "O(157)": {
+            "semantic_label": "rock",
+            "center": "(38.756, -3.845)",
+            "parent_region": "none"
+        },
+        "O(158)": {
+            "semantic_label": "rock",
+            "center": "(38.804, -5.852)",
+            "parent_region": "none"
+        },
+        "O(159)": {
+            "semantic_label": "rock",
+            "center": "(34.686, -6.931)",
+            "parent_region": "R(81)"
+        },
+        "O(160)": {
+            "semantic_label": "tree",
+            "center": "(33.381, -7.369)",
+            "parent_region": "R(81)"
+        },
+        "O(161)": {
+            "semantic_label": "rock",
+            "center": "(34.31, -8.983)",
+            "parent_region": "none"
+        },
+        "O(162)": {
+            "semantic_label": "tree",
+            "center": "(31.73, -7.665)",
+            "parent_region": "R(81)"
+        },
+        "O(163)": {
+            "semantic_label": "rock",
+            "center": "(30.815, -7.444)",
+            "parent_region": "R(81)"
+        },
+        "O(166)": {
+            "semantic_label": "seating",
+            "center": "(24.543, -6.919)",
+            "parent_region": "R(75)"
+        },
+        "O(167)": {
+            "semantic_label": "tree",
+            "center": "(19.211, -6.154)",
+            "parent_region": "R(100)"
+        },
+        "O(169)": {
+            "semantic_label": "tree",
+            "center": "(19.515, -6.126)",
+            "parent_region": "R(100)"
+        },
+        "O(170)": {
+            "semantic_label": "tree",
+            "center": "(12.462, -4.978)",
+            "parent_region": "R(100)"
+        },
+        "O(171)": {
+            "semantic_label": "tree",
+            "center": "(13.663, -4.17)",
+            "parent_region": "R(2)"
+        },
+        "O(177)": {
+            "semantic_label": "fence",
+            "center": "(-0.537, 6.205)",
+            "parent_region": "R(100)"
+        },
+        "O(182)": {
+            "semantic_label": "vehicle",
+            "center": "(-8.453, 7.759)",
+            "parent_region": "none"
+        },
+        "O(183)": {
+            "semantic_label": "vehicle",
+            "center": "(-9.758, 8.36)",
+            "parent_region": "R(93)"
+        },
+        "O(184)": {
+            "semantic_label": "vehicle",
+            "center": "(-9.486, 0.836)",
+            "parent_region": "none"
+        },
+        "O(185)": {
+            "semantic_label": "vehicle",
+            "center": "(-9.681, 1.597)",
+            "parent_region": "R(68)"
+        },
+        "O(186)": {
+            "semantic_label": "pole",
+            "center": "(-15.829, 3.206)",
+            "parent_region": "none"
+        },
+        "O(188)": {
+            "semantic_label": "tree",
+            "center": "(-15.419, 0.203)",
+            "parent_region": "none"
+        },
+        "O(193)": {
+            "semantic_label": "rock",
+            "center": "(-0.789, -2.904)",
+            "parent_region": "R(100)"
+        },
+        "O(194)": {
+            "semantic_label": "tree",
+            "center": "(-0.176, -3.258)",
+            "parent_region": "R(100)"
+        },
+        "O(195)": {
+            "semantic_label": "rock",
+            "center": "(-0.825, -4.264)",
+            "parent_region": "R(100)"
+        },
+        "O(198)": {
+            "semantic_label": "tree",
+            "center": "(-6.026, -5.851)",
+            "parent_region": "none"
+        },
+        "O(201)": {
+            "semantic_label": "tree",
+            "center": "(-3.861, -7.739)",
+            "parent_region": "none"
+        },
+        "O(202)": {
+            "semantic_label": "tree",
+            "center": "(-1.161, -5.645)",
+            "parent_region": "none"
+        },
+        "O(204)": {
+            "semantic_label": "vehicle",
+            "center": "(-7.224, -5.398)",
+            "parent_region": "none"
+        },
+        "O(215)": {
+            "semantic_label": "rock",
+            "center": "(2.906, -2.022)",
+            "parent_region": "R(3)"
+        },
+        "O(217)": {
+            "semantic_label": "tree",
+            "center": "(18.173, -8.123)",
+            "parent_region": "none"
+        },
+        "O(218)": {
+            "semantic_label": "tree",
+            "center": "(19.561, -6.736)",
+            "parent_region": "none"
+        },
+        "O(219)": {
+            "semantic_label": "seating",
+            "center": "(19.749, -14.01)",
+            "parent_region": "none"
+        },
+        "O(220)": {
+            "semantic_label": "tree",
+            "center": "(24.702, -11.755)",
+            "parent_region": "none"
+        },
+        "O(221)": {
+            "semantic_label": "tree",
+            "center": "(22.511, -13.432)",
+            "parent_region": "none"
+        },
+        "O(222)": {
+            "semantic_label": "tree",
+            "center": "(22.077, -7.085)",
+            "parent_region": "none"
+        },
+        "O(223)": {
+            "semantic_label": "tree",
+            "center": "(21.387, -5.978)",
+            "parent_region": "none"
+        },
+        "O(224)": {
+            "semantic_label": "seating",
+            "center": "(22.652, -5.584)",
+            "parent_region": "R(75)"
+        },
+        "O(225)": {
+            "semantic_label": "seating",
+            "center": "(21.969, -4.558)",
+            "parent_region": "R(75)"
+        },
+        "O(226)": {
+            "semantic_label": "rock",
+            "center": "(39.951, -4.253)",
+            "parent_region": "none"
+        },
+        "O(227)": {
+            "semantic_label": "rock",
+            "center": "(41.505, -3.759)",
+            "parent_region": "none"
+        },
+        "O(228)": {
+            "semantic_label": "rock",
+            "center": "(43.083, -3.689)",
+            "parent_region": "R(16)"
+        },
+        "O(229)": {
+            "semantic_label": "tree",
+            "center": "(44.042, -1.804)",
+            "parent_region": "R(16)"
+        },
+        "O(230)": {
+            "semantic_label": "tree",
+            "center": "(44.404, 8.022)",
+            "parent_region": "none"
+        },
+        "O(231)": {
+            "semantic_label": "rock",
+            "center": "(44.357, 6.608)",
+            "parent_region": "R(16)"
+        },
+        "O(232)": {
+            "semantic_label": "rock",
+            "center": "(41.784, 7.16)",
+            "parent_region": "R(73)"
+        },
+        "O(233)": {
+            "semantic_label": "tree",
+            "center": "(36.616, 6.737)",
+            "parent_region": "none"
+        },
+        "O(234)": {
+            "semantic_label": "tree",
+            "center": "(70.555, 4.55)",
+            "parent_region": "R(20)"
+        },
+        "O(235)": {
+            "semantic_label": "tree",
+            "center": "(72.8, 3.779)",
+            "parent_region": "R(20)"
+        },
+        "O(236)": {
+            "semantic_label": "tree",
+            "center": "(70.556, -2.289)",
+            "parent_region": "R(20)"
+        },
+        "O(237)": {
+            "semantic_label": "tree",
+            "center": "(74.981, -2.648)",
+            "parent_region": "R(20)"
+        },
+        "O(238)": {
+            "semantic_label": "tree",
+            "center": "(73.969, -3.838)",
+            "parent_region": "R(20)"
+        },
+        "O(239)": {
+            "semantic_label": "tree",
+            "center": "(76.734, -1.571)",
+            "parent_region": "R(20)"
+        },
+        "O(240)": {
+            "semantic_label": "tree",
+            "center": "(79.379, -0.381)",
+            "parent_region": "R(20)"
+        },
+        "O(241)": {
+            "semantic_label": "tree",
+            "center": "(80.372, -0.364)",
+            "parent_region": "R(20)"
+        },
+        "O(242)": {
+            "semantic_label": "tree",
+            "center": "(78.72, -5.748)",
+            "parent_region": "R(20)"
+        },
+        "O(243)": {
+            "semantic_label": "tree",
+            "center": "(82.019, -6.4)",
+            "parent_region": "none"
+        },
+        "O(244)": {
+            "semantic_label": "tree",
+            "center": "(84.943, -2.734)",
+            "parent_region": "R(20)"
+        },
+        "O(245)": {
+            "semantic_label": "tree",
+            "center": "(86.388, -4.942)",
+            "parent_region": "R(20)"
+        },
+        "O(246)": {
+            "semantic_label": "tree",
+            "center": "(83.512, 1.086)",
+            "parent_region": "R(82)"
+        },
+        "O(247)": {
+            "semantic_label": "tree",
+            "center": "(87.097, 2.619)",
+            "parent_region": "R(20)"
+        },
+        "O(248)": {
+            "semantic_label": "tree",
+            "center": "(84.718, 5.245)",
+            "parent_region": "R(20)"
+        },
+        "O(249)": {
+            "semantic_label": "tree",
+            "center": "(82.611, 5.556)",
+            "parent_region": "R(20)"
+        },
+        "O(250)": {
+            "semantic_label": "tree",
+            "center": "(79.305, 6.45)",
+            "parent_region": "none"
+        },
+        "O(251)": {
+            "semantic_label": "tree",
+            "center": "(78.065, 6.372)",
+            "parent_region": "R(20)"
+        },
+        "O(252)": {
+            "semantic_label": "tree",
+            "center": "(77.959, 8.267)",
+            "parent_region": "R(20)"
+        },
+        "O(253)": {
+            "semantic_label": "tree",
+            "center": "(85.091, 8.428)",
+            "parent_region": "R(20)"
+        },
+        "O(254)": {
+            "semantic_label": "tree",
+            "center": "(83.019, 6.057)",
+            "parent_region": "R(20)"
+        },
+        "O(255)": {
+            "semantic_label": "tree",
+            "center": "(71.674, 12.257)",
+            "parent_region": "R(101)"
+        },
+        "O(256)": {
+            "semantic_label": "tree",
+            "center": "(74.651, 13.003)",
+            "parent_region": "R(101)"
+        },
+        "O(257)": {
+            "semantic_label": "tree",
+            "center": "(65.73, 25.359)",
+            "parent_region": "R(22)"
+        },
+        "O(258)": {
+            "semantic_label": "rock",
+            "center": "(61.529, 23.49)",
+            "parent_region": "none"
+        },
+        "O(259)": {
+            "semantic_label": "tree",
+            "center": "(60.342, 22.544)",
+            "parent_region": "R(21)"
+        },
+        "O(260)": {
+            "semantic_label": "rock",
+            "center": "(55.802, 24.201)",
+            "parent_region": "none"
+        },
+        "O(261)": {
+            "semantic_label": "rock",
+            "center": "(34.998, 10.757)",
+            "parent_region": "R(25)"
+        },
+        "O(262)": {
+            "semantic_label": "rock",
+            "center": "(25.531, 10.475)",
+            "parent_region": "R(70)"
+        },
+        "O(263)": {
+            "semantic_label": "pole",
+            "center": "(22.617, 11.372)",
+            "parent_region": "none"
+        },
+        "O(264)": {
+            "semantic_label": "tree",
+            "center": "(21.688, 9.35)",
+            "parent_region": "none"
+        },
+        "O(265)": {
+            "semantic_label": "pole",
+            "center": "(21.796, 9.705)",
+            "parent_region": "R(70)"
+        },
+        "O(266)": {
+            "semantic_label": "tree",
+            "center": "(22.856, 11.403)",
+            "parent_region": "none"
+        },
+        "O(267)": {
+            "semantic_label": "pole",
+            "center": "(21.052, 8.246)",
+            "parent_region": "none"
+        },
+        "O(268)": {
+            "semantic_label": "pole",
+            "center": "(20.1, 6.439)",
+            "parent_region": "R(2)"
+        },
+        "O(269)": {
+            "semantic_label": "tree",
+            "center": "(20.104, 6.163)",
+            "parent_region": "R(2)"
+        },
+        "O(270)": {
+            "semantic_label": "tree",
+            "center": "(19.427, 4.862)",
+            "parent_region": "none"
+        },
+        "O(271)": {
+            "semantic_label": "pole",
+            "center": "(19.512, 4.96)",
+            "parent_region": "none"
+        },
+        "O(272)": {
+            "semantic_label": "tree",
+            "center": "(20.408, 6.763)",
+            "parent_region": "none"
+        },
+        "O(274)": {
+            "semantic_label": "tree",
+            "center": "(10.338, -1.785)",
+            "parent_region": "none"
+        },
+        "O(275)": {
+            "semantic_label": "tree",
+            "center": "(4.856, 1.561)",
+            "parent_region": "none"
+        },
+        "O(330)": {
+            "semantic_label": "vehicle",
+            "center": "(-10.669, 10.316)",
+            "parent_region": "none"
+        },
+        "O(331)": {
+            "semantic_label": "tree",
+            "center": "(-38.084, 33.189)",
+            "parent_region": "none"
+        },
+        "O(332)": {
+            "semantic_label": "tree",
+            "center": "(-38.784, 37.185)",
+            "parent_region": "R(26)"
+        },
+        "O(333)": {
+            "semantic_label": "tree",
+            "center": "(-40.351, 37.515)",
+            "parent_region": "R(26)"
+        },
+        "O(334)": {
+            "semantic_label": "tree",
+            "center": "(-41.196, 36.263)",
+            "parent_region": "R(26)"
+        },
+        "O(335)": {
+            "semantic_label": "tree",
+            "center": "(-44.234, 35.476)",
+            "parent_region": "R(26)"
+        },
+        "O(336)": {
+            "semantic_label": "tree",
+            "center": "(-49.815, 28.889)",
+            "parent_region": "R(74)"
+        },
+        "O(337)": {
+            "semantic_label": "rock",
+            "center": "(-47.897, 26.468)",
+            "parent_region": "R(74)"
+        },
+        "O(338)": {
+            "semantic_label": "tree",
+            "center": "(-46.631, 13.13)",
+            "parent_region": "R(28)"
+        },
+        "O(339)": {
+            "semantic_label": "rock",
+            "center": "(-50.705, 11.062)",
+            "parent_region": "none"
+        },
+        "O(340)": {
+            "semantic_label": "rock",
+            "center": "(-49.515, 10.779)",
+            "parent_region": "none"
+        },
+        "O(341)": {
+            "semantic_label": "rock",
+            "center": "(-46.847, 12.218)",
+            "parent_region": "R(28)"
+        },
+        "O(342)": {
+            "semantic_label": "rock",
+            "center": "(-47.608, 11.451)",
+            "parent_region": "R(28)"
+        },
+        "O(343)": {
+            "semantic_label": "tree",
+            "center": "(-52.995, 9.114)",
+            "parent_region": "R(99)"
+        },
+        "O(344)": {
+            "semantic_label": "tree",
+            "center": "(-51.544, 6.915)",
+            "parent_region": "R(99)"
+        },
+        "O(345)": {
+            "semantic_label": "tree",
+            "center": "(-54.612, 8.741)",
+            "parent_region": "none"
+        },
+        "O(346)": {
+            "semantic_label": "tree",
+            "center": "(-59.288, 6.281)",
+            "parent_region": "none"
+        },
+        "O(347)": {
+            "semantic_label": "tree",
+            "center": "(-64.909, -9.689)",
+            "parent_region": "R(103)"
+        },
+        "O(348)": {
+            "semantic_label": "vehicle",
+            "center": "(-62.485, -13.332)",
+            "parent_region": "R(98)"
+        },
+        "O(349)": {
+            "semantic_label": "rock",
+            "center": "(-71.315, -12.47)",
+            "parent_region": "none"
+        },
+        "O(350)": {
+            "semantic_label": "rock",
+            "center": "(-72.166, -15.066)",
+            "parent_region": "none"
+        },
+        "O(351)": {
+            "semantic_label": "vehicle",
+            "center": "(-74.091, -19.383)",
+            "parent_region": "R(97)"
+        },
+        "O(352)": {
+            "semantic_label": "rock",
+            "center": "(-80.347, -19.573)",
+            "parent_region": "R(102)"
+        },
+        "O(353)": {
+            "semantic_label": "rock",
+            "center": "(-82.438, -22.107)",
+            "parent_region": "R(102)"
+        },
+        "O(354)": {
+            "semantic_label": "pole",
+            "center": "(-82.684, -22.833)",
+            "parent_region": "R(102)"
+        },
+        "O(355)": {
+            "semantic_label": "tree",
+            "center": "(-82.81, -22.785)",
+            "parent_region": "R(102)"
+        },
+        "O(356)": {
+            "semantic_label": "rock",
+            "center": "(-82.857, -21.376)",
+            "parent_region": "R(102)"
+        },
+        "O(357)": {
+            "semantic_label": "tree",
+            "center": "(-82.65, -22.839)",
+            "parent_region": "R(102)"
+        },
+        "O(358)": {
+            "semantic_label": "tree",
+            "center": "(-83.982, -22.776)",
+            "parent_region": "none"
+        },
+        "O(359)": {
+            "semantic_label": "tree",
+            "center": "(-83.943, -22.978)",
+            "parent_region": "R(102)"
+        },
+        "O(360)": {
+            "semantic_label": "rock",
+            "center": "(-89.403, -26.846)",
+            "parent_region": "none"
+        },
+        "O(361)": {
+            "semantic_label": "tree",
+            "center": "(-93.571, -8.678)",
+            "parent_region": "none"
+        },
+        "O(362)": {
+            "semantic_label": "rock",
+            "center": "(-95.145, -6.862)",
+            "parent_region": "none"
+        },
+        "O(363)": {
+            "semantic_label": "tree",
+            "center": "(-96.584, -1.173)",
+            "parent_region": "none"
+        },
+        "O(364)": {
+            "semantic_label": "tree",
+            "center": "(-97.295, -1.331)",
+            "parent_region": "none"
+        },
+        "O(365)": {
+            "semantic_label": "tree",
+            "center": "(-97.156, 1.505)",
+            "parent_region": "none"
+        },
+        "O(366)": {
+            "semantic_label": "tree",
+            "center": "(-98.705, 1.796)",
+            "parent_region": "R(30)"
+        },
+        "O(367)": {
+            "semantic_label": "tree",
+            "center": "(-98.978, 3.76)",
+            "parent_region": "R(30)"
+        },
+        "O(368)": {
+            "semantic_label": "tree",
+            "center": "(-100.348, 4.175)",
+            "parent_region": "R(30)"
+        },
+        "O(369)": {
+            "semantic_label": "tree",
+            "center": "(-100.864, 7.864)",
+            "parent_region": "R(30)"
+        },
+        "O(370)": {
+            "semantic_label": "tree",
+            "center": "(-100.02, 16.435)",
+            "parent_region": "R(30)"
+        },
+        "O(371)": {
+            "semantic_label": "rock",
+            "center": "(-101.877, 16.019)",
+            "parent_region": "R(30)"
+        },
+        "O(372)": {
+            "semantic_label": "tree",
+            "center": "(-100.834, 18.029)",
+            "parent_region": "R(30)"
+        },
+        "O(373)": {
+            "semantic_label": "tree",
+            "center": "(-94.13, 19.207)",
+            "parent_region": "none"
+        },
+        "O(374)": {
+            "semantic_label": "tree",
+            "center": "(-93.706, 18.728)",
+            "parent_region": "R(114)"
+        },
+        "O(375)": {
+            "semantic_label": "tree",
+            "center": "(-88.735, 20.137)",
+            "parent_region": "R(31)"
+        },
+        "O(376)": {
+            "semantic_label": "tree",
+            "center": "(-84.818, 21.673)",
+            "parent_region": "R(31)"
+        },
+        "O(377)": {
+            "semantic_label": "tree",
+            "center": "(-80.466, 28.38)",
+            "parent_region": "R(32)"
+        },
+        "O(378)": {
+            "semantic_label": "rock",
+            "center": "(-80.962, 27.755)",
+            "parent_region": "R(88)"
+        },
+        "O(379)": {
+            "semantic_label": "tree",
+            "center": "(-76.176, 28.757)",
+            "parent_region": "R(32)"
+        },
+        "O(380)": {
+            "semantic_label": "tree",
+            "center": "(-69.142, 26.743)",
+            "parent_region": "R(55)"
+        },
+        "O(381)": {
+            "semantic_label": "pole",
+            "center": "(-66.949, 30.701)",
+            "parent_region": "R(32)"
+        },
+        "O(382)": {
+            "semantic_label": "rock",
+            "center": "(-71.632, 33.412)",
+            "parent_region": "none"
+        },
+        "O(383)": {
+            "semantic_label": "tree",
+            "center": "(-70.763, 38.361)",
+            "parent_region": "R(33)"
+        },
+        "O(384)": {
+            "semantic_label": "rock",
+            "center": "(-63.321, 36.922)",
+            "parent_region": "none"
+        },
+        "O(385)": {
+            "semantic_label": "tree",
+            "center": "(-42.123, 34.367)",
+            "parent_region": "R(34)"
+        },
+        "O(386)": {
+            "semantic_label": "tree",
+            "center": "(-40.604, 37.24)",
+            "parent_region": "none"
+        },
+        "O(387)": {
+            "semantic_label": "tree",
+            "center": "(-38.908, 34.561)",
+            "parent_region": "R(119)"
+        },
+        "O(388)": {
+            "semantic_label": "tree",
+            "center": "(-38.182, 35.86)",
+            "parent_region": "none"
+        },
+        "O(389)": {
+            "semantic_label": "rock",
+            "center": "(-39.627, 36.123)",
+            "parent_region": "none"
+        },
+        "O(390)": {
+            "semantic_label": "tree",
+            "center": "(-36.124, 31.717)",
+            "parent_region": "none"
+        },
+        "O(391)": {
+            "semantic_label": "tree",
+            "center": "(-25.393, 33.694)",
+            "parent_region": "R(41)"
+        },
+        "O(392)": {
+            "semantic_label": "tree",
+            "center": "(-26.508, 35.721)",
+            "parent_region": "none"
+        },
+        "O(393)": {
+            "semantic_label": "vehicle",
+            "center": "(-28.431, -1.238)",
+            "parent_region": "R(46)"
+        },
+        "O(395)": {
+            "semantic_label": "box",
+            "center": "(-28.824, -9.581)",
+            "parent_region": "R(42)"
+        },
+        "O(396)": {
+            "semantic_label": "vehicle",
+            "center": "(-29.935, -15.411)",
+            "parent_region": "R(42)"
+        },
+        "O(397)": {
+            "semantic_label": "box",
+            "center": "(-28.49, -8.697)",
+            "parent_region": "none"
+        },
+        "O(398)": {
+            "semantic_label": "vehicle",
+            "center": "(-29.045, -4.135)",
+            "parent_region": "none"
+        },
+        "O(470)": {
+            "semantic_label": "tree",
+            "center": "(4.9, -0.938)",
+            "parent_region": "R(1)"
+        },
+        "O(498)": {
+            "semantic_label": "tree",
+            "center": "(-0.909, -5.092)",
+            "parent_region": "R(100)"
+        },
+        "O(501)": {
+            "semantic_label": "fence",
+            "center": "(-1.481, -5.219)",
+            "parent_region": "R(100)"
+        },
+        "O(502)": {
+            "semantic_label": "fence",
+            "center": "(-1.12, -4.405)",
+            "parent_region": "R(100)"
+        },
+        "O(506)": {
+            "semantic_label": "tree",
+            "center": "(1.862, -8.456)",
+            "parent_region": "R(100)"
+        },
+        "O(507)": {
+            "semantic_label": "tree",
+            "center": "(0.388, -9.72)",
+            "parent_region": "none"
+        },
+        "O(515)": {
+            "semantic_label": "tree",
+            "center": "(1.224, -11.096)",
+            "parent_region": "R(100)"
+        },
+        "O(534)": {
+            "semantic_label": "tree",
+            "center": "(5.694, -5.216)",
+            "parent_region": "R(1)"
+        },
+        "O(536)": {
+            "semantic_label": "tree",
+            "center": "(5.923, -7.009)",
+            "parent_region": "none"
+        },
+        "O(578)": {
+            "semantic_label": "tree",
+            "center": "(-0.882, -9.108)",
+            "parent_region": "none"
+        },
+        "O(579)": {
+            "semantic_label": "fence",
+            "center": "(0.098, 2.274)",
+            "parent_region": "R(100)"
+        },
+        "O(580)": {
+            "semantic_label": "fence",
+            "center": "(-1.045, 2.789)",
+            "parent_region": "R(100)"
+        },
+        "O(961)": {
+            "semantic_label": "seating",
+            "center": "(-4.994, -0.714)",
+            "parent_region": "none"
+        },
+        "O(963)": {
+            "semantic_label": "rock",
+            "center": "(2.473, -5.954)",
+            "parent_region": "R(86)"
+        },
+        "O(966)": {
+            "semantic_label": "tree",
+            "center": "(0.063, 5.423)",
+            "parent_region": "none"
+        },
+        "O(969)": {
+            "semantic_label": "tree",
+            "center": "(-2.335, 5.296)",
+            "parent_region": "none"
+        },
+        "O(970)": {
+            "semantic_label": "fence",
+            "center": "(-1.525, -1.49)",
+            "parent_region": "R(35)"
+        },
+        "O(971)": {
+            "semantic_label": "vehicle",
+            "center": "(-2.544, -0.086)",
+            "parent_region": "none"
+        },
+        "O(989)": {
+            "semantic_label": "fence",
+            "center": "(-0.861, 5.783)",
+            "parent_region": "R(100)"
+        },
+        "O(1027)": {
+            "semantic_label": "fence",
+            "center": "(-9.63, 1.168)",
+            "parent_region": "none"
+        },
+        "O(1033)": {
+            "semantic_label": "fence",
+            "center": "(-10.219, 0.262)",
+            "parent_region": "R(93)"
+        },
+        "O(1037)": {
+            "semantic_label": "tree",
+            "center": "(-12.303, 0.404)",
+            "parent_region": "none"
+        },
+        "O(1101)": {
+            "semantic_label": "tree",
+            "center": "(2.957, -6.383)",
+            "parent_region": "none"
+        },
+        "O(1102)": {
+            "semantic_label": "tree",
+            "center": "(5.089, -2.641)",
+            "parent_region": "none"
+        },
+        "O(1103)": {
+            "semantic_label": "tree",
+            "center": "(1.126, -7.706)",
+            "parent_region": "none"
+        },
+        "O(1141)": {
+            "semantic_label": "tree",
+            "center": "(0.137, 5.284)",
+            "parent_region": "none"
+        },
+        "O(1154)": {
+            "semantic_label": "tree",
+            "center": "(-6.857, -3.118)",
+            "parent_region": "none"
+        },
+        "O(1156)": {
+            "semantic_label": "fence",
+            "center": "(-4.677, -1.429)",
+            "parent_region": "none"
+        },
+        "O(1162)": {
+            "semantic_label": "fence",
+            "center": "(-9.978, -0.009)",
+            "parent_region": "R(93)"
+        },
+        "O(1176)": {
+            "semantic_label": "tree",
+            "center": "(-10.442, -0.189)",
+            "parent_region": "none"
+        },
+        "O(1201)": {
+            "semantic_label": "seating",
+            "center": "(-4.654, -1.453)",
+            "parent_region": "none"
+        },
+        "O(1208)": {
+            "semantic_label": "tree",
+            "center": "(-5.446, 1.108)",
+            "parent_region": "none"
+        },
+        "O(1210)": {
+            "semantic_label": "seating",
+            "center": "(-2.035, -2.194)",
+            "parent_region": "none"
+        },
+        "O(1212)": {
+            "semantic_label": "tree",
+            "center": "(-2.174, -5.4)",
+            "parent_region": "R(100)"
+        },
+        "O(1214)": {
+            "semantic_label": "vehicle",
+            "center": "(-11.388, -3.625)",
+            "parent_region": "none"
+        },
+        "O(1215)": {
+            "semantic_label": "tree",
+            "center": "(-7.797, -10.012)",
+            "parent_region": "R(100)"
+        },
+        "O(1216)": {
+            "semantic_label": "vehicle",
+            "center": "(-5.886, -10.495)",
+            "parent_region": "none"
+        }
+    },
+    "objects_by_semantic_class": {
+        "tree": [
+            "O(2)",
+            "O(3)",
+            "O(4)",
+            "O(16)",
+            "O(18)",
+            "O(25)",
+            "O(30)",
+            "O(31)",
+            "O(32)",
+            "O(33)",
+            "O(34)",
+            "O(40)",
+            "O(43)",
+            "O(51)",
+            "O(53)",
+            "O(56)",
+            "O(58)",
+            "O(59)",
+            "O(61)",
+            "O(62)",
+            "O(63)",
+            "O(64)",
+            "O(69)",
+            "O(71)",
+            "O(77)",
+            "O(83)",
+            "O(84)",
+            "O(93)",
+            "O(94)",
+            "O(96)",
+            "O(98)",
+            "O(100)",
+            "O(101)",
+            "O(104)",
+            "O(105)",
+            "O(106)",
+            "O(107)",
+            "O(108)",
+            "O(109)",
+            "O(110)",
+            "O(119)",
+            "O(121)",
+            "O(123)",
+            "O(124)",
+            "O(125)",
+            "O(126)",
+            "O(133)",
+            "O(144)",
+            "O(152)",
+            "O(155)",
+            "O(160)",
+            "O(162)",
+            "O(167)",
+            "O(169)",
+            "O(170)",
+            "O(171)",
+            "O(188)",
+            "O(194)",
+            "O(198)",
+            "O(201)",
+            "O(202)",
+            "O(217)",
+            "O(218)",
+            "O(220)",
+            "O(221)",
+            "O(222)",
+            "O(223)",
+            "O(229)",
+            "O(230)",
+            "O(233)",
+            "O(234)",
+            "O(235)",
+            "O(236)",
+            "O(237)",
+            "O(238)",
+            "O(239)",
+            "O(240)",
+            "O(241)",
+            "O(242)",
+            "O(243)",
+            "O(244)",
+            "O(245)",
+            "O(246)",
+            "O(247)",
+            "O(248)",
+            "O(249)",
+            "O(250)",
+            "O(251)",
+            "O(252)",
+            "O(253)",
+            "O(254)",
+            "O(255)",
+            "O(256)",
+            "O(257)",
+            "O(259)",
+            "O(264)",
+            "O(266)",
+            "O(269)",
+            "O(270)",
+            "O(272)",
+            "O(274)",
+            "O(275)",
+            "O(331)",
+            "O(332)",
+            "O(333)",
+            "O(334)",
+            "O(335)",
+            "O(336)",
+            "O(338)",
+            "O(343)",
+            "O(344)",
+            "O(345)",
+            "O(346)",
+            "O(347)",
+            "O(355)",
+            "O(357)",
+            "O(358)",
+            "O(359)",
+            "O(361)",
+            "O(363)",
+            "O(364)",
+            "O(365)",
+            "O(366)",
+            "O(367)",
+            "O(368)",
+            "O(369)",
+            "O(370)",
+            "O(372)",
+            "O(373)",
+            "O(374)",
+            "O(375)",
+            "O(376)",
+            "O(377)",
+            "O(379)",
+            "O(380)",
+            "O(383)",
+            "O(385)",
+            "O(386)",
+            "O(387)",
+            "O(388)",
+            "O(390)",
+            "O(391)",
+            "O(392)",
+            "O(470)",
+            "O(498)",
+            "O(506)",
+            "O(507)",
+            "O(515)",
+            "O(534)",
+            "O(536)",
+            "O(578)",
+            "O(966)",
+            "O(969)",
+            "O(1037)",
+            "O(1101)",
+            "O(1102)",
+            "O(1103)",
+            "O(1141)",
+            "O(1154)",
+            "O(1176)",
+            "O(1208)",
+            "O(1212)",
+            "O(1215)"
+        ],
+        "fence": [
+            "O(5)",
+            "O(60)",
+            "O(86)",
+            "O(90)",
+            "O(91)",
+            "O(97)",
+            "O(177)",
+            "O(501)",
+            "O(502)",
+            "O(579)",
+            "O(580)",
+            "O(970)",
+            "O(989)",
+            "O(1027)",
+            "O(1033)",
+            "O(1156)",
+            "O(1162)"
+        ],
+        "vehicle": [
+            "O(10)",
+            "O(27)",
+            "O(28)",
+            "O(29)",
+            "O(35)",
+            "O(37)",
+            "O(41)",
+            "O(44)",
+            "O(46)",
+            "O(48)",
+            "O(57)",
+            "O(117)",
+            "O(182)",
+            "O(183)",
+            "O(184)",
+            "O(185)",
+            "O(204)",
+            "O(330)",
+            "O(348)",
+            "O(351)",
+            "O(393)",
+            "O(396)",
+            "O(398)",
+            "O(971)",
+            "O(1214)",
+            "O(1216)"
+        ],
+        "seating": [
+            "O(12)",
+            "O(14)",
+            "O(166)",
+            "O(219)",
+            "O(224)",
+            "O(225)",
+            "O(961)",
+            "O(1201)",
+            "O(1210)"
+        ],
+        "window": [
+            "O(21)"
+        ],
+        "sign": [
+            "O(26)",
+            "O(42)",
+            "O(45)",
+            "O(49)",
+            "O(52)",
+            "O(111)"
+        ],
+        "pole": [
+            "O(36)",
+            "O(68)",
+            "O(70)",
+            "O(74)",
+            "O(75)",
+            "O(82)",
+            "O(92)",
+            "O(95)",
+            "O(99)",
+            "O(102)",
+            "O(139)",
+            "O(143)",
+            "O(145)",
+            "O(186)",
+            "O(263)",
+            "O(265)",
+            "O(267)",
+            "O(268)",
+            "O(271)",
+            "O(354)",
+            "O(381)"
+        ],
+        "door": [
+            "O(38)",
+            "O(47)",
+            "O(50)"
+        ],
+        "box": [
+            "O(39)",
+            "O(55)",
+            "O(395)",
+            "O(397)"
+        ],
+        "trash": [
+            "O(54)"
+        ],
+        "rock": [
+            "O(66)",
+            "O(67)",
+            "O(76)",
+            "O(78)",
+            "O(79)",
+            "O(80)",
+            "O(81)",
+            "O(87)",
+            "O(88)",
+            "O(89)",
+            "O(103)",
+            "O(112)",
+            "O(113)",
+            "O(114)",
+            "O(115)",
+            "O(118)",
+            "O(120)",
+            "O(122)",
+            "O(128)",
+            "O(138)",
+            "O(146)",
+            "O(148)",
+            "O(149)",
+            "O(151)",
+            "O(153)",
+            "O(154)",
+            "O(156)",
+            "O(157)",
+            "O(158)",
+            "O(159)",
+            "O(161)",
+            "O(163)",
+            "O(193)",
+            "O(195)",
+            "O(215)",
+            "O(226)",
+            "O(227)",
+            "O(228)",
+            "O(231)",
+            "O(232)",
+            "O(258)",
+            "O(260)",
+            "O(261)",
+            "O(262)",
+            "O(337)",
+            "O(339)",
+            "O(340)",
+            "O(341)",
+            "O(342)",
+            "O(349)",
+            "O(350)",
+            "O(352)",
+            "O(353)",
+            "O(356)",
+            "O(360)",
+            "O(362)",
+            "O(371)",
+            "O(378)",
+            "O(382)",
+            "O(384)",
+            "O(389)",
+            "O(963)"
+        ],
+        "bag": [
+            "O(85)"
+        ]
+    }
+}

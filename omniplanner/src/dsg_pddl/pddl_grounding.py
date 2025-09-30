@@ -54,7 +54,7 @@ class PddlProblem:
         problem += ")"
 
         print("pddl problem: ")
-        print(problem)
+        # print(problem)
         return problem
 
     def to_goal_string(self, goal):

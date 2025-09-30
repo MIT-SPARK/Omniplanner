@@ -1,0 +1,60 @@
+- id: 20
+  instruction: "Hamilton, be by the window."
+  answer:
+    - id: hamilton
+      goal: (VisitedObject O(21))
+- id: 21
+  instruction: "Spot, make the trash safe."
+  answer:
+    - id: spot
+      goal: (Safe O(54))
+- id: 22
+  instruction: "Hamilton, make the trash safe and then I want you by the window."
+  answer:
+    - id: hamilton
+      goal: (and (Safe O(54)) (AtObject O(21)))
+- id: 23
+  instruction: "Spot, I want each door to have been visited by you."
+  answer:
+    - id: spot
+      goal: (and (VisitedObject O(38)) (VisitedObject O(47)) (VisitedObject O(50)))
+- id: 24
+  instruction: "Hamilton, can you make all of the boxes safe?"
+  answer:
+    - id: hamilton
+      goal: (and (Safe O(39)) (Safe O(55)) (Safe O(395)) (Safe O(397)))
+- id: 25
+  instruction: "Hamilton, be by the window. Spot, make the trash safe."
+  answer:
+    - id: hamilton
+      goal: (VisitedObject O(21))
+    - id: spot
+      goal: (Safe O(54))
+- id: 26
+  instruction: "Spot, I want each door to have been visited by you. Hamilton, turn each box safe."
+  answer:
+    - id: spot
+      goal: (and (VisitedObject O(38)) (VisitedObject O(47)) (VisitedObject O(50)))
+    - id: hamilton
+      goal: (and (Safe O(39)) (Safe O(55)) (Safe O(395)) (Safe O(397)))
+- id: 27
+  instruction: "Hamilton, can you make each sign safe? Spot, make the trash safe."
+  answer:
+    - id: hamilton
+      goal: (and (Safe O(26)) (Safe O(42)) (Safe O(45)) (Safe O(49)) (Safe O(52)) Safe( O(111)))
+    - id: spot
+      goal: (Safe O(54))
+- id: 28
+  instruction: "Spot, make each box safe and then I want you by the window. Hamilton, be by the trash."
+  answer:
+    - id: spot
+      goal: (and (Safe O(39)) (Safe O(55)) (Safe O(395)) (Safe O(397)) (AtObject O(21)))
+    - id: hamilton
+      goal: (VisitedObject O(54))
+- id: 29
+  instruction: "Hamilton, be by the window or the trash. Spot, make the trash safe or be by the window."
+  answer:
+    - id: hamilton
+      goal: (or (VisitedObject O(21)) (AtObject O(54))))
+    - id: spot
+      goal: (or (Safe O(54)) (AtObject O(21)))

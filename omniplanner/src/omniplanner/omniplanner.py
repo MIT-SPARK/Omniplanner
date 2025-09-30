@@ -34,6 +34,12 @@ class PlanningGoal:
     pass
 
 
+@dataclass
+class PlanningGoalMultiRobot:
+    pddl_goal: str
+    robot_ids: List[str]  # List of robot IDs involved in the goal
+
+
 class ExecutionInterface:
     pass
 
@@ -215,14 +221,15 @@ def make_plan(grounded_problem: GroundedProblem, map_context: Any) -> Plan:
 def make_plan(grounded_problem: Functor, map_context: Any):
     return fmap(lambda e: make_plan(e, map_context), grounded_problem)
 
-
+@dispatch
 def full_planning_pipeline(plan_request: PlanRequest, map_context: Any, feedback=None):
     grounded_problem = ground_problem(
-        plan_request.domain,
-        map_context,
-        plan_request.robot_states,
-        plan_request.goal,
-        feedback,
+        plan_request.domain, ## domain
+        map_context, ## dsg
+        plan_request.robot_states, ## robot_states
+        plan_request.goal, ## goal
+        feedback, ## feedback
+        Multirobot=True, ## Multirobot
     )
     logger.debug("Grounded Problem")
 
@@ -230,6 +237,9 @@ def full_planning_pipeline(plan_request: PlanRequest, map_context: Any, feedback
     # added during grounding...
     dsg_context = DsgContextProvider(map_context)
     contextualized_problem = SymbolicContext(dsg_context, grounded_problem)
-    plan = make_plan(contextualized_problem, map_context)
+    # Ensure PDDL make_plan(GroundedPddlProblem, Any) is registered without circular import
+    import dsg_pddl.dsg_pddl_planning  # noqa: F401
+    # plan = make_plan(contextualized_problem, map_context)
+    plan = make_plan(grounded_problem, map_context)
     logger.debug(f"Made plan {plan}")
     return plan

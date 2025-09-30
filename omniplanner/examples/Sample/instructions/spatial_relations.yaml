@@ -1,0 +1,50 @@
+- id: 40
+  instruction: "Hamilton, go to the closest door."
+  answer:
+    - id: hamilton
+      goal: (VisitedObject O(50))
+- id: 41
+  instruction: "Spot, move to the farthest door."
+  answer:
+    - id: spot
+      goal: (VisitedObject O(38))
+- id: 42
+  instruction: "Hamilton, inspect the farthest box."
+  answer:
+    - id: hamilton
+      goal: ((Safe O(39)))
+- id: 43
+  instruction: "Spot, checkout the box closest to us."
+  answer:
+    - id: spot
+      goal: (Safe O(55))
+- id: 44
+  instruction: "Hamilton, head to the sign farthest from us."
+  answer:
+    - id: hamilton
+      goal: (VisitedObject O(111))
+- id: 45
+  instruction: "Spot, move to the sign closest to the bag."
+  answer:
+    - id: spot
+      goal: (VisitedObject O(42))
+- id: 46
+  instruction: "Hamilton, inspect the box closest to the bag."
+  answer:
+    - id: hamilton
+      goal: (Safe O(39))
+- id: 47
+  instruction: "Spot, go to the rightmost box."
+  answer:
+    - id: spot
+      goal: (VisitedObject O(39))
+- id: 48
+  instruction: "Hamilton, head to the leftmost sign."
+  answer:
+    - id: hamilton
+      goal: (VisitedObject O(111))
+- id: 49
+  instruction: "Spot, checkout the closest chair."
+  answer:
+    - id: spot
+      goal: (Safe O(1210))

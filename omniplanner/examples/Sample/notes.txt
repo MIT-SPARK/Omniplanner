@@ -1,0 +1,13 @@
+Instructions (found in the instructions dir):
+Each file contains 10 example instructions, and the files are organized by 'linguistic category'. Note that the format of the answer is not the required output format from the LLM; it is just a convenient format for parsing into various applications.
+
+The output format is described in the prompt_tamp.yaml file and is: <Answer> {} </Answer>
+
+get_scene_graph_prompt.py:
+This is a python script with various code snippets. It expects you to modify the filepath to the scene graph (west_point_updated_wregion_labels.json). I added a little snippet to extract and organize some of the scene graph content, which is dumped to a file (scene_graph_content.json). It also prints to terminal the prompt string for the scene graph.
+
+prompt_tamp.yaml:
+This file contains the content of the prompt built for these instructions. How it gets compiled into a prompt is not included among these files, but I think the file is potentially useful anyway.
+
+scene_graph_content.json:
+A slightly more legible extraction of the scene graph content (see get_scene_graph_prompt.py). I used it to better answer questions like "how many bags are there?" (1) and "which region is each door in?". I'm actively working on a much cooler way for a user to poke around and explore the content of a scene graph...

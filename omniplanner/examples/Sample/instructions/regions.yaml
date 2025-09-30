@@ -1,0 +1,50 @@
+- id: 50
+  instruction: "Hamilton, go to the door in the road."
+  answer:
+    - id: hamilton
+      goal: (VisitedObject O(38))
+- id: 51
+  instruction: "Spot, move to each door in the parking lot."
+  answer:
+    - id: spot
+      goal: (and (VisitedObject O(47) (VisitedObject O(50))))
+- id: 52
+  instruction: "Hamilton, go to the box in the parking lot."
+  answer:
+    - id: hamilton
+      goal: (VisitedObject O(55))
+- id: 53
+  instruction: "Spot, inspect the box in the road"
+  answer:
+    - id: spot
+      goal: (Safe O(395))
+- id: 54
+  instruction: "Hamilton, checkout both signs in the parking lot."
+  answer:
+    - id: hamilton
+      goal: (and (Safe O(49)) (Safe O(52)))
+- id: 55
+  instruction: "Hamilton, go to the sign in the road."
+  answer:
+    - id: hamilton
+      goal: (VisitedObject O(42))
+- id: 56
+  instruction: "Spot, inspect each chair in the field."
+  answer:
+    - id: spot
+      goal: (and (Safe O(166)) (Safe O(224)) (Safe O(225)))
+- id: 57
+  instruction: "Hamilton, move to the chair in the footing."
+  answer:
+    - id: hamilton
+      goal: (VisitedObject O(14))
+- id: 58
+  instruction: "Spot, checkout each sign in the parking lot."
+  answer:
+    - id: spot
+      goal: (and (Safe O(49)) (Safe O(52))
+- id: 59
+  instruction: "Hamilton, go to the sign on the sidewalk."
+  answer:
+    - id: hamilton
+      goal: (VisitedObject O(111))

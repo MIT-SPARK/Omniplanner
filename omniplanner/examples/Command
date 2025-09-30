@@ -1,0 +1,5 @@
+
+## Omniplanner Original
+source /opt/ros/jazzy/setup.sh && cp install/_local_setup_util_sh.py _local_setup_util.py 2>/dev/null || true && source install/setup.sh && export PATH=/usr/bin:$PATH && /usr/bin/python3 src/awesome_dcist_t4/omniplanner/omniplanner/examples/pddl_example.py
+## GRSTAPS
+source /opt/ros/jazzy/setup.sh && cp install/_local_setup_util_sh.py _local_setup_util.py 2>/dev/null || true && source install/setup.sh && export PATH=/usr/bin:$PATH && /usr/bin/python3 /home/jaeyoun-choi/colcon_ws/src/awesome_dcist_t4/omniplanner/omniplanner/examples/pddl_example_multirobot_FD_ominiplanner.py

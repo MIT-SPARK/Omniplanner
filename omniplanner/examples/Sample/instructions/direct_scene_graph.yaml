@@ -1,0 +1,60 @@
+- id: 0
+  instruction: "Hamilton, go to object 10."
+  answer:
+    - id: hamilton
+      goal: (VisitedObject O(10))
+- id: 1
+  instruction: "Spot, visit objects 10 and 12."
+  answer:
+    - id: spot
+      goal: (and (VisitedObject O(10) (VisitedObject O(12))))
+- id: 2
+  instruction: "Hamilton, head to place 10 without visiting place 45."
+  answer:
+    - id: hamilton
+      goal: (and (VisitedPlace P(10)) (not (VisitedPlace P(45))))
+- id: 3
+  instruction: "Spot, inspect objects 39, 55, 395, and 397."
+  answer:
+    - id: spot
+      goal: (and (Safe O(39)) (Safe O(55)) (Safe O(395)) (Safe O(397)))
+- id: 4
+  instruction: "Hamilton, inspect objects 38, 47, and 50 and then move to place 45."
+  answer:
+    - id: hamilton
+      goal: (and (Safe O(38)) (Safe O(47)) (Safe O(50)) (AtPlace P(45)))
+- id: 5
+  instruction: "Spot, go to Object 10. Hamilton head to object 12."
+  answer:
+    - id: spot
+      goal: (VisitedObject O(10))
+    - id: hamilton
+      goal: (VisitedObject O(12))
+- id: 6
+  instruction: "Spot, move to place 10. Hamilton head to place 45."
+  answer:
+    - id: spot
+      goal: (VisitedPlace P(10))
+    - id: hamilton
+      goal: (VisitedPlace P(45))
+- id: 7
+  instruction: "Spot, check out objects 10 and 12. Hamilton, head to place 10 and then place 45."
+  answer:
+    - id: spot
+      goal: (and (Safe O(10)) (Safe O(12)))
+    - id: hamilton
+      goal: (and (VisitedPlace P(10)) (AtPlace P(45)))
+- id: 8
+  instruction: "Hamilton, inspect objects 38, 47, and 50. Spot, you checkout objects 10 and 12."
+  answer:
+    - id: hamilton
+      goal: (and (Safe O(38)) (Safe O(47)) (Safe O(50)))
+    - id: spot
+      goal: (and (Safe O(10)) (Safe O(12)))
+- id: 9
+  instruction: "Spot, inspect objects 38, 47, and 50 or move to place 45. Hamilton, head to place 10 without visiting place 45."
+  answer:
+    - id: spot
+      goal: (or (and (Safe O(38)) (Safe O(47)) (Safe O(50))) (AtPlace P(45)))
+    - id: hamilton
+      goal: (and (VisitedPlace P(10)) (not (VisitedPlace P(45))))

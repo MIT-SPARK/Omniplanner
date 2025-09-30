@@ -1,0 +1,62 @@
+- id: 60
+  instruction: "One of you go to the window. The other should inspect the trash."
+  answer:
+    - id: 
+      goal: (VisitedObject O(21))
+    - id: 
+      goal: (Safe O(54))
+- id: 61
+  instruction: "Someone go to each door. The other inspect each box."
+  answer:
+    - id: 
+      goal: (and (VisitedObject O(38)) (VisitedObject O(47)) (VisitedObject O(50)))
+    - id: 
+      goal: (and (Safe O(39)) (Safe O(55)) (Safe O(395)) (Safe O(397)))
+- id: 62
+  instruction: "I need each box inspected, then both of you go to the window."
+  answer:
+    - id: 
+      goal: (and (Safe O(39)) (Safe O(55)) (Safe O(395)) (Safe O(397)))
+    - id: 
+      goal: (AtObject O(21))
+- id: 63
+  instruction: "One of you go to the bag. The other go to the window"
+  answer:
+    - id: 
+      goal: (AtObject O(21))
+    - id: 
+      goal: (AtObject O(85))
+- id: 64
+  instruction: "Inspect all of the boxes."
+  answer:
+    - id: 
+      goal: (and (Safe O(39)) (Safe O(55)) (Safe O(395)) (Safe O(397)))
+- id: 65
+  instruction: "The boxes are unsafe. Secure the area."
+  answer:
+    - id: 
+      goal: (and (Safe O(39)) (Safe O(55)) (Safe O(395)) (Safe O(397)))
+- id: 66
+  instruction: "I want to know more about the signs. Inspect them."
+  answer:
+    - id: 
+      goal: (and (Safe O(26)) (Safe O(42)) (Safe O(45)) (Safe O(49)) (Safe O(52)) Safe( O(111)))
+- id: 67
+  instruction: "One of you inspect all of the doors. Then both of you rendezvous at the bag."
+  answer:
+    - id: 
+      goal: (and (Safe O(38)) (Safe O(47)) (Safe O(50)) (AtObject O(85)))
+    - id: 
+      goal: (AtObject O(85))
+- id: 68
+  instruction: "The trash and bag are unsafe. Inspect them."
+  answer:
+    - id: 
+      goal: (and (Safe O(85)) (Safe O(54)))
+- id: 69
+  instruction: "Someone go to the window. The other should move to the bag."
+  answer:
+    - id: 
+      goal: (VisitedObject O(21))
+    - id: 
+      goal: (VisitedObject O(85))
