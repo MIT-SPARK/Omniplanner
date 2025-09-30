@@ -25,7 +25,6 @@
         (visited-region ?r)
 
         (safe ?o)
-        (explored-region ?r - region)
     )
 
     (:functions
@@ -53,11 +52,6 @@
 
     (:derived (visited-region ?r - region)
         (exists (?p - place) (and (visited-place ?p) (place-in-region ?p ?r))))
-
-    (:derived (explored-region ?r - region)
-        (forall (?p - place)
-            (implies (place-in-region ?p ?r)
-                     (visited-place ?p))))
 
 
     (:action goto-poi

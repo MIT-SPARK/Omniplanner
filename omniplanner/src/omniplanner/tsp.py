@@ -49,7 +49,7 @@ class LayerPlanner:
             try:
                 length = nx.shortest_path_length(self.nx_layer, s, t)
             except nx.exception.NetworkXNoPath:
-                # logger.warning(f"No connection in DSG between {s} and {t}")
+                logger.warning(f"No connection in DSG between {s} and {t}")
                 length = np.inf
             return length
         else:

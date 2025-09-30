@@ -2,7 +2,6 @@ import logging
 import os
 import subprocess
 import tempfile
-import time
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
@@ -37,27 +36,6 @@ def solve_pddl(problem: GroundedPddlProblem):
         with open(domain_fn, "w") as fo:
             fo.write(problem.domain.to_string())
 
-        # Persist copies of the exact PDDL sent to Fast Downward
-        dump_dir = os.environ.get("PDDL_DUMP_DIR", os.path.join(os.getcwd(), "pddl_dumps"))
-        os.makedirs(dump_dir, exist_ok=True)
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        persistent_domain = os.path.join(dump_dir, f"{ts}_domain.pddl")
-        persistent_problem = os.path.join(dump_dir, f"{ts}_problem.pddl")
-        latest_domain = os.path.join(dump_dir, "domain_latest.pddl")
-        latest_problem = os.path.join(dump_dir, "problem_latest.pddl")
-        try:
-            with open(persistent_domain, "w") as f:
-                f.write(problem.domain.to_string())
-            with open(persistent_problem, "w") as f:
-                f.write(problem.problem_str)
-            with open(latest_domain, "w") as f:
-                f.write(problem.domain.to_string())
-            with open(latest_problem, "w") as f:
-                f.write(problem.problem_str)
-            logger.info(f"Saved PDDL to {persistent_domain} and {persistent_problem}")
-        except Exception as e:
-            logger.warning(f"Failed to persist PDDL dump: {e}")
-
         command = ["fast-downward"]
         command += ["--plan-file", plan_fn]
         command += [domain_fn]
@@ -71,13 +49,22 @@ def solve_pddl(problem: GroundedPddlProblem):
         return_code = subprocess.run(command)
         logger.warning(f"Return code: {return_code}")
 
-        with open(plan_fn, "r") as fo:
-            lines = fo.readlines()
+        if os.path.exists(plan_fn):
+            with open(plan_fn, "r") as fo:
+                lines = fo.readlines()
+        else:
+            output_dir = os.getenv("ADT4_OUTPUT_DIR", "")
+            debug_fn = os.path.join(output_dir, "pddl_problem_debugging.pddl")
+            logger.warning(
+                f"Planning failed. Please see {debug_fn} for the failed problem file."
+            )
+            with open(debug_fn, "w") as fo:
+                fo.write(problem.problem_str)
+            raise Exception(
+                f"Planning failed, please see {debug_fn} for failed problem file."
+            )
 
     plan = [lisp_string_to_ast(line) for line in lines[:-1]]
-    print("plan!!!!!!!!!!!!!!!!!!!!!!!!!!!: ")
-    print(plan)
-    print("plan!!!!!!!!!!!!!!!!!!!!!!!!!!!: ")
     return plan
 
 
@@ -86,6 +73,7 @@ def make_plan(grounded_problem: GroundedPddlProblem, map_context: Any) -> PddlPl
     plan = solve_pddl(grounded_problem)
 
     logger.warning(f"Made plan {plan}")
+
     parameterized_plan = []
 
     # TODO: generalize this post-processing (to be based on either the pddl

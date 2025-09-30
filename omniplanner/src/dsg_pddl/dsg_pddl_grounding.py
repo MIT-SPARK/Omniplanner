@@ -143,7 +143,7 @@ def generate_dense_symbol_connectivity(G, symbols):
         G.get_layer(spark_dsg.DsgLayers.OBJECTS),
         places_layer,
         False,
-        3,
+        10,
         layer_planner,
     )
 
@@ -374,7 +374,6 @@ def generate_inspection_pddl(G, raw_pddl_goal_string, initial_position):
     goal_symbols_of_interest = extract_symbols_of_interest(G, parsed_pddl_goal)
     normalize_symbols(goal_symbols_of_interest)
     logger.info(f"Extracted goal_symbols of interest: {goal_symbols_of_interest}")
-    print("goal_symbols_of_interest: ", goal_symbols_of_interest)
 
     # ideally we check the goal here and see if we can run a more specialized planner based on the simplified goal
     goal_pddl = simplify(parsed_pddl_goal)
@@ -385,7 +384,6 @@ def generate_inspection_pddl(G, raw_pddl_goal_string, initial_position):
     symbols_of_interest = [start_place_symbol] + goal_symbols_of_interest
 
     add_symbol_positions(G, symbols_of_interest)
-    print("goal_symbols_of_interest Later: ", goal_symbols_of_interest)
 
     logger.info(f"generate_objects: {generate_objects(symbols_of_interest)}")
     problem = PddlProblem(
@@ -471,8 +469,6 @@ def generate_region_pddl(G, raw_pddl_goal_string, initial_position):
     start_place_symbol = PddlSymbol(
         "pstart", "place", ["at-poi"], position=initial_position
     )
-    print("initial_position: ", initial_position)
-    print("start_place_symbol: ", start_place_symbol)
     symbols_of_interest = [start_place_symbol] + symbols
 
     add_symbol_positions(G, symbols_of_interest)
@@ -516,8 +512,6 @@ def ground_problem(
             )
         case "region-object-rearrangement-domain":
             pddl_problem, symbols = generate_region_pddl(dsg, goal.pddl_goal, start)
-            with open("/home/jaeyoun-choi/colcon_ws/src/awesome_dcist_t4/omniplanner/omniplanner/examples/output/pddl_test.pddl", "w") as fo:
-                fo.write(pddl_problem)
         case _:
             raise NotImplementedError(
                 f"I don't know how to ground a domain of type {domain.domain_name}!"
@@ -527,6 +521,3 @@ def ground_problem(
     return RobotWrapper(
         goal.robot_id, GroundedPddlProblem(domain, pddl_problem, symbol_dict)
     )
-
-
-
