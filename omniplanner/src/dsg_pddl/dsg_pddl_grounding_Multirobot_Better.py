@@ -6,7 +6,7 @@ import spark_dsg
 from plum import dispatch
 from dsg_pddl.pddl_grounding import (
     GroundedPddlProblem,
-    PddlDomain,
+    MultiRobotPddlDomain,
     PddlGoal,
     PddlProblem,
     PddlSymbol,
@@ -113,7 +113,7 @@ def generate_dense_region_symbol_connectivity_multirobot(G, symbols, robot_state
         10,
         layer_planner,
     )
-    start_connection_threshold = 3
+    start_connection_threshold = 10
     for robot_id in robot_states.keys():
         start_symbol_key = f"pstart{robot_id}"
         if start_symbol_key in symbol_lookup:
@@ -444,7 +444,6 @@ def generate_multirobot_region_pddl(
     # Build objects dict using shared generator and adding robots
     pddl_objects = generate_objects(symbols_of_interest)
     pddl_objects["robot"] = robot_ids
-
     problem = PddlProblem(
         name="multi-robot-problem",
         domain="region-object-rearrangement-domain-multirobot-fd",
@@ -454,7 +453,7 @@ def generate_multirobot_region_pddl(
         optimizing=True,
     )
     problem_str = problem.to_string()
-
+    
     try:
         dump_dir = os.environ.get("PDDL_DUMP_DIR", os.path.join(os.getcwd(), "pddl_dumps"))
         os.makedirs(dump_dir, exist_ok=True)
@@ -474,16 +473,15 @@ def generate_multirobot_region_pddl(
 
 @dispatch
 def ground_problem(
-    domain: PddlDomain,
+    domain: MultiRobotPddlDomain,
     dsg: spark_dsg.DynamicSceneGraph,
     robot_states: dict,
     goal: PddlGoal,
     feedback: Any = None,
-    Multirobot: bool = True,
 ) -> RobotWrapper[GroundedPddlProblem]:
     logger.info(f"Grounding PDDL Problem {domain.domain_name}")
-    print("goal.robot_id: ", goal.robot_id)
-    print("robot_states: ", robot_states)
+    # print("goal.robot_id: ", goal.robot_id)
+    # print("robot_states: ", robot_states)
     start = robot_states[goal.robot_id][:2]
 
     match domain.domain_name:

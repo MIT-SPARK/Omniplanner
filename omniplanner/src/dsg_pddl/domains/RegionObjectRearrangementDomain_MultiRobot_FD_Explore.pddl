@@ -19,10 +19,10 @@
         (object-in-place ?o - dsg_object ?p - place)
         (place-in-region ?p - place ?reg - region)
 
-        (visited-poi ?r - robot ?p - point-of-interest)
-        (visited-place ?r - robot ?p - place)
-        (visited-object ?r - robot ?o - dsg_object)
-        (visited-region ?r - robot ?reg - region)
+        (visited-poi ?p - point-of-interest)
+        (visited-place ?p - place)
+        (visited-object ?o - dsg_object)
+        (visited-region ?reg - region)
 
         (safe ?o - dsg_object)
         (explored-region ?reg - region)
@@ -39,11 +39,11 @@
     (:derived (at-place ?r - robot ?p - place)
         (at-poi ?r ?p))
 
-    (:derived (visited-place ?r - robot ?p - place)
-        (visited-poi ?r ?p))
+    (:derived (visited-place ?p - place)
+        (visited-poi ?p))
 
-    (:derived (visited-object ?r - robot ?o - dsg_object)
-        (visited-poi ?r ?o))
+    (:derived (visited-object ?o - dsg_object)
+        (visited-poi ?o))
 
     (:derived (safe ?o - dsg_object)
         (not (suspicious ?o)))
@@ -51,13 +51,13 @@
     (:derived (in-region ?r - robot ?reg - region)
         (exists (?p - place) (and (at-place ?r ?p) (place-in-region ?p ?reg))))
 
-    (:derived (visited-region ?r - robot ?reg - region)
-        (exists (?p - place) (and (visited-place ?r ?p) (place-in-region ?p ?reg))))
+    (:derived (visited-region ?reg - region)
+        (exists (?p - place) (and (visited-place ?p) (place-in-region ?p ?reg))))
 
     (:derived (explored-region ?reg - region)
         (forall (?p - place)
             (or (not (place-in-region ?p ?reg))
-                (exists (?r - robot) (visited-place ?r ?p)))))
+                (visited-place ?p))))
 
     (:action goto-poi
         :parameters (?r - robot ?s - point-of-interest ?t - point-of-interest)
@@ -65,7 +65,7 @@
                                            (connected ?t ?s)))
         :effect (and (not (at-poi ?r ?s))
                      (at-poi ?r ?t)
-                     (visited-poi ?r ?t)
+                     (visited-poi ?t)
                      (increase (total-cost) (distance ?s ?t))
         )
     )

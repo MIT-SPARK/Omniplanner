@@ -19,7 +19,7 @@ if multi_robot_path not in sys.path:
 from importlib.resources import as_file, files
 import dsg_pddl.domains
 import spark_dsg
-from dsg_pddl.pddl_grounding import PddlDomain, PddlGoal
+from dsg_pddl.pddl_grounding import MultiRobotPddlDomain, PddlGoal
 from omniplanner.omniplanner import PlanRequest, full_planning_pipeline
 from dsg_pddl.dsg_pddl_grounding_Multirobot_Better import generate_multirobot_inspection_pddl, generate_multirobot_region_pddl
 
@@ -214,7 +214,9 @@ def main():
     print("=" * 80)
     
     # Configuration
-    scene_graph_path = "./src/awesome_dcist_t4/omniplanner/omniplanner/examples/scenegraph/west_point_fused_map_wregions_labelspace.json"
+    # scene_graph_path = "./src/awesome_dcist_t4/omniplanner/omniplanner/examples/scenegraph/west_point_fused_map_wregions_labelspace.json"
+    scene_graph_path = "/home/jaeyoun-choi/colcon_ws/assets/b45_clip_final_connected_rooms_and_labelspace.json"
+    # scene_graph_path = "/home/jaeyoun-choi/colcon_ws/assets/west_point_fused_map_wregions_labelspace.json"
     # robot_ids = ["robot1","robot2"]
     robot_ids = ["robot1", "robot2", "robot3"]
     
@@ -229,12 +231,14 @@ def main():
     # Examine scene graph coordinates
     examine_scene_graph_coordinates(G)
     # Print existing region kinds
+
     print_region_kinds(G)
     # Print region names
     print_region_names(G)
     # Print places included in specific regions of interest
-    print_places_in_region(G, "r68")
-    print_places_in_region(G, "r69")
+    # print_places_in_region(G, "r68")
+    print_places_in_region(G, "r3")
+    print_places_in_region(G, "r4")
     
     # Create robot poses (following your format)
     robot_poses = {
@@ -248,21 +252,23 @@ def main():
     print("=========================================")
     print("")
     
-    # goal_string ="(and (safe o2)(safe o3)(safe o21)(safe o18))"
-    # goal_string ="(and (visited-poi o61))"
+    # goal_string ="(and (safe o2)(safe o3))"
+    goal_string ="(and (explored-region r1)(explored-region r2)(visited-object o2)(visited-object o9)(visited-place p22543)(visited-place p6255))"
+    goal_string ="(and (visited-object o79)(visited-object o285)(visited-object o43)(safe o79)(explored-region r2)(visited-object o2)(visited-object o9)(visited-place p22543)(visited-place p6255))"
+    # goal_string ="(and (visited-poi o27))"
     # goal_string ="(and (object-in-place o5 p91) (object-in-place o85 p118) )"
     # goal_string ="(and (object-in-place o5 p91) (object-in-place o94 p2157))"
-    goal_string ="(and (explored-region r68) (explored-region r69))"
+    # goal_string ="(and (safe o2))"
     # goal_string ="(and (object-in-place o5 p91) (object-in-place o85 p118) (object-in-place o94 p2157))"
     goal = PddlGoal(robot_id="robot1", pddl_goal=goal_string)
     
     # Load the multi-robot domain
     domain_path = "./src/awesome_dcist_t4/omniplanner/omniplanner/src/dsg_pddl/domains/RegionObjectRearrangementDomain_MultiRobot_FD_Explore.pddl"
     with open(domain_path, "r") as fo:
-        domain = PddlDomain(fo.read())
+        domain = MultiRobotPddlDomain(fo.read())
     
-    print(f"Loading domain {domain_path}")
-    print(f"Domain name: {domain.domain_name}")
+    # print(f"Loading domain {domain_path}")
+    # print(f"Domain name: {domain.domain_name}")
     req = PlanRequest(
         domain=domain,
         goal=goal,

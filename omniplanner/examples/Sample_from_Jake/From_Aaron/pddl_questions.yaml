@@ -1,0 +1,979 @@
+questions:
+
+- uid: 0A
+  name: Go to object 79.
+  question: Go to object 79.
+  solution: (visited-object O79)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-symbol]
+
+- uid: 0B
+  name: Go to object 79.
+  question: I need you to visit object 79.
+  solution: (visited-object O79)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-symbol]
+
+- uid: 1A
+  name: Simple Object Class
+  question: Go to the bag
+  solution: (visited-object O285)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class]
+
+- uid: 1B
+  name: Simple Object Class
+  question: You should head over to the bag
+  solution: (visited-object O285)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class]
+
+- uid: 2A
+  name: Simple Object Class 2
+  question: Go to the bicycle
+  solution: (visited-object O43)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class]
+
+- uid: 2B
+  name: Simple Object Class 2
+  question: You need to visit the bicycle
+  solution: (visited-object O43)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class]
+
+- uid: 3A
+  name: Simple Room Class
+  question: Go to the Lounge
+  solution: (visited-room R1)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class]
+
+- uid: 3B
+  name: Simple Room Class
+  question: I want you to go to the lounge
+  solution: (visited-room R1)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class]
+
+- uid: 4A
+  name: Inspect object 79.
+  question: Inspect object 79.
+  solution: (safe O79)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-symbol]
+
+- uid: 4B
+  name: Inspect object 79.
+  question: I need you to make sure object 79 isn't dangerous
+  solution: (safe O79)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-symbol]
+
+- uid: 5A
+  name: Inspect Object Class
+  question: Examine the sack
+  solution: (safe O285)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class]
+
+- uid: 5B
+  name: Inspect Object Class
+  question: Ensure the bag is harmless
+  solution: (safe O285)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class]
+
+- uid: 6A
+  name: Inspect Object Class 2
+  question: Look over the bicycle
+  solution: (safe O43)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class]
+
+- uid: 6B
+  name: Inspect Object Class 2
+  question: You should verify that the bike isn't dangerous
+  solution: (safe O43)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class, synonym]
+
+
+- uid: 7A
+  name: Visit all hallways
+  question: I need you to visit all of the hallways
+  solution: (and (visited-room R2) (visited-room R3) (visited-room R4) (visited-room R5))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class]
+
+- uid: 7B
+  name: Visit all hallways
+  question: Please go through every corridor
+  solution: (and (visited-room R2) (visited-room R3) (visited-room R4) (visited-room R5))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class]
+
+
+- uid: 8A
+  name: Visit all trashes
+  question: You need to visit each of garbage can
+  solution: (and (visited-object O19) (visited-object O30) (visited-object O64) (visited-object O79))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class]
+
+- uid: 8B
+  name: Visit all trashes
+  question: Go around to every trash recepticle
+  solution: (and (visited-object O19) (visited-object O30) (visited-object O64) (visited-object O79))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class]
+
+- uid: 9A
+  name: Inspect all trashes
+  question: Look through every rubbish bin
+  solution: (and (safe O19) (safe O30) (safe O64) (safe O79))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class]
+
+- uid: 9B
+  name: Inspect all trashes
+  question: Inspect each wastebin
+  solution: (and (safe O19) (safe O30) (safe O64) (safe O79))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class, synonym]
+
+
+- uid: 10A
+  name: Visit an object
+  question: Go to any one of the trash cans
+  solution: (or (visited-object O19) (visited-object O30) (visited-object O64) (visited-object O79))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class]
+
+
+- uid: 10B
+  name: Visit an object
+  question: One of the wastebins should be visited
+  solution: (or (visited-object O19) (visited-object O30) (visited-object O64) (visited-object O79))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class, synonym]
+
+
+- uid: 11A
+  name: Inspect a trash
+  question: Get a good look of one of the waste containers
+  solution: (or (safe O19) (safe O30) (safe O64) (safe O79))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class]
+
+- uid: 11B
+  name: Inspect a trash
+  question: One of the wastebins should be inspected
+  solution: (or (safe O19) (safe O30) (safe O64) (safe O79))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class, synonym]
+
+- uid: 12A
+  name: Visit Place
+  question: Visit all of the mesh places that aren't in any room
+  solution: (and (visited-place P2441) (visited-place P3107) (visited-place P15561) (visited-place P25023) (visited-place P25697))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [hierarchy]
+
+
+- uid: 12B
+  name: Visit Place
+  question: Some mesh places aren't in a room. Visit each of them.
+  solution: (and (visited-place P2441) (visited-place P3107) (visited-place P15561) (visited-place P25023) (visited-place P25697))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [hierarchy]
+
+- uid: 13A
+  name: Visit a Place
+  question: Visit one of the mesh places that isn't in any room.
+  solution: (or (visited-place P2441) (visited-place P3107) (visited-place P15561) (visited-place P25023) (visited-place P25697))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [hierarchy]
+
+
+- uid: 13B
+  name: Visit a Place
+  question: There are several mesh places that are not in a room. You should visit one of them.
+  solution: (or (visited-place P2441) (visited-place P3107) (visited-place P15561) (visited-place P25023) (visited-place P25697))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [hierarchy]
+
+
+- uid: 14A
+  name: Visit hallway light
+  question: Go to the light in the hallway
+  solution: (visited-object O300)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [hierarchy]
+
+- uid: 14B
+  name: Visit hallway light
+  question: Move to the light fixture in the hall
+  solution: (visited-object O300)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [hierarchy]
+
+
+- uid: 15A
+  name: Inspect hallway light
+  question: The light in the hallway needs to be inspected
+  solution: (safe O300)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [hierarchy]
+
+- uid: 15B
+  name: Inspect hallway light
+  question: Go inspect the hallway light
+  solution: (safe O300)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [hierarchy]
+
+- uid: 16A
+  name: Visit lounge signs
+  question: Go to each sign that is in the lounge
+  solution: (and (visited-object O283) (visited-object O255) (visited-object O3) (visited-object O264))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [hierarchy]
+
+- uid: 16B
+  name: Visit lounge signs
+  question: All of the signs in the lounge need to be visited
+  solution: (and (visited-object O283) (visited-object O255) (visited-object O3) (visited-object O264))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [hierarchy]
+
+
+- uid: 17A
+  name: Visit a lounge sign
+  question: Head to one of the signs in the lounge
+  solution: (or (visited-object O283) (visited-object O255) (visited-object O3) (visited-object O264))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [hierarchy]
+
+- uid: 17B
+  name: Visit a lounge sign
+  question: One of the signs in the lounge needs to be visited
+  solution: (or (visited-object O283) (visited-object O255) (visited-object O3) (visited-object O264))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [hierarchy]
+
+
+- uid: 18A
+  name: Inspect lounge signs
+  question: Inspect all of the signs in the lounge
+  solution: (and (safe O283) (safe O255) (safe O3) (safe O264))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [hierarchy]
+
+- uid: 18B
+  name: Inspect lounge signs
+  question: Make sure all signs that are in the lounge are safe
+  solution: (and (safe O283) (safe O255) (safe O3) (safe O264))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [hierarchy]
+
+
+- uid: 19A
+  name: Inspect a lounge sign
+  question: Inspect one of the signs in the lounge
+  solution: (or (safe O283) (safe O255) (safe O3) (safe O264))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [hierarchy]
+
+- uid: 19B
+  name: Inspect a lounge sign
+  question: Lounge has several signs, go inspect one of them.
+  solution: (or (safe O283) (safe O255) (safe O3) (safe O264))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [hierarchy]
+
+
+- uid: 20A
+  name: Visit closest storage
+  question: Visit the closest storage
+  solution: (visited-object O358)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [implicit-spatial-reference]
+
+- uid: 20B
+  name: Visit closest storage
+  question: The closest storage unit needs to be visited
+  solution: (visited-object O358)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [implicit-spatial-reference, synonym]
+
+- uid: 21A
+  name: Inspect closest storage
+  question: Look through the nearest storage bin
+  solution: (safe O358)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [implicit-spatial-reference]
+
+- uid: 21B
+  name: Inspect closest storage
+  question: The closest storage container needs to be inspected
+  solution: (safe O358)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [implicit-spatial-reference, synonym]
+
+
+- uid: 22A
+  name: Visit furthest storage
+  question: Go to the storage uniut that is farthest away
+  solution: (visited-object O75)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [implicit-spatial-reference]
+
+- uid: 22B
+  name: Visit furthest storage
+  question: You should visit the furthest storage
+  solution: (visited-object O75)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [implicit-spatial-reference, synonym]
+
+- uid: 23A
+  name: Inspect furthest storage
+  question: Get a good look at the storage that is farthest away
+  solution: (safe O75)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [implicit-spatial-reference]
+
+- uid: 23B
+  name: Inspect furthest storage
+  question: Make sure the furthest storage isn't dangerous
+  solution: (safe O75)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [implicit-spatial-reference]
+
+
+- uid: 24A
+  name: Visit neighbor rooms
+  question: Visit Room 3 and its neighboring rooms
+  solution: (and (visited-room R2) (visited-room R3) (visited-room R5))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [spatial-reference]
+
+
+- uid: 24B
+  name: Visit neighbor rooms
+  question: You should go to Room 3 as well as each neighboring room
+  solution: (and (visited-room R2) (visited-room R3) (visited-room R5))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [spatial-reference]
+
+
+- uid: 25A
+  name: Visit a neighbor room
+  question: Visit Room 3 or one of its neighbors
+  solution: (or (visited-room R2) (visited-room R3) (visited-room R5))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [spatial-reference]
+
+- uid: 25B
+  name: Visit a neighbor room
+  question: I want you to go to Room 3 or an adjacent room
+  solution: (or (visited-room R2) (visited-room R3) (visited-room R5))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [spatial-reference]
+
+
+- uid: 26A
+  name: Visit mesh place
+  question: Visit the mesh place with the most objects
+  solution: (visited-place P59110)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [counting]
+
+- uid: 26B
+  name: Visit mesh place
+  question: Of all the mesh places, I need you to go to the one with the most objects
+  solution: (visited-place P59110)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [counting]
+
+
+- uid: 27A
+  name: Visit rooms
+  question: Visit the two rooms that are furthest apart.
+  solution: (and (visited-room R1) (visited-room R3))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [spatial-reference]
+
+- uid: 27B
+  name: Visit rooms
+  question: The pair of rooms with the greatest distance between them should be visited.
+  solution: (and (visited-room R1) (visited-room R3))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [spatial-reference]
+
+
+- uid: 28A
+  name: Grab bag
+  question: Pick up the bag
+  solution: (holding O285)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class]
+
+- uid: 28B
+  name: Grab bag
+  question: I need you to grab the bag
+  solution: (holding O285)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class]
+
+- uid: 29A
+  name: Grab bike
+  question: I need you to be holding onto the bike
+  solution: (holding O43)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [synonym]
+
+- uid: 29B
+  name: Grab bike
+  question: Go pick up the bicycle
+  solution: (holding O43)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [synonym]
+
+
+- uid: 30A
+  name: Grab a sign
+  question: Pick up one of the signs in the lounge
+  solution: (or (holding O283) (holding O255) (holding O3) (holding O264))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [hierarchy]
+
+
+- uid: 30B
+  name: Grab a sign
+  question: A sign from the lounge needs to be picked up
+  solution: (or (holding O283) (holding O255) (holding O3) (holding O264))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [hierarchy]
+
+
+- uid: 31A
+  name: Grab a trash
+  question: Go pick up one of the trashes
+  solution: (or (holding O19) (holding O30) (holding O64) (holding O79))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class]
+
+
+- uid: 31B
+  name: Grab a trash
+  question: Grab a wastebin
+  solution: (or (holding O19) (holding O30) (holding O64) (holding O79))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class, synonym]
+
+
+
+- uid: 32A
+  name: Inspect the box
+  question: Get a good look at the box that's closest to the bicycle
+  solution: (safe O59)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [spatial-reference]
+
+- uid: 32B
+  name: Inspect the box
+  question: The box next to the bicycle needs to be inspected
+  solution: (safe O59)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [spatial-reference]
+
+
+- uid: 33A
+  name: Move the bag
+  question: Put the bag in the same mesh place as the bicycle
+  solution: (object-in-place O285 P10247)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [spatial-reference, hierarchy]
+
+- uid: 33B
+  name: Move the bag
+  question: The bag should be put in the same mesh place as the bicycle (but the bicycle should stay put).
+  solution: (object-in-place O285 P10247)
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [spatial-reference, hierarchy]
+
+
+- uid: 34A
+  name: Ordered places
+  question: Visit mesh place 59110 and then end up at mesh place 10247
+  solution: (and (visited-place P59110) (at-place P10247))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [ordering]
+
+
+- uid: 34B
+  name: Ordered places
+  question: First go to mesh place 59110 and then mesh place 10247
+  solution: (and (visited-place P59110) (at-place P10247))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [ordering]
+
+
+- uid: 35A
+  name: Ordered regions (complex)
+  question: First go to one of the hallways and then end up at the lounge
+  solution: (and (or (visited-room R2) (visited-room R3) (visited-room R4) (visited-room R5)) (in-room R1))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [ordering]
+
+- uid: 35B
+  name: Ordered regions (complex)
+  question: Visit one of the hallways and then the lounge
+  solution: (and (or (visited-room R2) (visited-room R3) (visited-room R4) (visited-room R5)) (in-room R1))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [ordering]
+
+- uid: 36A
+  name: Ordered regions (complex)
+  question: Visit room 2 and then the lounge
+  solution: (and (visited-room R2) (in-room R1))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [ordering]
+
+- uid: 36B
+  name: Ordered regions (complex)
+  question: Visit room 2 and end up in the lounge
+  solution: (and (visited-room R2) (in-room R1))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [ordering]
+
+
+- uid: 37A
+  name: Region avoid
+  question: Visit all of the hallways but avoid the lounge
+  solution: (and (visited-room R2) (visited-room R3) (visited-room R4) (visited-room R5) (not (visited-room R1)))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [ordering, avoid]
+
+- uid: 37B
+  name: Region avoid
+  question: Visit the hallways while avoiding the lounge
+  solution: (and (visited-room R2) (visited-room R3) (visited-room R4) (visited-room R5) (not (visited-room R1)))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [ordering, avoid]
+
+
+- uid: 38A
+  name: Region-object visiting
+  question: Stop by the lounge and then go to the bicycle
+  solution: (and (visited-room R1) (at-object O43))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [ordering]
+
+- uid: 38B
+  name: Region-object visiting
+  question: Go to the bicycle after stopping by the lounge
+  solution: (and (visited-room R1) (at-object O43))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [ordering]
+
+
+- uid: 39A
+  name: Place avoid
+  question: Go to the lounge but stay away from the mesh place with the most objects.
+  solution: (and (visited-room R1) (not (visited-place P59110)))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [avoid]
+
+- uid: 39B
+  name: Place avoid
+  question: Stay away from the mesh place with the most objects while going to the lounge.
+  solution: (and (visited-room R1) (not (visited-place P59110)))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [avoid]
+
+
+- uid: 40A
+  name: Multiple object move
+  question: Bring all of the trashes to mesh place 1833.
+  solution: (and (object-in-place O19 P1833) (object-in-place O30 P1833) (object-in-place O64 P1833) (object-in-place O79 P1833))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class]
+
+- uid: 40B
+  name: Multiple object move
+  question: Take out the trash by bringing the wastebins to place 1833.
+  solution: (and (object-in-place O19 P1833) (object-in-place O30 P1833) (object-in-place O64 P1833) (object-in-place O79 P1833))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [synonym]
+
+# Conjunctions of previous examples
+
+- uid: 41A
+  name: Inspect and Grab
+  question: Inspect the bicycle and grab one of the signs in the lounge
+  solution: (and (safe O43) (or (holding O283) (holding O255) (holding O3) (holding O264)))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class, combination]
+
+- uid: 41B
+  name: Inspect and Grab
+  question: Pick up one of the signs in the lounge. Also, inspect the bicycle.
+  solution: (and (safe O43) (or (holding O283) (holding O255) (holding O3) (holding O264)))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class, combination]
+
+- uid: 42A
+  name: Trashes and place
+  question: I need you to visit all of the trashes and one of the mesh places that isn't in any room.
+  solution: (and (and (visited-object O19) (visited-object O30) (visited-object O64) (visited-object O79)) (or (visited-place P2441) (visited-place P3107) (visited-place P15561) (visited-place P25023) (visited-place P25697)))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class, combination]
+
+
+- uid: 42B
+  name: Trashes and place
+  question: Several mesh places are not in a room. Visit one of them. Also go to each garbage can.
+  solution: (and (and (visited-object O19) (visited-object O30) (visited-object O64) (visited-object O79)) (or (visited-place P2441) (visited-place P3107) (visited-place P15561) (visited-place P25023) (visited-place P25697)))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class, combination]
+
+
+
+- uid: 43A
+  name: Lounge inspection, visit storage
+  question: Head to the closest storage, then inspect one the signs in the lounge.
+  solution: (and (visited-object O358) (or (safe O283) (safe O255) (safe O3) (safe O264)))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [hierarchy, implicit-spatial-reference, combination]
+
+
+- uid: 43B
+  name: Lounge inspection, visit storage
+  question: Visit the storage nearby, then make sure the signs in the lounge are not dangerous.
+  solution: (and (visited-object O358) (or (safe O283) (safe O255) (safe O3) (safe O264)))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [hierarchy, implicit-spatial-reference, combination]
+
+
+
+- uid: 44A
+  name: Grab bike, avoid region, visit hallways
+  question: Visit the hallways while avoiding the lounge, and pick up the bicycle
+  solution: (and (holding O43) (and (visited-room R2) (visited-room R3) (visited-room R4) (visited-room R5) (not (visited-room R1))))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class, avoid, combination]
+
+
+- uid: 44B
+  name: Grab bike, avoid region, visit hallways
+  question: Grab the bicycle and visit the hallways. But don't go to the lounge.
+  solution: (and (holding O43) (and (visited-room R2) (visited-room R3) (visited-room R4) (visited-room R5) (not (visited-room R1))))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class, avoid, combination]
+
+
+
+- uid: 45A
+  name: Multiple object move, inspect hallway light
+  question: Bring all of the trashes to mesh place 1833. Also, the light fixture in the corridor needs inspection.
+  solution: (and (safe O300) (object-in-place O19 P1833) (object-in-place O30 P1833) (object-in-place O64 P1833) (object-in-place O79 P1833))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class, combination, hierarchy]
+
+
+- uid: 45B
+  name: Multiple object move, inspect hallway light
+  question: Go check the light in the hallway and make sure it's safe. Also bring all of the trashes to mesh place 1833.
+  solution: (and (safe O300) (object-in-place O19 P1833) (object-in-place O30 P1833) (object-in-place O64 P1833) (object-in-place O79 P1833))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class, combination, hierarchy]
+
+# Disjunctions of previous
+
+- uid: 46A
+  name: Inspect or Grab
+  question: Inspect the bicycle or grab one of the signs in the lounge
+  solution: (or (safe O43) (or (holding O283) (holding O255) (holding O3) (holding O264)))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class, combination]
+
+- uid: 46B
+  name: Inspect or Grab
+  question: Pick up one of the signs in the lounge. Alternatively, inspect the bicycle.
+  solution: (or (safe O43) (or (holding O283) (holding O255) (holding O3) (holding O264)))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class, combination]
+
+
+
+- uid: 47A
+  name: Trashes or place
+  question: I need you to visit all of the trashes, or one of the mesh places that isn't in any room.
+  solution: (or (and (visited-object O19) (visited-object O30) (visited-object O64) (visited-object O79)) (or (visited-place P2441) (visited-place P3107) (visited-place P15561) (visited-place P25023) (visited-place P25697)))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class, combination]
+
+
+- uid: 47B
+  name: Trashes and place
+  question: Visit one of the mesh places that isn't in any room. Alternatively, go to each trash recepticle.
+  solution: (or (and (visited-object O19) (visited-object O30) (visited-object O64) (visited-object O79)) (or (visited-place P2441) (visited-place P3107) (visited-place P15561) (visited-place P25023) (visited-place P25697)))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class, combination]
+
+
+
+- uid: 48A
+  name: Lounge inspection, or visit storage
+  question: Visit the closest storage, then inspect one of the signs in the lounge.
+  solution: (and (visited-object O358) (or (safe O283) (safe O255) (safe O3) (safe O264)))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [hierarchy, implicit-spatial-reference, combination]
+
+
+- uid: 48B
+  name: Lounge inspection, or visit storage
+  question: Visit the storage nearby. As an alternative, make sure one of the signs in the lounge is safe.
+  solution: (and (visited-object O358) (or (safe O283) (safe O255) (safe O3) (safe O264)))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [hierarchy, implicit-spatial-reference, combination]
+
+
+
+- uid: 49A
+  name: Grab bike, avoid region, visit hallways
+  question: Visit the hallways while avoiding the lounge, or pick up the bicycle
+  solution: (or (holding O43) (and (visited-room R2) (visited-room R3) (visited-room R4) (visited-room R5) (not (visited-room R1))))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class, avoid, combination]
+
+
+- uid: 49B
+  name: Grab bike, avoid region, visit hallways
+  question: Grab the bicycle, or visit the hallways without going into the lounge.
+  solution: (or (holding O43) (and (visited-room R2) (visited-room R3) (visited-room R4) (visited-room R5) (not (visited-room R1))))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class, avoid, combination]
+
+
+
+- uid: 50A
+  name: Multiple object move, or inspect hallway light
+  question: Bring all of the trashes to mesh place 1833. Alternatively, take a look at the light in the hallway.
+  solution: (or (safe O300) (object-in-place O19 P1833) (object-in-place O30 P1833) (object-in-place O64 P1833) (object-in-place O79 P1833))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class, combination, hierarchy]
+
+
+- uid: 50B
+  name: Multiple object move, or inspect hallway light
+  question: Go check the light in the hallway and make sure it's safe. Or bring all of the trashes to mesh place 1833.
+  solution: (or (safe O300) (object-in-place O19 P1833) (object-in-place O30 P1833) (object-in-place O64 P1833) (object-in-place O79 P1833))
+  correctness_comparator:
+      comparison_type: PDDL
+      relation: equal
+  tags: [direct-class, combination, hierarchy]
