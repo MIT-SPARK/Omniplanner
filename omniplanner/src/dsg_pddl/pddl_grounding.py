@@ -129,7 +129,19 @@ class PddlDomain:
     def to_string(self):
         return ast_to_string(self.domain_ast)
 
+class MultiRobotPddlDomain:
+    def __init__(self, domain_str):
+        self.domain_ast = lisp_string_to_ast(domain_str)
+        self.domain_name = get_domain_name(self.domain_ast)
+        self.requirements = get_domain_requirements(self.domain_ast)
+        self.get_domain_types = get_domain_types(self.domain_ast)
+        self.predicates = get_domain_predicates(self.domain_ast)
+        self.functions = get_functions(self.domain_ast)
+        self.derived = get_derived(self.domain_ast)
+        self.actions = get_actions(self.domain_ast)
 
+    def to_string(self):
+        return ast_to_string(self.domain_ast)
 def get_domain_name(ast):
     return ast[1][1]
 
