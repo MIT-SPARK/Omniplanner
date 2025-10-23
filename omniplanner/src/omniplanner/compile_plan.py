@@ -5,6 +5,7 @@ from typing import Any, List, overload
 from plum import dispatch
 
 from omniplanner.omniplanner import (
+    MultiRobotWrapper,
     RobotWrapper,
     SymbolicContext,
     Wrapper,
@@ -43,6 +44,40 @@ def compile_plan(adaptors: dict, plan_frame: str, p: list):
     return fmap(partial(compile_plan, adaptors, plan_frame), p)
 
 
+@overload
+@dispatch
+def compile_plan(adaptors: dict, plan_frame: str, p: RobotWrapper[Any]):
+    return compile_plan(adaptors[p.name], plan_frame, p)
+
+
+@overload
+@dispatch
+def compile_plan(
+    adaptors: dict, plan_frame: str, p: SymbolicContext[MultiRobotWrapper[Any]]
+):
+    logger.warning(f"SymbolicContext[MultiRobotWrapper[Any]] with: {type(p)}")
+    multirobot_symbolic = push(p)
+    return compile_plan(adaptors, plan_frame, multirobot_symbolic)
+
+
+@overload
+@dispatch
+def compile_plan(
+    adaptors: dict, plan_frame: str, p: MultiRobotWrapper[SymbolicContext[Any]]
+) -> MultiRobotWrapper[Any]:
+    logger.warning(f"MultiRobotWrapper[SymbolicContext[Any]] with: {type(p)}")
+
+    remapped_adaptors = {p.remap_name_to_inner(k): v for k, v in adaptors.items()}
+    return fmap(partial(compile_plan, remapped_adaptors, plan_frame), p)
+
+
+# This implementation lets the compilation process transparently "skip" unused wrappers
+@dispatch
+def compile_plan(adaptor, plan_frame: str, p: Wrapper):
+    logger.debug(f"Skipping wrapper of type {type(p)}")
+    return compile_plan(adaptor, plan_frame, extract(p))
+
+
 # NOTE: this is the signature that you would modify to introduce a compiler for
 # a new robot or Abstract Plan type. If we wanted to support different kinds of
 # adaptors, that we would dispatch on adaptor here too (currently we assume all
@@ -64,9 +99,3 @@ def collect_plans(p: List[RobotWrapper[Any]]):
 @dispatch
 def collect_plans(p: RobotWrapper[Any]):
     return {p.name: p.value}
-
-
-# This implementation lets the compilation process transparently "skip" unused wrappers
-@dispatch
-def compile_plan(adaptor, plan_frame: str, p: Wrapper):
-    return compile_plan(adaptor, plan_frame, extract(p))

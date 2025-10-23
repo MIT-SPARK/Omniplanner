@@ -251,34 +251,19 @@ def generate_place_containment(G):
     except Exception:
         places_layer_2d = G.get_layer(20)
 
-    places_layer = G.get_layer(spark_dsg.DsgLayers.PLACES)
-
     containments = []
 
-    place_centers = []
-    place_nodes = []
-    for node in places_layer.nodes:
-        place_centers.append(node.attributes.position)
-        place_nodes.append(node)
-    place_centers = np.array(place_centers)
-    if len(place_centers) == 0:
-        # there are no 3d places, so we don't need to worry about place/region containment
-        return []
-
     for node in places_layer_2d.nodes:
-        closest_idx = np.argmin(
-            np.linalg.norm(place_centers - node.attributes.position, axis=1)
-        )
-        closest_place = place_nodes[closest_idx]
-        parent = closest_place.get_parent()
-        if parent is not None:
-            containments.append(
-                (
-                    "place-in-region",
-                    normalize_symbol(node.id.str(True)),
-                    normalize_symbol(spark_dsg.NodeSymbol(parent).str(True)),
+        parents = node.parents()
+        for parent in parents:
+            if parent is not None:
+                containments.append(
+                    (
+                        "place-in-region",
+                        normalize_symbol(node.id.str(True)),
+                        normalize_symbol(spark_dsg.NodeSymbol(parent).str(True)),
+                    )
                 )
-            )
 
     return containments
 

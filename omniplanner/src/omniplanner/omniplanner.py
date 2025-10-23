@@ -1,7 +1,6 @@
-# examples of planning combinations:
 import logging
 from collections import UserDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, List, overload
 
 from dsg_pddl.pddl_utils import pddl_char_to_dsg_char
@@ -13,6 +12,7 @@ from omniplanner.functor import Functor, FunctorTrait, dispatchable_parametric
 logger = logging.getLogger(__name__)
 
 
+# examples of planning combinations:
 # 0. GotoPoints Domain, ListOfPoints goal, PointLocations
 # 0.5 GotoPoints Domain, ListOfSymbols goal, DSG
 # 1. PDDL domain, PDDL goal, DSG
@@ -77,7 +77,6 @@ def push(x: Wrapper):
 
 
 @dispatchable_parametric
-# class RobotWrapper[T](FunctorTrait):
 class RobotWrapper[T](Wrapper):
     name: str
     value: T
@@ -99,6 +98,54 @@ def extract(x: RobotWrapper):
 @dispatch
 def with_new_value(x: RobotWrapper, value):
     return RobotWrapper(x.name, value)
+
+
+@dispatchable_parametric
+class MultiRobotWrapper[T](Wrapper):
+    names: list[str]
+    value: T
+    _outer_name_to_inner_name: dict = field(default_factory=dict)
+    _inner_name_to_outer_name: dict = field(default_factory=dict)
+
+    def set_name_remap(self, name, inner_name):
+        assert name in self.names
+        self._outer_name_to_inner_name[name] = inner_name
+        self._inner_name_to_outer_name[inner_name] = name
+
+    def remap_name_to_inner(self, name):
+        if name not in self.names:
+            return None
+        if name in self._outer_name_to_inner_name:
+            return self._outer_name_to_inner_name[name]
+        return name
+
+    def remap_name_to_outer(self, name):
+        if name in self._inner_name_to_outer_name:
+            return self._inner_name_to_outer_name[name]
+        return None
+
+
+@overload
+@dispatch
+def extract(x: MultiRobotWrapper):
+    return x.value
+
+
+@overload
+@dispatch
+def with_new_value(x: MultiRobotWrapper, value):
+    return MultiRobotWrapper(x.name, value)
+
+
+@overload
+@dispatch
+def fmap(fn: Callable, multi_robot_wrapper: MultiRobotWrapper):
+    return MultiRobotWrapper(
+        multi_robot_wrapper.names,
+        fn(multi_robot_wrapper.value),
+        multi_robot_wrapper._outer_name_to_inner_name,
+        multi_robot_wrapper._inner_name_to_outer_name,
+    )
 
 
 def string_as_nodesymbol(string):
@@ -230,6 +277,7 @@ def full_planning_pipeline(plan_request: PlanRequest, map_context: Any, feedback
 
     # TODO: it would be nice if we could incorporate additional symbol context
     # added during grounding...
+
     dsg_context = DsgContextProvider(map_context)
     contextualized_problem = SymbolicContext(dsg_context, grounded_problem)
     plan = make_plan(contextualized_problem, map_context)

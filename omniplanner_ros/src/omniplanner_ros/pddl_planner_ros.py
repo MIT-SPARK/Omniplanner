@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
+from functools import partial
 from importlib.resources import as_file, files
 from typing import overload
 
@@ -13,7 +14,14 @@ from dsg_pddl.dsg_pddl_planning import PddlPlan
 from dsg_pddl.pddl_grounding import PddlDomain, PddlGoal
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
-from omniplanner.omniplanner import PlanRequest, SymbolicContext
+from omniplanner.omniplanner import (
+    MultiRobotWrapper,
+    PlanRequest,
+    RobotWrapper,
+    SymbolicContext,
+    fmap,
+    with_new_value,
+)
 from omniplanner_msgs.msg import PddlGoalMsg
 from plum import dispatch
 from rclpy.clock import Clock
@@ -40,6 +48,28 @@ def ensure_3d(pt):
     return pt
 
 
+def project_multirobot_plan(plan):
+    # domain = plan.domain # In theory this projection depends on the domain
+
+    def project_action(action):
+        match action[0]:
+            case "goto-poi":
+                return (action[0],) + (action[2:])
+            case "inspect":
+                return (action[0], action[2])
+            case "pick-object":
+                return (action[0],) + (action[2:])
+            case "place-object":
+                return (action[0],) + (action[2:])
+            case _:
+                raise ValueError(f"Don't know how to project {action}")
+
+    plan.symbolic_actions = list(map(project_action, plan.symbolic_actions))
+    # You could imagine needing to project the parameterized actions too, but currently
+    # there aren't any cases where we need to do anything.
+    return plan
+
+
 @overload
 @dispatch
 def compile_plan(adaptor, plan_frame: str, plan: PddlPlan):
@@ -50,6 +80,67 @@ def compile_plan(adaptor, plan_frame: str, plan: PddlPlan):
 @dispatch
 def compile_plan(adaptor, plan_frame: str, p: SymbolicContext[PddlPlan]):
     return compile_pddl_plan(p, str(uuid.uuid4()), adaptor.name, plan_frame)
+
+
+@overload
+@dispatch
+def compile_plan(
+    adaptors: dict, plan_frame: str, p: MultiRobotWrapper[SymbolicContext[PddlPlan]]
+):
+    # This is where we end up when we solve a multirobot PDDL problem.
+    return compile_multirobot_pddl_plan(adaptors, p, plan_frame)
+
+
+def compile_multirobot_pddl_plan(
+    adaptors, mr_sym_plan, plan_frame
+) -> list[RobotWrapper[ActionSequence]]:
+    robot_names = mr_sym_plan.names
+    plan_per_robot = {}
+    plan = mr_sym_plan.value.value
+    inner_name_to_outer_name = mr_sym_plan.remap_name_to_outer
+    for rn in robot_names:
+        plan_per_robot[rn] = PddlPlan(
+            domain=plan.domain,
+            parameterized_actions=[],
+            symbolic_actions=[],
+            symbols=plan.symbols,
+        )
+
+    def add_to_plan(robot_name, symbolic_action, parameterized_action):
+        if robot_name not in plan_per_robot:
+            logger.error(
+                f"Plan contains robot name {robot_name}, which is not in the MultiRobotWrapper! ({list(plan_per_robot.keys())})"
+            )
+            return
+        plan_per_robot[robot_name].symbolic_actions.append(symbolic_action)
+        plan_per_robot[robot_name].parameterized_actions.append(parameterized_action)
+
+    for sym_action, parm_action in zip(
+        plan.symbolic_actions, plan.parameterized_actions
+    ):
+        if inner_name_to_outer_name(sym_action[1]) in robot_names:
+            add_to_plan(
+                inner_name_to_outer_name(sym_action[1]), sym_action, parm_action
+            )
+        else:
+            logger.error(
+                f"Multi-robot plan has action {sym_action} that either doesn't to specify a robot, or specifies a robot other than one that is allowed by the planning problem!"
+            )
+
+    logger.info("Plans before multi-robot projection: ")
+    for v in plan_per_robot.values():
+        logger.info(v.symbolic_actions)
+    single_robot_action_sequences = [
+        with_new_value(mr_sym_plan.value, RobotWrapper(k, project_multirobot_plan(v)))
+        for k, v in plan_per_robot.items()
+    ]
+    logger.info("Plans after projection: ")
+    for p in single_robot_action_sequences:
+        logger.info(p.value.value.symbolic_actions)
+    result = fmap(
+        partial(compile_plan, adaptors, plan_frame), single_robot_action_sequences
+    )
+    return result
 
 
 def compile_pddl_plan(

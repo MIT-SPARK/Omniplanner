@@ -10,7 +10,6 @@ from dsg_pddl.pddl_grounding import PddlDomain, PddlGoal
 from omniplanner.omniplanner import PlanRequest
 from omniplanner_msgs.msg import PddlGoalMsgList
 
-
 logger = logging.getLogger(__name__)
 
 
