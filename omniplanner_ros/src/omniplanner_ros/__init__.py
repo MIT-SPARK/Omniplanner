@@ -1,4 +1,5 @@
 from omniplanner_ros.goto_points_ros import GotoPointsConfig
 from omniplanner_ros.language_planner_ros import LanguagePlannerConfig
 from omniplanner_ros.pddl_planner_ros import PddlConfig
+from omniplanner_ros.pddl_planner_ros_llm_multiagent import MultirobotPddlConfig
 from omniplanner_ros.tsp_ros import TspConfig

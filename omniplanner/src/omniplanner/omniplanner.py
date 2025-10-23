@@ -216,6 +216,8 @@ def make_plan(grounded_problem: Functor, map_context: Any):
     return fmap(lambda e: make_plan(e, map_context), grounded_problem)
 
 
+@overload
+@dispatch
 def full_planning_pipeline(plan_request: PlanRequest, map_context: Any, feedback=None):
     grounded_problem = ground_problem(
         plan_request.domain,
@@ -233,3 +235,10 @@ def full_planning_pipeline(plan_request: PlanRequest, map_context: Any, feedback
     plan = make_plan(contextualized_problem, map_context)
     logger.debug(f"Made plan {plan}")
     return plan
+
+
+@dispatch
+def full_planning_pipeline(
+    plan_requests: list[PlanRequest], map_context: Any, feedback=None
+):
+    return [full_planning_pipeline(pr, map_context, feedback) for pr in plan_requests]

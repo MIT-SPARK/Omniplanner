@@ -36,6 +36,13 @@ def compile_plan(
     return fmap(partial(compile_plan, adaptor, plan_frame), robot_symbolic)
 
 
+@overload
+@dispatch
+def compile_plan(adaptors: dict, plan_frame: str, p: list):
+    logger.warning(f"list[] with: {type(p)}")
+    return fmap(partial(compile_plan, adaptors, plan_frame), p)
+
+
 # NOTE: this is the signature that you would modify to introduce a compiler for
 # a new robot or Abstract Plan type. If we wanted to support different kinds of
 # adaptors, that we would dispatch on adaptor here too (currently we assume all
