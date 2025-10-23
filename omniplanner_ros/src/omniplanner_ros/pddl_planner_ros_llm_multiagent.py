@@ -35,6 +35,7 @@ class MultiRobotLlmPddlPlannerRos:
         logger.info(f"Received PDDL goals {msg.single_robot_goals}")
         goals = []
         for goal in msg.single_robot_goals:
+            logger.info(f"  {goal.robot_id}: {goal.pddl_goal}")
             g = PddlGoal(pddl_goal=goal.pddl_goal, robot_id=goal.robot_id)
             robot_domain = self.domain
             req = PlanRequest(

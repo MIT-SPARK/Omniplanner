@@ -28,7 +28,7 @@ from visualization_msgs.msg import MarkerArray
 
 from omniplanner_ros.ros_logging import setup_ros_log_forwarding
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, force=True)
 logger = logging.getLogger(__name__)
 
 
