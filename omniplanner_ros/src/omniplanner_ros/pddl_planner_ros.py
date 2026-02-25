@@ -163,6 +163,7 @@ def compile_pddl_plan(
                         robot_point=ensure_3d(robot_point),
                         gaze_point=ensure_3d(gaze_point),
                         stow_after=True,
+                        object_id=symbolic_action[1],
                     )
                 )
             case "pick-object":
@@ -178,6 +179,7 @@ def compile_pddl_plan(
                         object_class=object_class,
                         robot_point=ensure_3d(robot_point),
                         object_point=ensure_3d(pick_point),
+                        object_id=symbolic_action[1],
                     )
                 )
             case "place-object":
@@ -188,6 +190,7 @@ def compile_pddl_plan(
                         object_class=object_class,
                         robot_point=ensure_3d(robot_point),
                         object_point=ensure_3d(place_point),
+                        object_id=symbolic_action[1],
                     )
                 )
             case _:
