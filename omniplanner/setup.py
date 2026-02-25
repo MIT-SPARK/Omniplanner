@@ -10,7 +10,5 @@ setup(
     package_dir={"": "src"},
     packages=find_packages("src"),
     package_data={"": ["*.yaml", "*.pddl"]},
-    install_requires=[
-        "plum",
-    ],
+    install_requires=[],
 )
