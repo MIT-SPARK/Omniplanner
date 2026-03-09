@@ -87,7 +87,7 @@ class PlannerConfig(Config):
 
 
 class RobotPlanningAdaptor:
-    def __init__(self, config, node=None, tf_buffer=None):
+    def __init__(self, config, node=None, tf_buffer=None, qos_profile=None):
         self.tf_buffer = tf_buffer
         self.name = config.robot_name
         self.robot_type = config.robot_type
@@ -95,7 +95,9 @@ class RobotPlanningAdaptor:
         self.ros_logger = node.get_logger()
 
         self.plan_pub = node.create_publisher(
-            ActionSequenceMsg, f"/{self.name}/omniplanner_node/compiled_plan_out", 1
+            ActionSequenceMsg,
+            f"/{self.name}/omniplanner_node/compiled_plan_out",
+            qos_profile or 1,
         )
 
     def get_pose(self, parent_frame):
@@ -230,7 +232,9 @@ class OmniPlannerRos(Node):
 
         self.robot_adaptors = {}
         for robot_config in self.config.robots:
-            robot_adaptor = robot_config.create(node=self, tf_buffer=self.tf_buffer)
+            robot_adaptor = robot_config.create(
+                node=self, tf_buffer=self.tf_buffer, qos_profile=latching_reliable_qos
+            )
             self.get_logger().info(
                 f"I know about {robot_adaptor.name}, a {robot_adaptor.robot_type} robot"
             )
