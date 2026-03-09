@@ -20,7 +20,7 @@ def solve_pddl(problem: GroundedPddlProblem):
             fo.write(problem.problem_str)
 
         with open(domain_fn, "w") as fo:
-            fo.write(problem.domain.to_pddl_string())
+            fo.write(problem.domain.to_string())
 
         command = ["fast-downward"]
         command += ["--plan-file", plan_fn]

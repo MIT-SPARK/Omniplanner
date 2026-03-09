@@ -16,7 +16,12 @@ from omniplanner.omniplanner import full_planning_pipeline
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import QoSDurabilityPolicy, QoSProfile
+from rclpy.qos import (
+    QoSDurabilityPolicy,
+    QoSHistoryPolicy,
+    QoSProfile,
+    QoSReliabilityPolicy,
+)
 from robot_executor_interface_ros.action_descriptions_ros import to_msg, to_viz_msg
 from robot_executor_msgs.msg import ActionSequenceMsg
 from robot_vocalizer.plan_vocalizer import PlanVocalizer
@@ -196,11 +201,15 @@ class OmniPlannerRos(Node):
         self.dsg_lock = threading.Lock()
         DsgSubscriber(self, "~/dsg_in", self.dsg_callback)
 
-        latching_qos = QoSProfile(
-            depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL
+        latching_reliable_qos = QoSProfile(
+            depth=1,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            history=QoSHistoryPolicy.KEEP_ALL,
         )
+
         self.compiled_plan_viz_pub = self.create_publisher(
-            MarkerArray, "~/compiled_plan_viz_out", qos_profile=latching_qos
+            MarkerArray, "~/compiled_plan_viz_out", qos_profile=latching_reliable_qos
         )
 
         self.heartbeat_pub = self.create_publisher(NodeInfoMsg, "~/node_status", 1)
