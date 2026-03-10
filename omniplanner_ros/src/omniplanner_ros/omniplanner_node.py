@@ -210,6 +210,13 @@ class OmniPlannerRos(Node):
             history=QoSHistoryPolicy.KEEP_ALL,
         )
 
+        reliable_blocking_qos = QoSProfile(
+            depth=1,
+            durability=QoSDurabilityPolicy.VOLATILE,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            history=QoSHistoryPolicy.KEEP_ALL,
+        )
+
         self.compiled_plan_viz_pub = self.create_publisher(
             MarkerArray, "~/compiled_plan_viz_out", qos_profile=latching_reliable_qos
         )
@@ -233,7 +240,7 @@ class OmniPlannerRos(Node):
         self.robot_adaptors = {}
         for robot_config in self.config.robots:
             robot_adaptor = robot_config.create(
-                node=self, tf_buffer=self.tf_buffer, qos_profile=latching_reliable_qos
+                node=self, tf_buffer=self.tf_buffer, qos_profile=reliable_blocking_qos
             )
             self.get_logger().info(
                 f"I know about {robot_adaptor.name}, a {robot_adaptor.robot_type} robot"
