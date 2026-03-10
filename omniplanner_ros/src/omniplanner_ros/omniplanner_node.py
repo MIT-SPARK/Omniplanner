@@ -16,7 +16,12 @@ from omniplanner.omniplanner import full_planning_pipeline
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import QoSDurabilityPolicy, QoSProfile
+from rclpy.qos import (
+    QoSDurabilityPolicy,
+    QoSHistoryPolicy,
+    QoSProfile,
+    QoSReliabilityPolicy,
+)
 from robot_executor_interface_ros.action_descriptions_ros import to_msg, to_viz_msg
 from robot_executor_msgs.msg import ActionSequenceMsg
 from robot_vocalizer.plan_vocalizer import PlanVocalizer
@@ -82,7 +87,7 @@ class PlannerConfig(Config):
 
 
 class RobotPlanningAdaptor:
-    def __init__(self, config, node=None, tf_buffer=None):
+    def __init__(self, config, node=None, tf_buffer=None, qos_profile=None):
         self.tf_buffer = tf_buffer
         self.name = config.robot_name
         self.robot_type = config.robot_type
@@ -90,7 +95,9 @@ class RobotPlanningAdaptor:
         self.ros_logger = node.get_logger()
 
         self.plan_pub = node.create_publisher(
-            ActionSequenceMsg, f"/{self.name}/omniplanner_node/compiled_plan_out", 1
+            ActionSequenceMsg,
+            f"/{self.name}/omniplanner_node/compiled_plan_out",
+            qos_profile or 1,
         )
 
     def get_pose(self, parent_frame):
@@ -196,11 +203,22 @@ class OmniPlannerRos(Node):
         self.dsg_lock = threading.Lock()
         DsgSubscriber(self, "~/dsg_in", self.dsg_callback)
 
-        latching_qos = QoSProfile(
-            depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL
+        latching_reliable_qos = QoSProfile(
+            depth=1,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            history=QoSHistoryPolicy.KEEP_ALL,
         )
+
+        reliable_blocking_qos = QoSProfile(
+            depth=1,
+            durability=QoSDurabilityPolicy.VOLATILE,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            history=QoSHistoryPolicy.KEEP_ALL,
+        )
+
         self.compiled_plan_viz_pub = self.create_publisher(
-            MarkerArray, "~/compiled_plan_viz_out", qos_profile=latching_qos
+            MarkerArray, "~/compiled_plan_viz_out", qos_profile=latching_reliable_qos
         )
 
         self.heartbeat_pub = self.create_publisher(NodeInfoMsg, "~/node_status", 1)
@@ -221,7 +239,9 @@ class OmniPlannerRos(Node):
 
         self.robot_adaptors = {}
         for robot_config in self.config.robots:
-            robot_adaptor = robot_config.create(node=self, tf_buffer=self.tf_buffer)
+            robot_adaptor = robot_config.create(
+                node=self, tf_buffer=self.tf_buffer, qos_profile=reliable_blocking_qos
+            )
             self.get_logger().info(
                 f"I know about {robot_adaptor.name}, a {robot_adaptor.robot_type} robot"
             )
