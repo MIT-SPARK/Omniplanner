@@ -15,7 +15,12 @@ from omniplanner_msgs.msg import GotoPointsGoalMsg
 from plum import dispatch
 from rclpy.clock import Clock
 from robot_executor_interface.action_descriptions import ActionSequence, Follow
-from robot_executor_interface_ros.action_descriptions_ros import to_msg, to_viz_msg
+from robot_executor_interface_ros.action_descriptions_ros import (
+    robot_label_marker,
+    robot_color,
+    to_msg,
+    to_viz_msg,
+)
 from visualization_msgs.msg import Marker, MarkerArray
 
 from omniplanner_ros.omniplanner_node import PhoenixPlanningAdaptor
@@ -61,10 +66,7 @@ def path_to_marker(path: Path, marker_ns) -> MarkerArray:
     marker.action = Marker.ADD
 
     marker.scale.x = 0.05
-    marker.color.r = 0.0
-    marker.color.g = 1.0
-    marker.color.b = 0.0
-    marker.color.a = 1.0
+    marker.color = robot_color(marker_ns)
 
     # Convert poses to points
     marker.points = [
@@ -73,6 +75,12 @@ def path_to_marker(path: Path, marker_ns) -> MarkerArray:
     ]
     ma = MarkerArray()
     ma.markers = [marker]
+
+    # Add a text label at the first point of the path
+    if path.poses:
+        p0 = path.poses[0].pose.position
+        label = robot_label_marker(marker_ns, path.header.frame_id, p0.x, p0.y)
+        ma.markers.append(label)
 
     return ma
 

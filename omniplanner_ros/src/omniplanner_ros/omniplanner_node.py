@@ -29,7 +29,7 @@ from ros_system_monitor_msgs.msg import NodeInfoMsg
 from spark_config import Config, config_field, register_config
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
-from visualization_msgs.msg import MarkerArray
+from visualization_msgs.msg import Marker, MarkerArray
 
 from omniplanner_ros.ros_logging import setup_ros_log_forwarding
 
@@ -332,13 +332,20 @@ class OmniPlannerRos(Node):
 
             compiled_plans = compile_plan(self.robot_adaptors, self.dsg_frame, plans)
             plan_dict = collect_plans(compiled_plans)
+
+            # Build a single MarkerArray: DELETEALL first (clears stale markers),
+            # then all robot plan markers. Single publish avoids latching race
+            # and ensures late-joining subscribers get the complete state.
+            delete_all_marker = Marker()
+            delete_all_marker.action = Marker.DELETEALL
+            combined_markers = MarkerArray(markers=[delete_all_marker])
+
             for robot_name, compiled_plan in plan_dict.items():
                 self.robot_adaptors[robot_name].publish_plan(to_msg(compiled_plan))
-                # TODO: combine markers into single array so that latching works
-                # correctly for multi-robot plans?
-                self.compiled_plan_viz_pub.publish(
-                    to_viz_msg(compiled_plan, robot_name)
-                )
+                robot_markers = to_viz_msg(compiled_plan, robot_name)
+                combined_markers.markers.extend(robot_markers.markers)
+
+            self.compiled_plan_viz_pub.publish(combined_markers)
 
             with self.current_planner_lock and self.plan_time_start_lock:
                 self.current_planner = None
