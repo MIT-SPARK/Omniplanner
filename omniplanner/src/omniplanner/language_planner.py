@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from dsg_pddl.pddl_grounding import PddlDomain, PddlGoal
-from nlu_interface.llm_interface import LLMInterface
+from nlu_interface.interface import LLMInterface
 from plum import dispatch
 
 from omniplanner.goto_points import GotoPointsDomain, GotoPointsGoal

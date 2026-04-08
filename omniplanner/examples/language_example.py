@@ -5,7 +5,11 @@ import dsg_pddl.domains
 import nlu_interface.resources
 import numpy as np
 from dsg_pddl.pddl_grounding import PddlDomain
-from nlu_interface.llm_interface import OpenAIWrapper
+from nlu_interface.config import OpenAIConfig
+from nlu_interface_dcist.language_planning_interface import (
+    LanguagePddlInterface,
+    SimplePddlSceneGraphPrompt,
+)
 from ruamel.yaml import YAML
 from utils import DummyRobotPlanningAdaptor, build_test_dsg
 
@@ -67,29 +71,24 @@ with as_file(files(dsg_pddl.domains).joinpath("GotoObjectDomain.pddl")) as path:
         domain = PddlDomain(fo.read())
 
 # Load the LLM config to use
-with open("llm_config.yaml", "r") as file:
-    llm_config = yaml.load(file)
-
+with open("llm_configs/openai_config.yaml", "r") as file:
+    llm_config_dict = yaml.load(file)
 
 # Load the LLM prompt
 with as_file(
-    files(nlu_interface.resources).joinpath(llm_config["prompt"] + ".yaml")
+    files(nlu_interface.resources).joinpath("prompt_pnp_pddl_planner.yaml")
 ) as path:
     print(f'Loading prompt from "{path}"')
     with open(str(path), "r") as file:
-        prompt = yaml.load(file)
+        prompt_dict = yaml.load(file)
+prompt = SimplePddlSceneGraphPrompt(**prompt_dict)
+print(f"Load the prompt: {prompt.render(0)}")
 
-llm_interface = OpenAIWrapper(
-    model=llm_config["model"],
-    mode=llm_config["mode"],
-    prompt=prompt,
-    num_incontext_examples=llm_config["num_incontext_examples"],
-    temperature=llm_config["temperature"],
-    api_timeout=llm_config["api_timeout"],
-    seed=llm_config["seed"],
-    api_key_env_var=llm_config["api_key_env_var"],
-    debug=llm_config["debug"],
-)
+# Construct the interface
+del llm_config_dict["interface_type"]
+config = OpenAIConfig(**llm_config_dict)
+llm_interface = LanguagePddlInterface(config=config, prompt=prompt)
+
 
 # Build the plan request
 req = PlanRequest(

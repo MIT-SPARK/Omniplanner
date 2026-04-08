@@ -1,10 +1,10 @@
----
-model: gpt-4o
-mode: default
-prompt: prompt_pddl_planner
+interface_type: openai
+model: gpt-4o-2024-08-06
+prompt_mode: default
+prompt_type: default
 num_incontext_examples: -1
 temperature: 0.0
 api_timeout: 120.0
 seed: 100
 api_key_env_var: OPENAI_API_KEY
-debug: true
+debug: True

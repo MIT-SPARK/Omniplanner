@@ -9,7 +9,11 @@ import dsg_pddl
 import nlu_interface.resources
 import spark_config as sc
 from dsg_pddl.pddl_grounding import PddlDomain
-from nlu_interface.llm_interface import OpenAIWrapper
+from nlu_interface.config import OpenAIConfig
+from nlu_interface_dcist.language_planning_interface import (
+    LanguagePddlInterface,
+    SimplePddlSceneGraphPrompt,
+)
 from omniplanner.language_planner import LanguageDomain, LanguageGoal
 from omniplanner.omniplanner import PlanRequest
 from omniplanner_msgs.msg import LanguageGoalMsg
@@ -45,18 +49,19 @@ class LanguagePlannerRos:
         ) as path:
             logger.info(f'Loading prompt from "{path}"')
             with open(str(path), "r") as file:
-                prompt = yaml.load(file)
-        self.llm_interface = OpenAIWrapper(
+                prompt = SimplePddlSceneGraphPrompt(**yaml.load(file))
+        config = OpenAIConfig(
             model=self.llm_config["model"],
-            mode=self.llm_config["mode"],
-            prompt=prompt,
+            prompt_mode=self.llm_config.get("mode", "default"),
+            prompt_type=self.llm_config.get("prompt_type", "default"),
             num_incontext_examples=self.llm_config["num_incontext_examples"],
             temperature=self.llm_config["temperature"],
             api_timeout=self.llm_config["api_timeout"],
             seed=self.llm_config["seed"],
-            api_key_env_var=self.llm_config["api_key_env_var"],
-            debug=self.llm_config["debug"],
+            api_key_env_var=self.llm_config.get("api_key_env_var", ""),
+            debug=self.llm_config.get("debug", False),
         )
+        self.llm_interface = LanguagePddlInterface(config=config, prompt=prompt)
 
     def get_plan_callback(self):
         return LanguageGoalMsg, "language_goal", self.language_callback
