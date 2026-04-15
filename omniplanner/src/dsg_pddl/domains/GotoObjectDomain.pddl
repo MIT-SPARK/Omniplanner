@@ -2,7 +2,7 @@
     (:requirements :derived-predicates :typing :adl)
     (:types
         point-of-interest - object
-        place dsg_object - point-of-interest
+        region place dsg_object - point-of-interest
     )
 
 
@@ -12,10 +12,12 @@
         (suspicious ?o - dsg_object)
         (at-object ?o)
         (at-place ?p)
+        (at-region ?p)
 
         (visited-poi ?p)
         (visited-place ?p)
         (visited-object ?o)
+        (visited-region ?o)
 
         (safe ?o)
     )
@@ -31,8 +33,14 @@
     (:derived (at-place ?p - place)
         (at-poi ?p))
 
+    (:derived (at-region ?r - region)
+        (at-poi ?r))
+
     (:derived (visited-place ?p - place)
         (visited-poi ?p))
+
+    (:derived (visited-region ?r - region)
+        (visited-poi ?r))
 
     (:derived (visited-object ?p - dsg_object)
         (visited-poi ?p))
