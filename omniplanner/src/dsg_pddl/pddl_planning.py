@@ -60,7 +60,7 @@ def solve_pddl(problem: GroundedPddlProblem):
             with open(plan_fn, "r") as fo:
                 lines = fo.readlines()
             with open(debug_plan_fn, "w") as fo:
-                fo.write(lines)
+                fo.writelines(lines)
         else:
             output_dir = os.getenv("ADT4_OUTPUT_DIR", "")
             debug_fn = os.path.join(output_dir, "pddl_problem_debugging.pddl")
