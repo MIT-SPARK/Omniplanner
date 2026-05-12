@@ -150,7 +150,12 @@ class TspGoal:
 @overload
 @dispatch
 def ground_problem(
-    domain: TspDomain, dsg: Any, robot_states: dict, goal: TspGoal, feedback: Any = None
+    domain: TspDomain,
+    dsg: Any,
+    robot_states: dict,
+    goal: TspGoal,
+    feedback: Any = None,
+    constraints: list = [],
 ) -> RobotWrapper[GroundedTspProblem]:
     logger.info("Grounding TSP Problem")
 

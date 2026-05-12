@@ -480,6 +480,7 @@ def ground_problem(
     robot_states: dict,
     goal: PddlGoal,
     feedback: Any = None,
+    constraints: list = [],
 ) -> RobotWrapper[GroundedPddlProblem]:
     logger.info(f"Grounding PDDL Problem {domain.domain_name}")
 

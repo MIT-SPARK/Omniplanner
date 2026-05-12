@@ -29,6 +29,7 @@ def ground_problem(
     robot_states: dict,
     goal: LanguageGoal,
     feedback: Any = None,
+    constraints: list = [],
 ):
     if domain.domain_type == "goto_points":
         language_grounded_goal = GotoPointsGoal(

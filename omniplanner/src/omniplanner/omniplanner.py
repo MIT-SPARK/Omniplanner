@@ -43,6 +43,7 @@ class PlanRequest:
     domain: PlanningDomain
     goal: PlanningGoal
     robot_states: dict
+    constraints: list = field(default_factory=list)  # PDDL constraint facts
 
 
 @dataclass
@@ -248,6 +249,7 @@ def ground_problem(
     intial_state: Any,
     goal: PlanningGoal,
     feedback: Any = None,
+    constraints: list = [],
 ) -> GroundedProblem:
     raise DispatchException(ground_problem, domain, map_context, goal, feedback)
 
@@ -272,6 +274,7 @@ def full_planning_pipeline(plan_request: PlanRequest, map_context: Any, feedback
         plan_request.robot_states,
         plan_request.goal,
         feedback,
+        plan_request.constraints,
     )
     logger.debug("Grounded Problem")
 
