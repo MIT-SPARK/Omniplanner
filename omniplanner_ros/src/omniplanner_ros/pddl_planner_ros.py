@@ -33,6 +33,7 @@ from robot_executor_interface.action_descriptions import (
     Place,
 )
 
+from omniplanner_ros.last_pddl_plans import set_last_plan
 from omniplanner_ros.omniplanner_node import PhoenixPlanningAdaptor
 
 logger = logging.getLogger(__name__)
@@ -127,6 +128,10 @@ def compile_multirobot_pddl_plan(
                 f"Multi-robot plan has action {sym_action} that either doesn't to specify a robot, or specifies a robot other than one that is allowed by the planning problem!"
             )
 
+    # Cache for plan repair
+    for rn, p in plan_per_robot.items():
+        set_last_plan(rn, p)
+
     logger.info("Plans before multi-robot projection: ")
     for v in plan_per_robot.values():
         logger.info(v.symbolic_actions)
@@ -148,6 +153,10 @@ def compile_pddl_plan(
 ):
     plan = contextualized_plan.value
     context = contextualized_plan.context
+
+    # Cache for plan repair
+    set_last_plan(robot_name, plan)
+
     actions = []
     for symbolic_action, parameters in zip(
         plan.symbolic_actions, plan.parameterized_actions

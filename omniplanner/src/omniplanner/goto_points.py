@@ -49,6 +49,7 @@ def ground_problem(
     robot_states: dict,
     goal: GotoPointsGoal,
     feedback: Any = None,
+    constraints: list = [],
 ) -> RobotWrapper[GroundedGotoPointsProblem]:
     start = robot_states[goal.robot_id]
 
@@ -78,6 +79,7 @@ def ground_problem(
     start: np.ndarray,
     goal: list,
     feedback: Any = None,
+    constraints: list = [],
 ) -> GroundedGotoPointsProblem:
     point_sequence = map_context[goal]
     return GroundedGotoPointsProblem(start, point_sequence)

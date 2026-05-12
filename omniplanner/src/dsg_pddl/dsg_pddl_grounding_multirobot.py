@@ -64,7 +64,7 @@ def generate_dense_region_symbol_connectivity_multirobot(G, symbols, robot_state
         10,
         layer_planner,
     )
-    start_connection_threshold = 50
+    start_connection_threshold = 20
     for robot_id in robot_states.keys():
         start_symbol_key = f"pstart{robot_id}"
         if start_symbol_key in symbol_lookup:
@@ -146,8 +146,10 @@ def generate_multirobot_region_pddl(
     G: spark_dsg.DynamicSceneGraph,
     raw_pddl_goal_string: str,
     robot_states: np.ndarray,
+    constraints: List[tuple] = None,
+    domain_name: str = "region-object-rearrangement-domain-multirobot-fd",
 ) -> Tuple[str, List[PddlSymbol]]:
-    """Generate a multi-robot PDDL problem for domain region-object-rearrangement-domain-multirobot-fd."""
+    """Generate a multi-robot PDDL problem for the given multi-robot domain."""
     # Collect all places/objects/regions and positions
     symbols = extract_all_symbols(G)
     normalize_symbols(symbols)
@@ -194,12 +196,17 @@ def generate_multirobot_region_pddl(
     object_symbols = [s for s in symbols_of_interest if s.layer == "object"]
     init_facts_tuples += [("suspicious", o.symbol) for o in object_symbols]
 
+    # Inject runtime constraints (forbidden-poi, forbidden-edge, etc.)
+    if constraints:
+        init_facts_tuples += list(constraints)
+        logger.info(f"Injected {len(constraints)} constraint facts into PDDL init")
+
     # Build objects dict using shared generator and adding robots
     pddl_objects = generate_objects(symbols_of_interest)
     pddl_objects["robot"] = robot_ids
     problem = PddlProblem(
         name="multi-robot-problem",
-        domain="region-object-rearrangement-domain-multirobot-fd",
+        domain=domain_name,
         objects=pddl_objects,
         initial_facts=tuple(init_facts_tuples),
         goal=goal_pddl,
@@ -233,19 +240,22 @@ def ground_problem(
     robot_states: dict,
     goal: PddlGoal,
     feedback: Any = None,
+    constraints: list = [],
 ) -> MultiRobotWrapper[GroundedPddlProblem]:
     logger.warning(f"Grounding PDDL Problem {domain.domain_name}")
 
     pddl_compliant_robot_states = {k.lower(): v for k, v in robot_states.items()}
     match domain.domain_name:
-        # case "goto-object-domain-multirobot-fd":
-        #     pddl_problem, symbols = generate_multirobot_inspection_pddl(
-        #         dsg, goal.pddl_goal, robot_states
-        #     )
-
-        case "region-object-rearrangement-domain-multirobot-fd":
+        case (
+            "region-object-rearrangement-domain-multirobot-fd"
+            | "region-object-rearrangement-domain-multirobot-fd-constraints"
+        ):
             pddl_problem, symbols = generate_multirobot_region_pddl(
-                dsg, goal.pddl_goal, pddl_compliant_robot_states
+                dsg,
+                goal.pddl_goal,
+                pddl_compliant_robot_states,
+                constraints,
+                domain_name=domain.domain_name,
             )
             # logger.warning(f"!!!!!!!!!!!!!!pddl_problem: {pddl_problem}")
         case _:
