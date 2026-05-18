@@ -21,6 +21,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PddlGoalMsgList.msg"
   "msg/ConstraintFact.msg"
   "msg/ConstrainedPddlGoalMsg.msg"
+  "msg/ConstraintList.msg"
 )
 
 
