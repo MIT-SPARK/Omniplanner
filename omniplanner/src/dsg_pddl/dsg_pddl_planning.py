@@ -76,7 +76,7 @@ def parameterize_place_object_multirobot(layer_planner, symbols, action, last_po
 def make_plan(grounded_problem: GroundedPddlProblem, map_context: Any) -> PddlPlan:
     plan = solve_pddl(grounded_problem)
 
-    logger.warning(f"Made plan {plan}")
+    logger.debug(f"Made plan {plan}")
 
     parameterized_plan = []
 

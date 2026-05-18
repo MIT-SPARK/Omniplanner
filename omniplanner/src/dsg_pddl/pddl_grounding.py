@@ -1,5 +1,5 @@
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import total_ordering
 from typing import Dict, List, Optional
 
@@ -83,9 +83,22 @@ class PddlProblem:
 
 
 @dataclass
+class ConstraintFact:
+    """A runtime constraint fact applied during grounding.
+
+    `predicate` is the PDDL predicate name (e.g. "forbidden-poi").
+    `symbols` is the ordered list of PDDL symbols the predicate is applied to.
+    """
+
+    predicate: str
+    symbols: list  # list[str]
+
+
+@dataclass
 class PddlGoal:
     pddl_goal: str
     robot_id: str
+    constraints: list = field(default_factory=list)  # list[ConstraintFact]
 
 
 # TODO: need to reexamine this whole parsing framework as some point.

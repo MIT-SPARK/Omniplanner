@@ -33,8 +33,36 @@ from omniplanner.tsp import LayerPlanner
 logger = logging.getLogger(__name__)
 
 
-def generate_dense_region_symbol_connectivity_multirobot(G, symbols, robot_states):
+def _extract_forbidden_sets(constraints):
+    """Pull forbidden POIs and forbidden edges out of a list of ConstraintFact-like objects.
+
+    Each entry is expected to have `predicate` and `symbols` attributes
+    (matches both the Python dataclass and the ROS `ConstraintFact` message).
+    """
+    forbidden_pois = set()
+    forbidden_edges = set()
+    for c in constraints or []:
+        if c.predicate == "forbidden-poi" and len(c.symbols) >= 1:
+            forbidden_pois.add(c.symbols[0])
+        elif c.predicate == "forbidden-edge" and len(c.symbols) >= 2:
+            # Store unordered so we match either direction
+            forbidden_edges.add(tuple(sorted([c.symbols[0], c.symbols[1]])))
+    return forbidden_pois, forbidden_edges
+
+
+def _edge_allowed(s, t, forbidden_pois, forbidden_edges):
+    if s.symbol in forbidden_pois or t.symbol in forbidden_pois:
+        return False
+    if tuple(sorted([s.symbol, t.symbol])) in forbidden_edges:
+        return False
+    return True
+
+
+def generate_dense_region_symbol_connectivity_multirobot(
+    G, symbols, robot_states, constraints=None
+):
     symbol_lookup = {s.symbol: s for s in symbols}
+    forbidden_pois, forbidden_edges = _extract_forbidden_sets(constraints)
     try:
         places_layer = G.get_layer(spark_dsg.DsgLayers.MESH_PLACES)
     except Exception:
@@ -64,7 +92,7 @@ def generate_dense_region_symbol_connectivity_multirobot(G, symbols, robot_state
         10,
         layer_planner,
     )
-    start_connection_threshold = 50
+    start_connection_threshold = 20
     for robot_id in robot_states.keys():
         start_symbol_key = f"pstart{robot_id}"
         if start_symbol_key in symbol_lookup:
@@ -77,6 +105,20 @@ def generate_dense_region_symbol_connectivity_multirobot(G, symbols, robot_state
                 d = layer_planner.get_external_distance(start_position, s.position)
                 if d < start_connection_threshold:
                     edges.append((start_symbol, s, d))
+
+    if forbidden_pois or forbidden_edges:
+        before = len(edges)
+        edges = [
+            e
+            for e in edges
+            if _edge_allowed(e[0], e[1], forbidden_pois, forbidden_edges)
+        ]
+        logger.info(
+            "Dropped %d connectivity edges due to runtime constraints (%d forbidden POIs, %d forbidden edges)",
+            before - len(edges),
+            len(forbidden_pois),
+            len(forbidden_edges),
+        )
 
     return edges
 
@@ -97,9 +139,10 @@ def generate_dense_region_init_multirobot(
     G: spark_dsg.DynamicSceneGraph,
     symbols_of_interest: List[PddlSymbol],
     robot_states: Dict[str, np.ndarray],
+    constraints=None,
 ) -> List[tuple]:
     connectivity = generate_dense_region_symbol_connectivity_multirobot(
-        G, symbols_of_interest, robot_states
+        G, symbols_of_interest, robot_states, constraints=constraints
     )
     connectivity_pddl = symbol_connectivity_to_pddl(connectivity)
 
@@ -146,8 +189,14 @@ def generate_multirobot_region_pddl(
     G: spark_dsg.DynamicSceneGraph,
     raw_pddl_goal_string: str,
     robot_states: np.ndarray,
+    constraints=None,
 ) -> Tuple[str, List[PddlSymbol]]:
-    """Generate a multi-robot PDDL problem for domain region-object-rearrangement-domain-multirobot-fd."""
+    """Generate a multi-robot PDDL problem for domain region-object-rearrangement-domain-multirobot-fd.
+
+    If ``constraints`` is non-empty, the corresponding ``(connected ...)`` facts
+    are dropped from the generated PDDL ``:init`` so the planner cannot path
+    through forbidden POIs / edges. The domain itself is unchanged.
+    """
     # Collect all places/objects/regions and positions
     symbols = extract_all_symbols(G)
     normalize_symbols(symbols)
@@ -179,7 +228,7 @@ def generate_multirobot_region_pddl(
     robot_ids = [rid for rid, pose in robot_states.items() if pose is not None]
     # Build init facts via shared helpers
     init_facts_tuples: List[tuple] = generate_dense_region_init_multirobot(
-        G, symbols_of_interest, robot_states
+        G, symbols_of_interest, robot_states, constraints=constraints
     )
 
     # Ensure robot symbols exist (with positions) for downstream planners
@@ -245,7 +294,10 @@ def ground_problem(
 
         case "region-object-rearrangement-domain-multirobot-fd":
             pddl_problem, symbols = generate_multirobot_region_pddl(
-                dsg, goal.pddl_goal, pddl_compliant_robot_states
+                dsg,
+                goal.pddl_goal,
+                pddl_compliant_robot_states,
+                constraints=goal.constraints,
             )
             # logger.warning(f"!!!!!!!!!!!!!!pddl_problem: {pddl_problem}")
         case _:
