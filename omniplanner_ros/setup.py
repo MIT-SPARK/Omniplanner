@@ -43,6 +43,9 @@ setup(
     license="TODO: License declaration",
     tests_require=["pytest"],
     entry_points={
-        "console_scripts": ["omniplanner_node = omniplanner_ros.omniplanner_node:main"],
+        "console_scripts": [
+            "omniplanner_node = omniplanner_ros.omniplanner_node:main",
+            "omniplanner_repair_node = omniplanner_ros.omniplanner_repair_node:main",
+        ],
     },
 )
