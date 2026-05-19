@@ -22,21 +22,65 @@ clear what would need to change to support other domains in the future.
 from __future__ import annotations
 
 import json
-import re
-from typing import Set
+from typing import Optional, Set
 
 import rclpy
+from dsg_pddl.pddl_utils import lisp_string_to_ast
 from omniplanner_msgs.msg import ConstrainedPddlGoalMsg
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
 
-# Goal-side predicates we treat as "must visit"
-_VISIT_PREDICATE_RE = re.compile(r"\(visited-(?:place|object|poi)\s+([^\s\)]+)\)")
+# Goal-side predicates we treat as "must visit".
+_VISIT_PREDS = {"visited-place", "visited-object", "visited-poi"}
 
 
-def extract_visit_targets(pddl_goal: str) -> Set[str]:
-    """Return the set of POI ids requested by visited-{place,object,poi} predicates."""
-    return set(_VISIT_PREDICATE_RE.findall(pddl_goal))
+def _eval_goal_against_visited(ast, visited: Set[str]) -> Optional[bool]:
+    """Three-valued evaluation of a parsed PDDL goal against a known visited set.
+
+    Returns True if the goal is definitely satisfied by the cached plan,
+    False if definitely not, None ("unknown") if the goal mentions
+    predicates we don't track (e.g. ``(have ?o)``) or structure we don't
+    handle (quantifiers, ``imply``, ...). Callers should treat ``None``
+    as "must replan" -- replanning when we could have skipped is mere
+    overhead; skipping when we should have replanned is a bug.
+    """
+    if isinstance(ast, str) or not ast:
+        return None
+    head = ast[0]
+    if head == "and":
+        result: Optional[bool] = True
+        for sub in ast[1:]:
+            v = _eval_goal_against_visited(sub, visited)
+            if v is False:
+                return False
+            if v is None:
+                result = None
+        return result
+    if head == "or":
+        result = False
+        for sub in ast[1:]:
+            v = _eval_goal_against_visited(sub, visited)
+            if v is True:
+                return True
+            if v is None:
+                result = None
+        return result
+    if head == "not" and len(ast) == 2:
+        v = _eval_goal_against_visited(ast[1], visited)
+        return None if v is None else (not v)
+    if head in _VISIT_PREDS and len(ast) >= 2:
+        return ast[1] in visited
+    # Any other predicate, quantifier, or imply: undetermined.
+    return None
+
+
+def goal_satisfied_by(pddl_goal: str, visited: Set[str]) -> Optional[bool]:
+    """Wrap parsing + evaluation. Returns None on parse failure."""
+    try:
+        ast = lisp_string_to_ast(pddl_goal)
+    except Exception:
+        return None
+    return _eval_goal_against_visited(ast, visited)
 
 
 def extract_forbidden_pois(constraint_facts) -> Set[str]:
@@ -106,17 +150,15 @@ class GoalManager(Node):
 
         Specific to multi-robot PDDL with visited-{place,object,poi} predicates
         and forbidden-poi constraints. Returns False whenever we don't have a
-        cached plan yet (forces an initial planning call).
+        cached plan yet (forces an initial planning call) or whenever the goal
+        evaluator returns ``None`` (unknown -- replan to be safe).
         """
         if not self._cache_valid:
-            return False
-        requested = extract_visit_targets(msg.goal.pddl_goal)
-        if not requested:
             return False
         forbidden = extract_forbidden_pois(msg.constraints)
         if forbidden & self._plan_visited_pois:
             return False  # current plan would step on a now-forbidden POI
-        return requested.issubset(self._plan_visited_pois)
+        return goal_satisfied_by(msg.goal.pddl_goal, self._plan_visited_pois) is True
 
     # ------------- side effects -------------
 
@@ -132,24 +174,26 @@ class GoalManager(Node):
     # ------------- logging -------------
 
     def _log_skip(self, msg: ConstrainedPddlGoalMsg) -> None:
-        requested = extract_visit_targets(msg.goal.pddl_goal)
         self.get_logger().info(
-            f"current plan already visits {requested}; resuming without replan"
+            f"cached plan satisfies goal; resuming without replan. "
+            f"goal={msg.goal.pddl_goal!r} cached={sorted(self._plan_visited_pois)}"
         )
 
     def _log_replan(self, msg: ConstrainedPddlGoalMsg) -> None:
-        requested = extract_visit_targets(msg.goal.pddl_goal)
         forbidden = extract_forbidden_pois(msg.constraints)
+        sat = goal_satisfied_by(msg.goal.pddl_goal, self._plan_visited_pois)
         if not self._cache_valid:
             reason = "no cached plan yet"
         elif forbidden & self._plan_visited_pois:
             reason = f"plan visits forbidden POIs {forbidden & self._plan_visited_pois}"
+        elif sat is False:
+            reason = "cached plan violates new goal"
         else:
-            missing = requested - self._plan_visited_pois
-            reason = f"plan missing POIs {missing}"
+            reason = "goal satisfaction unknown for cached plan"
         self.get_logger().info(
-            f"replanning: {reason}. requested={requested} forbidden={forbidden} "
-            f"cached={self._plan_visited_pois}; forwarded to planner"
+            f"replanning: {reason}. goal={msg.goal.pddl_goal!r} "
+            f"forbidden={forbidden} cached={sorted(self._plan_visited_pois)}; "
+            f"forwarded to planner"
         )
 
 
