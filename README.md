@@ -267,6 +267,30 @@ planners:
       type: Pddl
       domain_name: RegionObjectRearrangementDomain
 ```
+## Fast Downward Configuration
+
+The PDDL solver invocation in `solve_pddl`
+(`omniplanner/src/dsg_pddl/pddl_planning.py`) can be tuned at runtime via
+environment variables, without modifying source. This is useful for comparing
+search strategies on a per-launch basis or capping planning time in deployment.
+
+| Variable | Description |
+| --- | --- |
+| `ADT4_FD_ALIAS` | Fast Downward alias (e.g. `seq-sat-lama-2011`). When set, takes precedence over `ADT4_FD_SEARCH` and no `--search` argument is passed. |
+| `ADT4_FD_SEARCH` | Raw string forwarded to Fast Downward's `--search` flag. Ignored if `ADT4_FD_ALIAS` is set. |
+| `ADT4_FD_OVERALL_TIME_LIMIT` | Forwarded as `--overall-time-limit` (e.g. `30s`, `5m`). |
+
+If none of these are set, Omniplanner uses the default:
+`let(hff, ff(), let(hcea, cea(), lazy_greedy([hff, hcea], preferred=[hff, hcea])))`.
+
+Example — run the LAMA alias with a 60-second cap:
+
+```bash
+export ADT4_FD_ALIAS=seq-sat-lama-2011
+export ADT4_FD_OVERALL_TIME_LIMIT=60s
+ros2 launch ...
+```
+
 
 ## Notes
 
