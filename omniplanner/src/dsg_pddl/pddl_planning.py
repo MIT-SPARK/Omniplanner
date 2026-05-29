@@ -11,8 +11,21 @@ from dsg_pddl.pddl_utils import lisp_string_to_ast
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_FD_SEARCH = (
+    "let(hff, ff(), let(hcea, cea(), lazy_greedy([hff, hcea], preferred=[hff, hcea])))"
+)
+
+
 def solve_pddl(problem: GroundedPddlProblem):
-    """Use fast-downward to solve the given pddl problem"""
+    """Use fast-downward to solve the given pddl problem.
+
+    The Fast Downward invocation can be overridden via environment variables:
+        ADT4_FD_ALIAS              - use a Fast Downward alias (e.g. "seq-sat-lama-2011").
+                                     Takes precedence over ADT4_FD_SEARCH when set.
+        ADT4_FD_SEARCH             - raw value passed after `--search`.
+        ADT4_FD_OVERALL_TIME_LIMIT - value passed via `--overall-time-limit`.
+    When unset, the historical lazy-greedy(ff + cea) search is used.
+    """
     with tempfile.TemporaryDirectory() as tmpdirname:
         now = datetime.now()
         key = str(uuid.uuid4())[:8]
@@ -43,14 +56,20 @@ def solve_pddl(problem: GroundedPddlProblem):
         with open(debug_domain_fn, "w") as fo:
             fo.write(problem.domain.to_string())
 
+        fd_alias = os.getenv("ADT4_FD_ALIAS", "").strip()
+        fd_search = os.getenv("ADT4_FD_SEARCH", "").strip()
+        fd_time_limit = os.getenv("ADT4_FD_OVERALL_TIME_LIMIT", "").strip()
+
         command = ["fast-downward"]
         command += ["--plan-file", plan_fn]
+        if fd_time_limit:
+            command += ["--overall-time-limit", fd_time_limit]
+        if fd_alias:
+            command += ["--alias", fd_alias]
         command += [domain_fn]
         command += [problem_fn]
-        command += [
-            "--search",
-            "let(hff, ff(), let(hcea, cea(), lazy_greedy([hff, hcea], preferred=[hff, hcea])))",
-        ]
+        if not fd_alias:
+            command += ["--search", fd_search or DEFAULT_FD_SEARCH]
 
         logger.warning(f"Calling: {command}")
         return_code = subprocess.run(command)
