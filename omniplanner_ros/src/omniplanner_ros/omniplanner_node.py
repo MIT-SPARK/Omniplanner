@@ -340,6 +340,19 @@ class OmniPlannerRos(Node):
                     to_viz_msg(compiled_plan, robot_name)
                 )
 
+            # Plugin extension point: let the plugin react to a freshly
+            # compiled plan (e.g. to publish derived information such as the
+            # set of POIs visited by the new plan). Optional; plugins that
+            # don't define this method are unaffected.
+            on_plan_compiled = getattr(plugin, "on_plan_compiled", None)
+            if on_plan_compiled is not None:
+                try:
+                    on_plan_compiled(plans, plan_dict)
+                except Exception as exc:
+                    self.get_logger().warning(
+                        f"on_plan_compiled hook for plugin {name} raised: {exc}"
+                    )
+
             with self.current_planner_lock and self.plan_time_start_lock:
                 self.current_planner = None
                 self.plan_time_start = None
