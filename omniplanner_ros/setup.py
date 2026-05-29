@@ -46,6 +46,7 @@ setup(
         "console_scripts": [
             "omniplanner_node = omniplanner_ros.omniplanner_node:main",
             "omniplanner_repair_node = omniplanner_ros.omniplanner_repair_node:main",
+            "goal_manager_node = omniplanner_ros.goal_manager_node:main",
         ],
     },
 )
