@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, List, overload
 
@@ -81,6 +82,35 @@ class LayerPlanner:
 
         return da + self.get_shortest_distance(idx_a, idx_b) + db
 
+    def external_distance_matrix(self, points):
+        """Pairwise external distances among ``points`` (Nx2 array-like).
+
+        Equivalent to calling ``get_external_distance`` for every pair, but runs
+        a single-source shortest-path from each *distinct* snapped anchor node
+        instead of a fresh search per pair. This turns O(pairs) graph searches
+        into O(distinct-anchors), which matters when grounding connects many
+        symbols. Unweighted (hop-count) graph distance, matching
+        ``get_shortest_distance``.
+        """
+        points = [np.asarray(p) for p in points]
+        n = len(points)
+        anchors = [self.get_closest_node_id(p) for p in points]
+        offsets = [float(np.linalg.norm(points[i] - self.get_closest_point(points[i])))
+                   for i in range(n)]
+
+        # One BFS per distinct anchor, reused across all targets sharing it.
+        ss_lengths = {}
+        for a in set(anchors):
+            ss_lengths[a] = nx.single_source_shortest_path_length(self.nx_layer, a)
+
+        D = np.full((n, n), np.inf)
+        for i in range(n):
+            li = ss_lengths[anchors[i]]
+            for j in range(n):
+                gd = li.get(anchors[j], np.inf)
+                D[i, j] = offsets[i] + gd + offsets[j]
+        return D
+
     def get_external_path(self, point_a, point_b, extend_ends=False):
         idx_a = self.get_closest_node_id(point_a)
         idx_b = self.get_closest_node_id(point_b)
@@ -150,11 +180,21 @@ class TspGoal:
 @overload
 @dispatch
 def ground_problem(
-    domain: TspDomain, dsg: Any, robot_states: dict, goal: TspGoal, feedback: Any = None
+    domain: TspDomain,
+    dsg: Any,
+    robot_states: Mapping,
+    goal: TspGoal,
+    feedback: Any = None,
 ) -> RobotWrapper[GroundedTspProblem]:
     logger.info("Grounding TSP Problem")
 
-    start = robot_states[goal.robot_id][:2]
+    robot_pose = robot_states[goal.robot_id]
+    if robot_pose is None:
+        raise RuntimeError(
+            f"Cannot plan for robot '{goal.robot_id}': no transform available "
+            "(is the robot online and publishing TF?)"
+        )
+    start = robot_pose[:2]
 
     def get_loc(symbol):
         node = dsg.find_node(str_to_ns_value(symbol))

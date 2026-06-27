@@ -53,8 +53,9 @@ class PddlProblem:
 
         problem += ")"
 
-        print("pddl problem: ")
-        print(problem)
+        # Avoid printing the full (potentially hundreds-of-KB) problem on the hot
+        # path; emit it lazily at DEBUG level only.
+        logger.debug("pddl problem:\n%s", problem)
         return problem
 
     def to_goal_string(self, goal):
