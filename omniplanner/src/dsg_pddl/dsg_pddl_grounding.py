@@ -56,6 +56,15 @@ def symbol_connectivity_to_pddl(connectivity):
     for info_s, info_t, dist in connectivity:
         s = info_s.symbol
         t = info_t.symbol
+        # A disconnected pair (no path in the place graph) comes back as inf
+        # from LayerPlanner.get_shortest_distance. Emitting a fabricated
+        # connected/distance fact would both crash int(inf) and lie about
+        # reachability, so skip the pair: the POI stays reachable via any other
+        # finite connection, and a truly isolated POI becomes correctly
+        # unreachable.
+        if not np.isfinite(dist):
+            logger.warning("Skipping disconnected POI pair %s <-> %s (inf distance)", s, t)
+            continue
         d = int(dist)
 
         connected = ("connected", s, t)
