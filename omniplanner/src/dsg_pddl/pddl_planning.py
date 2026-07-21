@@ -129,7 +129,22 @@ def solve_pddl(problem: GroundedPddlProblem):
         fd_start = time.perf_counter()
         # Capture FD output instead of letting it stream to the terminal/log;
         # surface it only on failure or at DEBUG.
-        proc = subprocess.run(command, capture_output=True, text=True)
+        #
+        # cwd=tmpdirname: Fast Downward's translate step writes its intermediate
+        # `output.sas` to the PROCESS CWD (a relative path -- see the FD driver's
+        # `--sas-file output.sas`), and the search step reads it back from there.
+        # Under `ros2 launch` the node's CWD is typically `/` (or another
+        # non-writable dir), so translate dies with
+        # `FileNotFoundError: 'output.sas'` (exit 30) and the whole solve -- and
+        # the omniplanner_node process -- crashes on an otherwise trivially
+        # solvable problem. Pin FD's CWD to the per-solve TemporaryDirectory we
+        # already own (domain/problem/plan live there too) so output.sas lands
+        # somewhere writable and isolated. Verified: identical domain+problem
+        # solves in ~0.13 s from a writable CWD but reproduces the exact
+        # FileNotFoundError from a non-writable one.
+        proc = subprocess.run(
+            command, capture_output=True, text=True, cwd=tmpdirname
+        )
         fd_elapsed = time.perf_counter() - fd_start
         logger.info(
             f"fast-downward finished in {fd_elapsed:.3f}s (return code {proc.returncode})"
