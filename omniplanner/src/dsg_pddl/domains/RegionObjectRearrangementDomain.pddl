@@ -18,6 +18,7 @@
         (hand-full)
         (object-in-place ?o - dsg_object ?p - place)
         (place-in-region ?p - place ?r - region)
+        (object-in-region ?o - dsg_object ?r - region)
 
         (visited-poi ?p)
         (visited-place ?p)
@@ -52,6 +53,9 @@
 
     (:derived (visited-region ?r - region)
         (exists (?p - place) (and (visited-place ?p) (place-in-region ?p ?r))))
+
+    (:derived (object-in-region ?o - dsg_object ?r - region)
+        (exists (?p - place) (and (object-in-place ?o ?p) (place-in-region ?p ?r))))
 
 
     (:action goto-poi

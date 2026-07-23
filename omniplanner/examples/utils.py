@@ -85,6 +85,30 @@ def build_test_dsg():
         spark_dsg.NodeSymbol("P", 0).value, spark_dsg.NodeSymbol("P", 1).value
     )
 
+    room2 = spark_dsg.RoomNodeAttributes()
+    room2.position = np.array([5, 0, 0])
+    room2.semantic_label = 1  # road
+    G.add_node(spark_dsg.DsgLayers.ROOMS, spark_dsg.NodeSymbol("R", 1).value, room2)
+
+    place3 = spark_dsg.PlaceNodeAttributes()
+    place3.position = np.array([5, 0, 0])
+    G.add_node(spark_dsg.DsgLayers.PLACES, spark_dsg.NodeSymbol("p", 2).value, place3)
+    place3_2d = spark_dsg.PlaceNodeAttributes()
+    place3_2d.position = np.array([5.1, 0, 0])
+    place3_2d.semantic_label = 4  # ground
+    G.add_node(
+        spark_dsg.DsgLayers.MESH_PLACES, spark_dsg.NodeSymbol("P", 2).value, place3_2d
+    )
+    G.insert_edge(
+        spark_dsg.NodeSymbol("R", 1).value, spark_dsg.NodeSymbol("p", 2).value
+    )
+    G.insert_edge(
+        spark_dsg.NodeSymbol("p", 1).value, spark_dsg.NodeSymbol("p", 2).value
+    )
+    G.insert_edge(
+        spark_dsg.NodeSymbol("P", 1).value, spark_dsg.NodeSymbol("P", 2).value
+    )
+
     labelspaces = {
         "labelspaces": {
             "_l2p0": [

@@ -9,14 +9,13 @@ These verify that:
 Runnable both under pytest and directly:
     PYTHONPATH=omniplanner/src python omniplanner/tests/test_pddl_goal_relevant.py
 """
+
 import os
 import sys
 
 import numpy as np
 
-sys.path.insert(
-    0, os.path.join(os.path.dirname(__file__), "..", "examples")
-)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "examples"))
 from utils import build_test_dsg  # noqa: E402
 
 from dsg_pddl.pddl_grounding import PddlDomain, PddlGoal  # noqa: E402
@@ -115,6 +114,29 @@ def test_quantified_goal_keeps_unnamed_objects():
     plan = make_plan(relevant, G)
     visited = {a[-1] for a in plan.symbolic_actions if a[0] == "goto-poi"}
     assert {"o0", "o1"} <= visited
+
+
+def test_goal_relevant_object_in_region_plan():
+    # o0's current place is a member of r0, so target the OTHER region r1:
+    # the plan must pick o0 and place it at a place-in-region of r1.
+    G, gp = _ground(
+        _load_domain("RegionObjectRearrangementDomain.pddl", "goal_relevant"),
+        "(and (object-in-region o0 r1))",
+    )
+    actions = _plan_action_names(G, gp)
+    assert "pick-object" in actions
+    assert "place-object" in actions
+
+
+def test_object_in_region_already_satisfied_yields_empty_plan():
+    # Degenerate case: if the object's current place is
+    # already in the target region, the goal is initially true -> empty plan.
+    G, gp = _ground(
+        _load_domain("RegionObjectRearrangementDomain.pddl", "goal_relevant"),
+        "(and (object-in-region o0 r0))",
+    )
+    plan = make_plan(gp, G)
+    assert plan.symbolic_actions == []
 
 
 if __name__ == "__main__":
