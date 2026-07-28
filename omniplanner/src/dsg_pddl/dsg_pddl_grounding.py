@@ -7,7 +7,11 @@ import numpy as np
 import spark_dsg
 from plum import dispatch
 
-from dsg_pddl.grounding_errors import MissingSymbolError
+from dsg_pddl.grounding_errors import (
+    MissingSymbol,
+    MissingSymbolError,
+    kind_hint_for_symbol,
+)
 from dsg_pddl.pddl_grounding import (
     GroundedPddlProblem,
     PddlDomain,
@@ -601,14 +605,21 @@ def generate_goal_relevant_pddl(
     def obj_position(obj_sym):
         return G.get_node(pddl_symbol_to_node_symbol(G, obj_sym)).attributes.position[:2]
 
+    missing = []
+
     for name in referenced:
         sym = by_name.get(name)
         if sym is None:
+            # Do NOT skip: the name stays in the goal string, so Fast Downward
+            # would die on the undeclared object (rc 31). Collect every
+            # unresolved name and report them together below, so a caller can
+            # tell "this symbol isn't in the scene graph yet" (go explore) from
+            # "this goal is unachievable".
             logger.warning(
-                "Goal references symbol '%s' not present in the scene graph; "
-                "skipping it during grounding.",
+                "Goal references symbol '%s' not present in the scene graph.",
                 name,
             )
+            missing.append(MissingSymbol(name, kind_hint_for_symbol(name)))
             continue
         selected.setdefault(name, sym)
 
@@ -680,6 +691,12 @@ def generate_goal_relevant_pddl(
             for p in members:
                 selected.setdefault(p, by_name[p])
                 region_membership.append((p, name))
+
+    if missing:
+        # sorted for a deterministic report (`referenced` is a set)
+        raise MissingSymbolError(
+            sorted(missing, key=lambda m: m.name), raw_pddl_goal_string
+        )
 
     add_symbol_positions(G, list(selected.values()))
 

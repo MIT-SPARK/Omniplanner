@@ -8,6 +8,7 @@ import time
 import uuid
 from datetime import datetime
 
+from dsg_pddl.grounding_errors import error_for_fd_returncode
 from dsg_pddl.pddl_grounding import GroundedPddlProblem
 from dsg_pddl.pddl_utils import lisp_string_to_ast
 
@@ -240,9 +241,21 @@ def solve_pddl(problem: GroundedPddlProblem):
             )
             logger.warning("fast-downward stdout:\n%s", proc.stdout)
             logger.warning("fast-downward stderr:\n%s", proc.stderr)
-            with open(debug_fn, "w") as fo:
-                fo.write(problem.problem_str)
-            raise Exception(failure_reason(proc.returncode, problem))
+            try:
+                with open(debug_fn, "w") as fo:
+                    fo.write(problem.problem_str)
+            except OSError as e:
+                # An unwritable dump path must not mask the real failure with
+                # an OSError -- callers triage on the typed error below.
+                logger.warning(f"Could not write {debug_fn}: {e}")
+            # Triage the FD exit code so a caller can distinguish "no plan
+            # exists" from "the problem file is malformed" from "we ran out of
+            # time". Unknown codes stay a plain PddlSolverError. The message is
+            # the operator-facing failure_reason (uses the grounder's
+            # failure_hint when present); the debug path is logged above.
+            raise error_for_fd_returncode(
+                proc.returncode, failure_reason(proc.returncode, problem)
+            )
 
     plan = [lisp_string_to_ast(line) for line in lines[:-1]]
     return plan
