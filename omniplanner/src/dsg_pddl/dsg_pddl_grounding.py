@@ -585,11 +585,39 @@ def generate_goal_relevant_pddl(
                 for fact in generate_place_containment(G):
                     _, p, r = fact
                     region_to_places.setdefault(r, []).append(p)
+            # Region centroid for member ranking (room node position);
+            # falls back to the robot start when the room can't be found.
+            region_centroid = initial_position
+            for node in G.get_layer(spark_dsg.DsgLayers.ROOMS).nodes:
+                if normalize_symbol(node.id.str(True)) == name:
+                    region_centroid = np.array(node.attributes.position[:2])
+                    break
             members = region_to_places.get(name, [])
+            valid_members = []
+            for p in members:
+                if p not in by_name:
+                    logger.warning(
+                        "Region '%s' contains place '%s' from "
+                        "generate_place_containment, but no scene symbol "
+                        "named '%s' exists (place-layer index mismatch?); "
+                        "skipping it.",
+                        name,
+                        p,
+                        p,
+                    )
+                    continue
+                valid_members.append(p)
+            # Rank members by distance to the REGION centroid, not the robot
+            # start: hydra's member places cluster at the capture circle's
+            # rim on the robot's entry side, and robot-start ranking (plus
+            # FD's min-cost place choice) targets that rim -- the executor's
+            # release slop (~2 m measured) then drops the object OUTSIDE the
+            # region. Centroid ranking keeps the representative places in
+            # the region's middle (exploration Task 9, floor3 gate 2).
             members = sorted(
-                members,
+                valid_members,
                 key=lambda p: float(
-                    np.linalg.norm(place_sym_to_pos[p] - initial_position)
+                    np.linalg.norm(place_sym_to_pos[p] - region_centroid)
                 ),
             )[:max_region_places]
             for p in members:

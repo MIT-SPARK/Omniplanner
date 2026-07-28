@@ -114,3 +114,4 @@ if __name__ == "__main__":
                 failures += 1
                 print(f"FAIL  {name}: {e!r}")
     sys.exit(1 if failures else 0)
+
