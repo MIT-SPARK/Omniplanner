@@ -605,11 +605,25 @@ def generate_goal_relevant_pddl(
     def obj_position(obj_sym):
         return G.get_node(pddl_symbol_to_node_symbol(G, obj_sym)).attributes.position[:2]
 
+    # Names already declared in the problem independently of the scene graph --
+    # i.e. the robot start place "pstart", which goes into (:objects) and
+    # (:init) below, so a goal like "(and (at-poi pstart))" ("return to start")
+    # is well-formed even though no scene symbol is named pstart. Snapshotted
+    # before the loop on purpose: every name added to `selected` inside the loop
+    # came from `by_name`, so checking membership live would be equivalent but
+    # order-dependent, and `referenced` is a set with nondeterministic order.
+    predeclared = frozenset(selected)
+
     missing = []
 
     for name in referenced:
         sym = by_name.get(name)
         if sym is None:
+            if name in predeclared or not could_name_a_scene_symbol(name):
+                # Declared regardless of the scene graph (pstart), or not a
+                # symbol at all (numeric literal / operator from a metric
+                # constraint): neither is a grounding failure.
+                continue
             # Do NOT skip: the name stays in the goal string, so Fast Downward
             # would die on the undeclared object (rc 31). Collect every
             # unresolved name and report them together below, so a caller can

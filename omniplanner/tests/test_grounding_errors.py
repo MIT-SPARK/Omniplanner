@@ -28,7 +28,14 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "examples"))
 from utils import build_test_dsg  # noqa: E402
 
-from dsg_pddl.dsg_pddl_grounding import generate_goal_relevant_pddl  # noqa: E402
+from dsg_pddl.dsg_pddl_grounding import (  # noqa: E402
+    could_name_a_scene_symbol,
+    generate_goal_relevant_pddl,
+    ground_problem,
+)
+from dsg_pddl.dsg_pddl_planning import make_plan  # noqa: E402
+import dsg_pddl.domains  # noqa: E402
+from importlib.resources import as_file, files  # noqa: E402
 from dsg_pddl.grounding_errors import (  # noqa: E402
     GroundingError,
     MissingSymbol,
@@ -39,10 +46,18 @@ from dsg_pddl.grounding_errors import (  # noqa: E402
     PddlUnsolvableError,
     error_for_fd_returncode,
 )
-from dsg_pddl.pddl_grounding import GroundedPddlProblem  # noqa: E402
+from dsg_pddl.pddl_grounding import (  # noqa: E402
+    GroundedPddlProblem,
+    PddlDomain,
+    PddlGoal,
+)
 from dsg_pddl.pddl_planning import solve_pddl  # noqa: E402
 
 PROBLEM_NAME = "object-rearrangement-domain"
+
+needs_fd = pytest.mark.skipif(
+    shutil.which("fast-downward") is None, reason="fast-downward not installed"
+)
 
 
 def _ground(goal_str, G=None):
@@ -50,6 +65,14 @@ def _ground(goal_str, G=None):
     return generate_goal_relevant_pddl(
         G, goal_str, np.array([0.0, 0.0]), PROBLEM_NAME, PROBLEM_NAME
     )
+
+
+def _load_domain(name, scene_scope):
+    """Same pattern as test_pddl_goal_relevant.py."""
+    with as_file(files(dsg_pddl.domains).joinpath(name)) as p:
+        domain = PddlDomain(open(p).read())
+    domain.scene_scope = scene_scope
+    return domain
 
 
 # --------------------------------------------------------------------------
@@ -123,6 +146,61 @@ def test_kind_hint_heuristic_unknown_leading_char():
     assert [(m.name, m.kind_hint) for m in exc_info.value.missing] == [("zzz1", "")]
 
 
+# -- containment: names that are NOT scene symbols must not be flagged --------
+#
+# collect_goal_symbol_names keeps every goal leaf that isn't a known
+# operator/type/predicate, so it also hands back "pstart" (declared by the
+# grounder itself, not by the scene graph) and the numeric literals/operators
+# of a metric constraint. Flagging any of those turned a previously solvable
+# goal into a MissingSymbolError.
+
+
+def test_goal_referencing_pstart_grounds():
+    # "return to start": pstart is never a scene symbol, but the grounder always
+    # declares it in (:objects) and asserts (at-poi pstart) in (:init).
+    problem_str, symbols = _ground("(and (at-poi pstart))")
+    assert "pstart" in [s.symbol for s in symbols]
+    assert "pstart" in problem_str.split("(:objects")[1].split("(:init")[0]
+    assert "(at-poi pstart)" in problem_str
+    assert "(:goal (and (at-poi pstart)))" in problem_str
+
+
+@needs_fd
+def test_goal_referencing_pstart_solves_end_to_end():
+    # Well-formedness checked by FD's own parser: this goal is already true in
+    # (:init), so a correct problem yields an empty plan (not an FD error).
+    G = build_test_dsg()
+    domain = _load_domain("RegionObjectRearrangementDomain.pddl", "goal_relevant")
+    goal = PddlGoal(robot_id="euclid", pddl_goal="(and (at-poi pstart))")
+    grounded = ground_problem(domain, G, {"euclid": np.array([0.0, 0.0])}, goal)
+    plan = make_plan(grounded.value, G)
+    assert plan.symbolic_actions == []
+
+
+def test_numeric_literal_in_goal_is_not_a_missing_symbol():
+    # A metric constraint contributes the literal "100" and the operator "<" as
+    # goal leaves; neither is a symbol, so grounding must still succeed.
+    problem_str, _ = _ground("(and (visited-object o0) (< (total-cost) 100))")
+    assert "(< (total-cost) 100)" in problem_str
+
+
+def test_numeric_literal_not_reported_alongside_a_real_missing_symbol():
+    with pytest.raises(MissingSymbolError) as exc_info:
+        _ground("(and (visited-object o42) (< (total-cost) 100))")
+    # only the genuinely absent object, not "100" or "<"
+    assert [m.name for m in exc_info.value.missing] == ["o42"]
+
+
+@pytest.mark.parametrize("token", ["100", "0.5", "-3", "<", ">=", "*", "", "?x"])
+def test_non_symbol_tokens_rejected_by_filter(token):
+    assert not could_name_a_scene_symbol(token)
+
+
+@pytest.mark.parametrize("token", ["pstart", "o42", "r9", "p57", "zzz1"])
+def test_symbol_like_tokens_accepted_by_filter(token):
+    assert could_name_a_scene_symbol(token)
+
+
 # The exact problem string emitted for a resolvable goal, captured verbatim
 # from the pre-change implementation (whitespace included, so it lives in a
 # data file rather than a source literal). Grounding a resolvable goal must
@@ -191,11 +269,6 @@ def isolated_dumps(tmp_path, monkeypatch):
     monkeypatch.setenv("OMNIPLANNER_DUMP_DIR", str(tmp_path / "dumps"))
     monkeypatch.setenv("ADT4_OUTPUT_DIR", str(tmp_path))
     return tmp_path
-
-
-needs_fd = pytest.mark.skipif(
-    shutil.which("fast-downward") is None, reason="fast-downward not installed"
-)
 
 
 @needs_fd
