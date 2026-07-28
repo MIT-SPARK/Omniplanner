@@ -313,6 +313,35 @@ def test_goal_relevant_object_in_region_plan_real_graph_shape():
     assert "place-object" in actions
 
 
+def test_region_members_selected_nearest_region_centroid():
+    """The representative places handed to FD
+    for a region goal must be the ones nearest the REGION's centroid, not
+    nearest the robot start. Region member places from real hydra maps sit
+    at the capture circle's edge on the side the robot entered from; with
+    robot-start sorting + FD's min-cost choice the planner targets the
+    region's rim, and the executor's release slop (measured ~2 m) then
+    drops the object OUTSIDE the region. Centroid sorting (with
+    max_region_places=1) pins the place target to the region's middle.
+
+    r1's centroid is (10, 0); members p9 @ (9,0) and p10 @ (10,0); the
+    robot starts at (0,0). Robot-start sorting keeps p9 first; centroid
+    sorting must keep p10.
+    """
+    from dsg_pddl.dsg_pddl_grounding import generate_goal_relevant_pddl
+
+    G = _build_real_graph_shape_dsg()
+    problem, _symbols = generate_goal_relevant_pddl(
+        G,
+        "(and (object-in-region o0 r1))",
+        np.array([0.0, 0.0]),
+        "region-object-rearrangement-domain",
+        "region-object-rearrangement-domain",
+        max_region_places=1,
+    )
+    assert "(place-in-region p10 r1)" in problem
+    assert "p9" not in problem
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):
