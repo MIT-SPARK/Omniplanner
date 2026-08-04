@@ -496,11 +496,25 @@ def generate_goal_relevant_pddl(
     normalize_symbols(all_symbols)
     by_name = {s.symbol: s for s in all_symbols}
 
-    # Cache place symbol/position arrays for nearest-place lookups.
+    # One LayerPlanner over the full places graph, then restricted so that
+    # every nearest-place snap lands in the component reachable from the
+    # robot start: saved DSGs contain island place components, and snapping
+    # an object (or the distance matrix's anchors) to one silently drops its
+    # connectivity facts below -- a disconnected, unsolvable problem for a
+    # physically reachable goal (motion-tier v1, floor3 s71 NL).
+    layer_planner = LayerPlanner(
+        G, spark_dsg.DsgLayers.MESH_PLACES
+    ).restricted_to_component(np.asarray(initial_position))
+    reachable_place_values = set(layer_planner.node_ids)
+
+    # Cache place symbol/position arrays for nearest-place lookups, limited
+    # to the same reachable component the planner snaps to.
     places_layer = get_places_layer(G)
     place_syms = []
     place_pos = []
     for node in places_layer.nodes:
+        if node.id.value not in reachable_place_values:
+            continue
         place_syms.append(normalize_symbol(node.id.str(True)))
         place_pos.append(node.attributes.position[:2])
     place_pos = np.array(place_pos) if place_pos else np.zeros((0, 2))
@@ -560,10 +574,9 @@ def generate_goal_relevant_pddl(
 
     add_symbol_positions(G, list(selected.values()))
 
-    # Build connectivity over POIs (places + objects), with the full places
-    # graph reused via a single LayerPlanner.
+    # Build connectivity over POIs (places + objects), reusing the
+    # component-restricted LayerPlanner so every anchor is reachable.
     pois = [s for s in selected.values() if s.layer in ("place", "object")]
-    layer_planner = LayerPlanner(G, spark_dsg.DsgLayers.MESH_PLACES)
     init = [("=", ("total-cost",), 0), ("at-poi", start_symbol.symbol)]
     if len(pois) > 1:
         D = layer_planner.external_distance_matrix([p.position for p in pois])

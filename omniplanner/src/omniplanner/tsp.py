@@ -62,6 +62,38 @@ class LayerPlanner:
         else:
             return self.stored_shortest_path[s][t]
 
+    def restricted_to_component(self, point):
+        """A view of this planner whose snapping (`get_closest_node_id`,
+        `get_closest_point`, and therefore every `external_*` anchor) only
+        considers nodes in the connected component containing the node
+        nearest ``point``.
+
+        Saved DSGs contain island place components (behind-walls clusters the
+        robot can never reach); snapping an external position to one makes
+        every path involving it come back inf, which grounding then drops --
+        producing disconnected, unsolvable PDDL problems for physically
+        reachable goals. Restricting the anchors to the start's component
+        keeps every distance finite over the graph the robot can actually
+        traverse. Path queries still run on the full layer graph. Returns
+        ``self`` unchanged when the layer is empty or fully connected.
+        """
+        if len(self.node_ids) == 0:
+            return self
+        anchor = self.get_closest_node_id(np.asarray(point))
+        component = nx.node_connected_component(self.nx_layer, anchor)
+        if len(component) == len(self.node_ids):
+            return self
+        import copy
+
+        view = copy.copy(self)
+        keep = [i for i, v in enumerate(self.node_ids) if v in component]
+        view.node_ids = [self.node_ids[i] for i in keep]
+        view.node_positions = self.node_positions[keep]
+        view.node_value_to_position = {
+            v: self.node_value_to_position[v] for v in view.node_ids
+        }
+        return view
+
     def get_closest_node_id(self, point):
         closest_idx = np.argmin(np.linalg.norm(self.node_positions - point, axis=1))
         return self.node_ids[closest_idx]
