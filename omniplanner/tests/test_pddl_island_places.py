@@ -88,3 +88,23 @@ if __name__ == "__main__":
     test_object_current_place_is_in_start_component()
     test_object_is_connected_to_start()
     print("ok")
+
+
+def test_make_plan_expands_waypoints_despite_island():
+    # motion-tier v1 nl_s71 re-run (2026-08-05): grounding produced a solvable
+    # problem (the component-restricted fix), gate 1 verified, then plan
+    # COMPILATION crashed with NetworkXNoPath -- make_plan's own LayerPlanner
+    # was unrestricted, so get_external_path snapped a goto-poi endpoint to an
+    # island node. Same bug, one layer down.
+    from dsg_pddl.dsg_pddl_planning import make_plan
+
+    with as_file(files(dsg_pddl.domains)
+                 .joinpath("RegionObjectRearrangementDomain.pddl")) as p:
+        domain = PddlDomain(open(p).read())
+    domain.scene_scope = "goal_relevant"
+    G = build_island_dsg()
+    goal = PddlGoal(robot_id="euclid", pddl_goal="(and (visited-object o0))")
+    grounded = ground_problem(domain, G, {"euclid": np.array([0.0, 0.0])}, goal)
+    plan = make_plan(grounded.value, G)   # must not raise NetworkXNoPath
+    gotos = [a for a in plan.symbolic_actions if a[0] == "goto-poi"]
+    assert gotos, "expected at least one goto-poi action"

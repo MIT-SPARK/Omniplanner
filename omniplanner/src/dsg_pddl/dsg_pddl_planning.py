@@ -85,6 +85,13 @@ def make_plan(grounded_problem: GroundedPddlProblem, map_context: Any) -> PddlPl
     # grounded pddl problem?)
 
     layer_planner = LayerPlanner(map_context, spark_dsg.DsgLayers.MESH_PLACES)
+    # Waypoint expansion must snap inside the same reachable component the
+    # grounding used, or a goal position near an island place raises
+    # NetworkXNoPath at compile time for a plan the solver already proved
+    # (motion-tier v1 nl_s71: grounded fine, gate 1 verified, crashed here).
+    start = grounded_problem.symbols.get("pstart")
+    if start is not None and getattr(start, "position", None) is not None:
+        layer_planner = layer_planner.restricted_to_component(start.position)
     last_pose = np.zeros(2)
     multirobot = "multirobot" in grounded_problem.domain.domain_name
     for p in plan:
