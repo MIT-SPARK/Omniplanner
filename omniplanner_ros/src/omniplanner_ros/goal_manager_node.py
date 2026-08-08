@@ -83,6 +83,17 @@ def goal_satisfied_by(pddl_goal: str, visited: Set[str]) -> Optional[bool]:
     return _eval_goal_against_visited(ast, visited)
 
 
+def constraint_signature(constraint_facts) -> frozenset:
+    """Hashable identity of a constraint set, for "did the constraints change?".
+
+    Skipping a replan is only sound if the cached plan was built under the same
+    constraints. Comparing against the plan's visited POIs is not enough: a new
+    forbidden POI the plan merely passes close to would not intersect, and we
+    would resume into it.
+    """
+    return frozenset((c.predicate, tuple(c.symbols)) for c in constraint_facts or [])
+
+
 def extract_forbidden_pois(constraint_facts) -> Set[str]:
     """Return the set of POI ids appearing in any forbidden-poi constraint."""
     out: Set[str] = set()
@@ -103,6 +114,9 @@ class GoalManager(Node):
         # ~/plan_visited_pois (which is itself a remap of a per-robot topic).
         self._plan_visited_pois: Set[str] = set()
         self._cache_valid: bool = False
+        # Constraints the cached plan was grounded under, so we can tell when a
+        # new goal changes them and a skip would be unsound.
+        self._plan_constraints: frozenset = frozenset()
 
         # Subscriptions (private; remap at launch time).
         self._goal_sub = self.create_subscription(
@@ -155,6 +169,8 @@ class GoalManager(Node):
         """
         if not self._cache_valid:
             return False
+        if constraint_signature(msg.constraints) != self._plan_constraints:
+            return False  # constraints changed; the cached plan predates them
         forbidden = extract_forbidden_pois(msg.constraints)
         if forbidden & self._plan_visited_pois:
             return False  # current plan would step on a now-forbidden POI
@@ -169,6 +185,9 @@ class GoalManager(Node):
         self._resume_pub.publish(Bool(data=True))
 
     def _forward_for_replanning(self, msg: ConstrainedPddlGoalMsg) -> None:
+        # Record what the incoming plan will be grounded under, so the next goal
+        # can tell whether the constraints have since changed.
+        self._plan_constraints = constraint_signature(msg.constraints)
         self._goal_pub.publish(msg)
 
     # ------------- logging -------------
