@@ -50,6 +50,51 @@ def _extract_forbidden_sets(constraints):
     return forbidden_pois, forbidden_edges
 
 
+# A forbidden-poi names one node, but the robot should stay out of its
+# neighbourhood, not just off the node itself. Expand each forbidden POI to every
+# symbol within this many metres of it, measured as navigable path distance.
+#
+# Must exceed the map's node spacing or the expansion is a no-op: on the b45
+# traversability graph the median nearest-neighbour distance is 2.1 m, so a 2 m
+# radius caught only the node itself. 5 m pulls in ~9 symbols, a little beyond
+# the 8.3 average graph degree, i.e. the immediately adjacent nodes plus a
+# margin. Retune per map, or switch to graph adjacency if node spacing varies
+# a lot.
+FORBIDDEN_RADIUS_M = 5.0
+
+
+def _expand_forbidden_pois(forbidden_pois, symbols, symbol_lookup, layer_planner):
+    """Grow each forbidden POI into the set of symbols within FORBIDDEN_RADIUS_M.
+
+    Distance is path distance through the places layer, not Euclidean, so a
+    symbol that is metrically close but only reachable the long way around is
+    left alone. Disconnected symbols come back as inf and are likewise excluded.
+    """
+    if not forbidden_pois or FORBIDDEN_RADIUS_M <= 0:
+        return forbidden_pois
+
+    expanded = set(forbidden_pois)
+    for name in forbidden_pois:
+        origin = symbol_lookup.get(name)
+        if origin is None:
+            continue
+        for s in symbols:
+            if s.symbol in expanded:
+                continue
+            d = layer_planner.get_external_distance(origin.position[:2], s.position[:2])
+            if d < FORBIDDEN_RADIUS_M:
+                expanded.add(s.symbol)
+
+    if len(expanded) > len(forbidden_pois):
+        logger.info(
+            "Expanded %d forbidden POI(s) to %d symbols within %.1f m",
+            len(forbidden_pois),
+            len(expanded),
+            FORBIDDEN_RADIUS_M,
+        )
+    return expanded
+
+
 def _edge_allowed(s, t, forbidden_pois, forbidden_edges):
     if s.symbol in forbidden_pois or t.symbol in forbidden_pois:
         return False
@@ -92,7 +137,7 @@ def generate_dense_region_symbol_connectivity_multirobot(
         10,
         layer_planner,
     )
-    start_connection_threshold = 20
+    start_connection_threshold = 3
     for robot_id in robot_states.keys():
         start_symbol_key = f"pstart{robot_id}"
         if start_symbol_key in symbol_lookup:
@@ -105,6 +150,10 @@ def generate_dense_region_symbol_connectivity_multirobot(
                 d = layer_planner.get_external_distance(start_position, s.position)
                 if d < start_connection_threshold:
                     edges.append((start_symbol, s, d))
+
+    forbidden_pois = _expand_forbidden_pois(
+        forbidden_pois, symbols, symbol_lookup, layer_planner
+    )
 
     if forbidden_pois or forbidden_edges:
         before = len(edges)
