@@ -246,24 +246,65 @@ def generate_object_containment(G):
 
 
 def generate_place_containment(G):
+    """Emit (place-in-region ?p ?reg) for every mesh place we can attribute to a room.
+
+    Mesh places usually parent straight to a room, so we take that edge when it
+    exists. Graphs that only connect rooms to the 3-D PLACES layer fall back to
+    the nearest 3-D place and borrow its parent.
+    """
     try:
         places_layer_2d = G.get_layer(spark_dsg.DsgLayers.MESH_PLACES)
     except Exception:
         places_layer_2d = G.get_layer(20)
 
     containments = []
+    unparented = []
 
     for node in places_layer_2d.nodes:
-        parents = node.parents()
-        for parent in parents:
-            if parent is not None:
-                containments.append(
-                    (
-                        "place-in-region",
-                        normalize_symbol(node.id.str(True)),
-                        normalize_symbol(spark_dsg.NodeSymbol(parent).str(True)),
-                    )
+        if node.has_parent():
+            containments.append(
+                (
+                    "place-in-region",
+                    normalize_symbol(node.id.str(True)),
+                    normalize_symbol(spark_dsg.NodeSymbol(node.get_parent()).str(True)),
                 )
+            )
+        else:
+            unparented.append(node)
+
+    if unparented:
+        places_layer_3d = G.get_layer(spark_dsg.DsgLayers.PLACES)
+        place_centers = []
+        place_nodes = []
+        for node in places_layer_3d.nodes:
+            place_centers.append(node.attributes.position)
+            place_nodes.append(node)
+
+        if place_centers:
+            place_centers = np.array(place_centers)
+            for node in unparented:
+                closest_idx = np.argmin(
+                    np.linalg.norm(place_centers - node.attributes.position, axis=1)
+                )
+                parent = place_nodes[closest_idx].get_parent()
+                if parent is not None:
+                    containments.append(
+                        (
+                            "place-in-region",
+                            normalize_symbol(node.id.str(True)),
+                            normalize_symbol(spark_dsg.NodeSymbol(parent).str(True)),
+                        )
+                    )
+
+    n_regions = G.get_layer(spark_dsg.DsgLayers.ROOMS).num_nodes()
+    if n_regions > 0 and not containments:
+        # Region goals derive through place-in-region; with no facts every
+        # (explored-region ?r) is vacuously true and the goal is silently free.
+        logger.warning(
+            "No place-in-region facts derivable for %d region(s): region goals "
+            "will be vacuously satisfied. Check that mesh places parent to rooms.",
+            n_regions,
+        )
 
     return containments
 
