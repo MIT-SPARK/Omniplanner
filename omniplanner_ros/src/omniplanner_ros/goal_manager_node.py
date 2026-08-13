@@ -75,9 +75,16 @@ def _eval_goal_against_visited(ast, visited: Set[str]) -> Optional[bool]:
 
 
 def goal_satisfied_by(pddl_goal: str, visited: Set[str]) -> Optional[bool]:
-    """Wrap parsing + evaluation. Returns None on parse failure."""
+    """Wrap parsing + evaluation. Returns None on parse failure.
+
+    ``lisp_string_to_ast`` does not split adjacent parens: "(a)(b)" parses as a
+    single clause containing a ")(" token rather than two clauses. Goals in that
+    form -- which is what the heracles in-context examples emit -- then had only
+    their first conjunct evaluated, so a partly-satisfied multi-target goal could
+    report True and skip a replan that was actually needed. Normalise first.
+    """
     try:
-        ast = lisp_string_to_ast(pddl_goal)
+        ast = lisp_string_to_ast((pddl_goal or "").replace(")(", ") ("))
     except Exception:
         return None
     return _eval_goal_against_visited(ast, visited)
