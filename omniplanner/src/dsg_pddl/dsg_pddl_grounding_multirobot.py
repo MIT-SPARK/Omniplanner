@@ -32,6 +32,10 @@ from omniplanner.tsp import LayerPlanner
 
 logger = logging.getLogger(__name__)
 
+# Subtypes of point-of-interest in the domain's :types block. connected/distance
+# are declared over point-of-interest, so only these may appear as their args.
+POI_LAYERS = ("place", "object")
+
 
 def _extract_forbidden_sets(constraints):
     """Pull forbidden POIs and forbidden edges out of a list of ConstraintFact-like objects.
@@ -146,6 +150,10 @@ def generate_dense_region_symbol_connectivity_multirobot(
 
             for s in symbols:
                 if s.symbol.startswith("pstart"):  # Skip other robot start positions
+                    continue
+                if s.layer not in POI_LAYERS:
+                    # connected/distance are declared over point-of-interest only;
+                    # regions here make the problem fail a typed parser.
                     continue
                 d = layer_planner.get_external_distance(start_position, s.position)
                 if d < start_connection_threshold:
