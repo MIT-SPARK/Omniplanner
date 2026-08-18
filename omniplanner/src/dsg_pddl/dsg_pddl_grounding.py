@@ -38,9 +38,21 @@ GOAL_RELEVANT_MAX_REGION_PLACES = int(
 def generate_symbol_connectivity(G, symbols):
     layer_planner = LayerPlanner(G, spark_dsg.DsgLayers.MESH_PLACES)
 
+    # De-duplicate by pddl symbol name: a goal that mentions the same object
+    # twice (legal PDDL — e.g. two plan stages resolving to one instance)
+    # otherwise emits each connectivity pair twice, and Fast Downward's
+    # translator hard-errors on "PNE distance(a, b) ... specified twice in
+    # initial state specification".
+    seen = set()
+    unique_symbols = []
+    for s in symbols:
+        if s.symbol not in seen:
+            seen.add(s.symbol)
+            unique_symbols.append(s)
+
     connections = []
-    for si in symbols:
-        for sj in symbols:
+    for si in unique_symbols:
+        for sj in unique_symbols:
             if si <= sj:
                 continue
 
@@ -370,7 +382,19 @@ def extract_symbols_of_interest(G, pddl_goal):
     place_symbols = [PddlSymbol(f[1], "place", []) for f in place_facts]
     object_symbols = [PddlSymbol(f[1], "object", []) for f in object_facts]
 
-    return place_symbols + object_symbols
+    # De-duplicate by symbol name (order-preserving): a goal may legally
+    # mention the same object twice — e.g. "(and (visited-object o9)
+    # (visited-object o9))" when two plan stages resolve to one instance —
+    # but downstream every symbol becomes an :objects declaration and a
+    # connectivity-matrix row, and Fast Downward's translator hard-errors on
+    # the duplicated "PNE distance(a, b) specified twice" init facts.
+    seen = set()
+    unique = []
+    for s in place_symbols + object_symbols:
+        if s.symbol not in seen:
+            seen.add(s.symbol)
+            unique.append(s)
+    return unique
 
 
 def simplify(pddl):
