@@ -199,22 +199,63 @@ def _extract_visited_pois(plan: GrstapsPlan):
     return result
 
 
+def _ordering(plan: GrstapsPlan):
+    """(predecessors, coalition) lookups keyed by task id, as executor strings.
+
+    The executor is given the ordering rather than the timepoints: the solver's
+    times assume the durations it was given, so one slow pick invalidates every
+    later one, while "after o4 is out of the way" stays true however long the
+    moving took.
+    """
+    predecessors = {}
+    for pair in plan.precedence or []:
+        if len(pair) >= 2:
+            predecessors.setdefault(str(pair[1]), []).append(str(pair[0]))
+
+    names = [a.get("name", "") for a in plan.agents or []]
+    coalitions = {}
+    for t in plan.tasks or []:
+        members = t.get("coalition") or []
+        if len(members) > 1:
+            # Solo tasks get no rendezvous: waiting for yourself is a deadlock
+            # dressed as a barrier.
+            coalitions[str(t.get("id"))] = [
+                names[i] for i in members if 0 <= i < len(names)
+            ]
+    return predecessors, coalitions
+
+
 def compile_grstaps_plan(plan: GrstapsPlan, plan_id, robot_name, frame_id):
     """One robot's schedule as drive-then-act, task by task.
 
-    Timing is still dropped -- ActionSequence has no temporal fields, so the
-    schedule goes out separately on TaskScheduleMsg -- but the actions
-    themselves are no longer dropped with it.
+    Timepoints are still dropped -- ActionSequence has no temporal fields, and
+    the schedule goes out separately on TaskScheduleMsg -- but the ordering
+    they encoded now travels with the actions.
     """
+    predecessors, coalitions = _ordering(plan)
     actions = []
     at = None
     for leg, task in _agent_steps(plan, robot_name):
+        task_id = str(task.get("id")) if task.get("id") is not None else ""
+        travel = None
         if leg is not None and len(leg) >= 2:
-            actions.append(Follow(frame=frame_id, path2d=leg))
+            travel = Follow(frame=frame_id, path2d=leg)
+            actions.append(travel)
         if leg is not None and len(leg):
             at = leg[-1]
         acted = _task_actions(plan.task_geometry, task, frame_id, at)
         actions.extend(acted)
+
+        # Gate the task's own action, not the travel to it: arriving early is
+        # harmless and it is how a coalition member gets into position before
+        # announcing itself ready. A visit has no action of its own -- arriving
+        # is the task -- so there the travel is what gets gated.
+        for action in filter(None, [travel, *acted]):
+            action.task_id = task_id
+        gated = acted[0] if acted else travel
+        if gated is not None:
+            gated.after_task_ids = list(predecessors.get(task_id, []))
+            gated.coalition_robots = list(coalitions.get(task_id, []))
         # A relocation moves the robot inside the task, so the next task's
         # robot_point is where the carry ended, not where the inbound leg did.
         # This matters whenever the following task reports no travel of its own.
