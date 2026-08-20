@@ -26,7 +26,7 @@ from typing import Optional, Set
 
 import rclpy
 from dsg_pddl.pddl_utils import lisp_string_to_ast
-from omniplanner_msgs.msg import ConstrainedPddlGoalMsg
+from omniplanner_msgs.msg import ConstrainedPddlGoalMsg, TaskScheduleMsg
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
 
@@ -74,8 +74,8 @@ def _eval_goal_against_visited(ast, visited: Set[str]) -> Optional[bool]:
     return None
 
 
-def goal_satisfied_by(pddl_goal: str, visited: Set[str]) -> Optional[bool]:
-    """Wrap parsing + evaluation. Returns None on parse failure.
+def _parse_goal(pddl_goal: str):
+    """Parse a PDDL goal string to an AST, or None if it does not parse.
 
     ``lisp_string_to_ast`` does not split adjacent parens: "(a)(b)" parses as a
     single clause containing a ")(" token rather than two clauses. Goals in that
@@ -84,10 +84,41 @@ def goal_satisfied_by(pddl_goal: str, visited: Set[str]) -> Optional[bool]:
     report True and skip a replan that was actually needed. Normalise first.
     """
     try:
-        ast = lisp_string_to_ast((pddl_goal or "").replace(")(", ") ("))
+        return lisp_string_to_ast((pddl_goal or "").replace(")(", ") ("))
     except Exception:
         return None
+
+
+def goal_satisfied_by(pddl_goal: str, visited: Set[str]) -> Optional[bool]:
+    """Wrap parsing + evaluation. Returns None on parse failure."""
+    ast = _parse_goal(pddl_goal)
+    if ast is None:
+        return None
     return _eval_goal_against_visited(ast, visited)
+
+
+def _goal_symbols(pddl_goal: str) -> Set[str]:
+    """Every POI a goal names under a visit predicate.
+
+    Used to look each one up in the schedule. Deliberately ignores and/or/not
+    structure: for a horizon check we want the symbols mentioned, not whether
+    the goal as a whole holds -- ``goal_satisfied_by`` already answers that.
+    """
+    out: Set[str] = set()
+
+    def walk(node):
+        if isinstance(node, str) or not node:
+            return
+        if node[0] in ("and", "or", "not"):
+            for sub in node[1:]:
+                walk(sub)
+        elif node[0] in _VISIT_PREDS and len(node) >= 2:
+            # Same argument slot _eval_goal_against_visited matches on, so the
+            # horizon check and the coverage check always mean the same symbol.
+            out.add(node[1])
+
+    walk(_parse_goal(pddl_goal))
+    return out
 
 
 def constraint_signature(constraint_facts) -> frozenset:
@@ -129,6 +160,21 @@ class GoalManager(Node):
         # plan is still the one built under these.
         self._running_constraints: frozenset = frozenset()
 
+        # When the active plan's schedule is known, {poi -> finish time in
+        # seconds}. Empty for planners that publish no schedule, which leaves
+        # the horizon check inert rather than wrong.
+        self._plan_finish_times: dict = {}
+
+        # A goal already covered by the cached plan is normally skipped. If the
+        # plan does not get to those POIs until after this many seconds, replan
+        # anyway and see whether a fresh plan does better -- coverage alone says
+        # nothing about *when*. Zero disables the check, which is the default so
+        # behaviour is unchanged unless a deployment opts in.
+        self.declare_parameter("replan_horizon_s", 0.0)
+        self._replan_horizon_s = float(
+            self.get_parameter("replan_horizon_s").value or 0.0
+        )
+
         # Subscriptions (private; remap at launch time).
         self._goal_sub = self.create_subscription(
             ConstrainedPddlGoalMsg, "~/commanded_goal", self._commanded_goal_cb, 10
@@ -138,6 +184,9 @@ class GoalManager(Node):
         )
         self._failed_sub = self.create_subscription(
             String, "~/planner_failed", self._planner_failed_cb, 10
+        )
+        self._schedule_sub = self.create_subscription(
+            TaskScheduleMsg, "~/plan_schedule", self._schedule_cb, 10
         )
 
         # Publishers (private; remap at launch time).
@@ -175,6 +224,37 @@ class GoalManager(Node):
             f"planner produced no plan ({msg.data}); resuming the current plan"
         )
 
+    def _schedule_cb(self, msg: TaskScheduleMsg) -> None:
+        """Record when the active plan reaches each POI.
+
+        Coverage tells us a POI is in the plan; only the schedule says whether
+        it is reached in ten seconds or ten minutes. Kept separate from the
+        visited-POI cache because a planner may publish one and not the other.
+        """
+        finish = {}
+        for t in msg.tasks:
+            if not t.target:
+                continue
+            # A POI may be touched by several tasks (inspect, pick, place);
+            # the plan is only done with it at the last one.
+            finish[t.target] = max(finish.get(t.target, 0.0), float(t.finish_time))
+        self._plan_finish_times = finish
+        self.get_logger().info(
+            f"Updated plan schedule: makespan={msg.makespan:.1f}s, "
+            f"{len(msg.tasks)} task(s)"
+        )
+
+    def _late_pois(self, pddl_goal: str) -> Set[str]:
+        """POIs this goal needs that the cached plan reaches after the horizon."""
+        if self._replan_horizon_s <= 0 or not self._plan_finish_times:
+            return set()
+        wanted = _goal_symbols(pddl_goal)
+        return {
+            p
+            for p in wanted
+            if self._plan_finish_times.get(p, 0.0) > self._replan_horizon_s
+        }
+
     def _commanded_goal_cb(self, msg: ConstrainedPddlGoalMsg) -> None:
         # Flow: pause → decide → resume_or_forward → log.
         self._pause_executor()
@@ -202,7 +282,10 @@ class GoalManager(Node):
         forbidden = extract_forbidden_pois(msg.constraints)
         if forbidden & self._plan_visited_pois:
             return False  # current plan would step on a now-forbidden POI
-        return goal_satisfied_by(msg.goal.pddl_goal, self._plan_visited_pois) is True
+        if goal_satisfied_by(msg.goal.pddl_goal, self._plan_visited_pois) is not True:
+            return False
+        # Covered, but possibly not soon enough to be worth keeping.
+        return not self._late_pois(msg.goal.pddl_goal)
 
     # ------------- side effects -------------
 
@@ -235,6 +318,11 @@ class GoalManager(Node):
             reason = f"plan visits forbidden POIs {forbidden & self._plan_visited_pois}"
         elif sat is False:
             reason = "cached plan violates new goal"
+        elif late := self._late_pois(msg.goal.pddl_goal):
+            reason = (
+                f"covered, but {sorted(late)} not reached until after "
+                f"{self._replan_horizon_s:.0f}s"
+            )
         else:
             reason = "goal satisfaction unknown for cached plan"
         self.get_logger().info(
