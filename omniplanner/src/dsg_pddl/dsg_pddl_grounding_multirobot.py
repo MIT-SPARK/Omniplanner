@@ -58,13 +58,23 @@ def _extract_forbidden_sets(constraints):
 # neighbourhood, not just off the node itself. Expand each forbidden POI to every
 # symbol within this many metres of it, measured as navigable path distance.
 #
-# Must exceed the map's node spacing or the expansion is a no-op: on the b45
-# traversability graph the median nearest-neighbour distance is 2.1 m, so a 2 m
-# radius caught only the node itself. 5 m pulls in ~9 symbols, a little beyond
-# the 8.3 average graph degree, i.e. the immediately adjacent nodes plus a
-# margin. Retune per map, or switch to graph adjacency if node spacing varies
-# a lot.
-FORBIDDEN_RADIUS_M = 5.0
+# Node spacing decides what a given radius means, and it varies enough between
+# maps that one number cannot be right for both:
+#
+#   b45                 median nearest-neighbour 2.1 m; 5 m pulls in ~9 symbols,
+#                       about the 8.3 average graph degree plus a margin
+#   plan_repair_graph   nearest neighbour 0.61 m; 5 m pulls in 38 symbols
+#
+# 5 m was tuned on b45 and is far too wide on the denser graph, where it
+# swallowed a goal object lying 2.4 m from the forbidden POI, isolated it, and
+# left the problem unsolvable. 1 m keeps the exclusion to the node and its
+# immediate neighbour there and the same goal plans fine.
+#
+# The tension is real: 1 m is below b45's node spacing, so on a sparse map it
+# expands to nothing and only the named node is excluded. Retune per map --
+# ADT4_FORBIDDEN_RADIUS_M overrides this without a rebuild -- or switch to graph
+# adjacency, which would be spacing-independent and is the better long-term fix.
+FORBIDDEN_RADIUS_M = 1.0
 
 # Env override so the radius can be retuned per map without a rebuild. Read at
 # call time, not import time, so a field test only has to restart the node.
