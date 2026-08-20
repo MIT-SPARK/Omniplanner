@@ -32,10 +32,6 @@ from omniplanner.tsp import LayerPlanner
 
 logger = logging.getLogger(__name__)
 
-# Subtypes of point-of-interest in the domain's :types block. connected/distance
-# are declared over point-of-interest, so only these may appear as their args.
-POI_LAYERS = ("place", "object")
-
 
 def _extract_forbidden_sets(constraints):
     """Pull forbidden POIs and forbidden edges out of a list of ConstraintFact-like objects.
@@ -177,23 +173,8 @@ def generate_dense_region_symbol_connectivity_multirobot(
         10,
         layer_planner,
     )
-    start_connection_threshold = 3
-    for robot_id in robot_states.keys():
-        start_symbol_key = f"pstart{robot_id}"
-        if start_symbol_key in symbol_lookup:
-            start_symbol = symbol_lookup[start_symbol_key]
-            start_position = start_symbol.position
-
-            for s in symbols:
-                if s.symbol.startswith("pstart"):  # Skip other robot start positions
-                    continue
-                if s.layer not in POI_LAYERS:
-                    # connected/distance are declared over point-of-interest only;
-                    # regions here make the problem fail a typed parser.
-                    continue
-                d = layer_planner.get_external_distance(start_position, s.position)
-                if d < start_connection_threshold:
-                    edges.append((start_symbol, s, d))
+    # No synthetic start edges: robots begin at a real place (see
+    # robot_start_places), so they inherit that node's own connectivity.
 
     forbidden_pois = _expand_forbidden_pois(
         forbidden_pois, symbols, symbol_lookup, layer_planner
@@ -216,15 +197,66 @@ def generate_dense_region_symbol_connectivity_multirobot(
     return edges
 
 
-def nearest_place_for_position(place_symbols: List[PddlSymbol], pos: np.ndarray) -> str:
-    best_name = place_symbols[0].symbol
-    best_d = float("inf")
+def nearest_place_for_position(place_symbols: List[PddlSymbol], pos: np.ndarray):
+    """(place symbol, metres away) for the place closest to `pos`.
+
+    Compared in 2D: symbol positions carry a z that the robot's pose does not,
+    and a height difference should not decide which place a robot is standing on.
+    """
+    target = np.asarray(pos, dtype=float)[:2]
+    best_name, best_d = None, float("inf")
     for p in place_symbols:
-        d = float(np.linalg.norm(p.position - pos))
+        d = float(np.linalg.norm(np.asarray(p.position, dtype=float)[:2] - target))
         if d < best_d:
-            best_d = d
-            best_name = p.symbol
-    return best_name
+            best_d, best_name = d, p.symbol
+    return best_name, best_d
+
+
+# Beyond this the nearest place is probably not the one the robot is actually
+# standing on -- nearest is measured straight-line, so a robot beside a partition
+# can snap to a node on the other side of it. Worth a look in the log rather than
+# a hard failure: a bad snap still plans, it just plans from the wrong doorway.
+START_SNAP_WARN_M = 5.0
+
+
+def robot_start_places(symbols: List[PddlSymbol], robot_states: Dict[str, np.ndarray]):
+    """{robot id -> the place symbol it starts from}.
+
+    A robot is generally not standing on a node. This used to be modelled with a
+    synthetic `pstart<robot>` symbol at the exact pose, joined to every POI within
+    a threshold -- edges the traversability graph does not contain. Worse, that
+    threshold was compared against LayerPlanner distances, which count graph hops
+    rather than metres, so a POI ten metres away could be admitted as readily as
+    an adjacent one and priced the same. The planner then treated a distant goal
+    as though the robot were next to it.
+
+    Starting at the nearest real place removes all of that: the robot inherits
+    the node's genuine edges and their genuine costs, and nothing is synthesised.
+    The metre or two between the true pose and that node is handled downstream,
+    where the first leg is parameterised from the robot's actual pose.
+    """
+    places = [s for s in symbols if s.layer == "place"]
+    if not places:
+        logger.warning("DSG has no place symbols; robots cannot be given a start")
+        return {}
+
+    starts = {}
+    for robot_id, pose in robot_states.items():
+        if pose is None:
+            continue
+        name, d = nearest_place_for_position(places, pose)
+        starts[robot_id] = name
+        if d > START_SNAP_WARN_M:
+            logger.warning(
+                "Robot %s starts at %s, %.1f m from its actual pose; the nearest "
+                "place may be across an obstacle",
+                robot_id,
+                name,
+                d,
+            )
+        else:
+            logger.info("Robot %s starts at place %s (%.1f m away)", robot_id, name, d)
+    return starts
 
 
 # Multirobot init wrapper that reuses shared connectivity and containment helpers
@@ -246,12 +278,11 @@ def generate_dense_region_init_multirobot(
     initial_pddl += generate_object_containment(G)
     initial_pddl += generate_place_containment(G)
 
-    # Add each valid robot's starting place using the pstart{robot_id} symbols
-    for robot_id, pose in robot_states.items():
-        if pose is None:
-            continue
-        start_symbol_key = f"pstart{robot_id}"
-        initial_pddl.append(("at-poi", robot_id, start_symbol_key))
+    # Each robot starts at the real place nearest its pose.
+    for robot_id, place in robot_start_places(
+        symbols_of_interest, robot_states
+    ).items():
+        initial_pddl.append(("at-poi", robot_id, place))
 
     return initial_pddl
 
@@ -295,22 +326,11 @@ def generate_multirobot_region_pddl(
     normalize_symbols(symbols)
 
     symbols_of_interest = symbols
-    for robot in robot_states.keys():
-        initial_position = robot_states[robot]
+    for robot, initial_position in robot_states.items():
         if initial_position is None:
             logger.warning(
                 f"Skipping robot {robot} due to missing initial position (None)."
             )
-            continue
-        start_place_symbol = PddlSymbol(
-            "pstart" + str(robot),
-            "place",
-            ["at-poi"],
-            position=np.array(initial_position[:2]),
-        )
-        # print("start_place_symbol: ", start_place_symbol)
-        # print("initial_position: ", initial_position)
-        symbols_of_interest = [start_place_symbol] + symbols_of_interest
 
     add_symbol_positions(G, symbols_of_interest)
 
