@@ -48,39 +48,127 @@ from omniplanner_msgs.msg import (
     TaskScheduleMsg,
 )
 from plum import dispatch
-from robot_executor_interface.action_descriptions import ActionSequence, Follow
+from robot_executor_interface.action_descriptions import (
+    ActionSequence,
+    Follow,
+    Gaze,
+    Pick,
+    Place,
+)
 from std_msgs.msg import String
+
+from omniplanner_ros.pddl_planner_ros import ensure_3d
 
 logger = logging.getLogger(__name__)
 
 
-def _agent_legs(plan: GrstapsPlan, robot_name: str):
-    """An agent's transitions as a list of 2D polylines, one per leg.
+def _leg_points(transition):
+    """One transition as a 2D polyline, or None if it reports no travel.
 
-    GRSTAPS-X returns, per agent, the ordered tasks plus the motion-plan path it
-    travels between them. We keep the geometry and drop the timing: the executor
-    has no notion of a schedule yet, so a Follow is the honest projection.
-
-    Kept per-leg rather than concatenated. Splicing every transition into one
-    polyline loses the boundary at each task, and the executor -- which follows
-    with a lookahead and a 2.8 m goal tolerance -- can then cut the corner
-    across a boundary instead of arriving at the task location.
+    Kept per-leg rather than concatenated across the plan. Splicing every
+    transition into one polyline loses the boundary at each task, and the
+    executor -- which follows with a lookahead and a 2.8 m goal tolerance --
+    can then cut the corner across a boundary instead of arriving at the task
+    location.
     """
-    legs = []
+    points = []
+    for config in (transition or {}).get("path") or []:
+        xy = [config.get("x"), config.get("y")]
+        if xy[0] is None or xy[1] is None:
+            continue
+        if not points or points[-1] != xy:
+            points.append(xy)
+    return np.array(points, dtype=float) if points else None
+
+
+def _agent_steps(plan: GrstapsPlan, robot_name: str):
+    """(leg, task) pairs for one robot, in the order it executes them.
+
+    transitions[i] is the travel that brings the robot to individual_plan[i]:
+    the solver emits exactly one transition per assigned task, and a task the
+    robot is already standing at gets a degenerate one-point path rather than
+    being omitted. Index alignment is therefore sound, and it is what lets each
+    action be placed at the end of the leg that reaches it -- pairing only the
+    legs that describe real travel would silently attach actions to the wrong
+    task as soon as one task started where the previous one ended.
+    """
+    by_id = {t.get("id"): t for t in plan.tasks or []}
     for agent in plan.agents or []:
         if agent.get("name") != robot_name:
             continue
-        for transition in agent.get("transitions") or []:
-            points = []
-            for config in transition.get("path") or []:
-                xy = [config.get("x"), config.get("y")]
-                if xy[0] is None or xy[1] is None:
-                    continue
-                if not points or points[-1] != xy:
-                    points.append(xy)
-            if len(points) >= 2:
-                legs.append(np.array(points, dtype=float))
-    return legs
+        legs = agent.get("transitions") or []
+        for i, task_id in enumerate(agent.get("individual_plan") or []):
+            leg = _leg_points(legs[i]) if i < len(legs) else None
+            yield leg, (by_id.get(task_id) or {})
+
+
+def _task_actions(geometry, task, frame_id, robot_point):
+    """The executor actions one scheduled task becomes.
+
+    A visit is pure navigation and adds nothing beyond the leg that reached it.
+    Everything else actuates, and without this the arm never moves and an
+    inspection never looks: the fleet would drive the whole mission and
+    accomplish none of it.
+
+    `robot_point` is where the robot stands when the task begins -- the end of
+    its inbound leg -- which is what the executor's robot_point means and what
+    the fast-downward path passes as `last_pose`.
+    """
+    g = geometry.get(task.get("id"))
+    if not g or g["action"] == "visit":
+        return []
+
+    kind = g["action"]
+    target = g["target"]
+    object_point = g["object_point"]
+    object_class = g.get("object_class", "")
+    here = ensure_3d(robot_point) if robot_point is not None else object_point
+
+    if kind == "inspect":
+        return [
+            Gaze(
+                frame=frame_id,
+                robot_point=here,
+                gaze_point=object_point,
+                stow_after=True,
+                object_id=target,
+            )
+        ]
+
+    pick = Pick(
+        frame=frame_id,
+        object_class=object_class,
+        robot_point=here,
+        object_point=object_point,
+        object_id=target,
+    )
+    if kind == "pick":
+        return [pick]
+
+    def place_at(robot_at, put_at):
+        return Place(
+            frame=frame_id,
+            object_class=object_class,
+            robot_point=robot_at,
+            object_point=put_at,
+            object_id=target,
+        )
+
+    if kind == "place":
+        # object_point is already the destination: the task is named after the
+        # object but the solver places it where the relocation ends.
+        return [place_at(here, object_point)]
+
+    # relocate: pick where it lies, carry, put down at the destination.
+    actions = [pick]
+    carry = g.get("carry_path")
+    destination = g.get("dest_point")
+    if destination is None:
+        return actions + [place_at(here, object_point)]
+    if carry is not None and len(carry) >= 2:
+        actions.append(Follow(frame=frame_id, path2d=carry))
+        return actions + [place_at(ensure_3d(carry[-1]), destination)]
+    return actions + [place_at(destination, destination)]
 
 
 def _peel_symbolic(x):
@@ -112,9 +200,30 @@ def _extract_visited_pois(plan: GrstapsPlan):
 
 
 def compile_grstaps_plan(plan: GrstapsPlan, plan_id, robot_name, frame_id):
-    actions = [
-        Follow(frame=frame_id, path2d=leg) for leg in _agent_legs(plan, robot_name)
-    ]
+    """One robot's schedule as drive-then-act, task by task.
+
+    Timing is still dropped -- ActionSequence has no temporal fields, so the
+    schedule goes out separately on TaskScheduleMsg -- but the actions
+    themselves are no longer dropped with it.
+    """
+    actions = []
+    at = None
+    for leg, task in _agent_steps(plan, robot_name):
+        if leg is not None and len(leg) >= 2:
+            actions.append(Follow(frame=frame_id, path2d=leg))
+        if leg is not None and len(leg):
+            at = leg[-1]
+        acted = _task_actions(plan.task_geometry, task, frame_id, at)
+        actions.extend(acted)
+        # A relocation moves the robot inside the task, so the next task's
+        # robot_point is where the carry ended, not where the inbound leg did.
+        # This matters whenever the following task reports no travel of its own.
+        for action in acted:
+            if isinstance(action, Follow):
+                if len(action.path2d):
+                    at = action.path2d[-1]
+            elif getattr(action, "robot_point", None) is not None:
+                at = action.robot_point
     return ActionSequence(plan_id=plan_id, robot_name=robot_name, actions=actions)
 
 

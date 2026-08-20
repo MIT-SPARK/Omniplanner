@@ -13,7 +13,8 @@ system so a natural-language instruction reaches it.
 | species and trait vectors from `robot_type` | done | `SPECIES`, `species_for` |
 | speed per species (UAV 2×) | done | `SPECIES` |
 | capability gating (only `spot_arm` manipulates) | done | `base_traits` per subtask |
-| coalitions (one task, several robots at once) | done | `inspect-object`, additive traits |
+| coalitions: allocation | done | `inspect-object`, additive traits |
+| coalitions: synchronised arrival | **not done** | needs a timed executor, see below |
 | task durations, configurable | done | `GrstapsDomain.*_duration_s` |
 | MILP schedule with real timepoints | done | solver |
 | precedence, intrinsic | done | `enumerate_tasks` |
@@ -24,6 +25,8 @@ system so a natural-language instruction reaches it.
 | constraints: `forbidden-poi`, `forbidden-edge` | done | `_forbidden_sets`, `_prune_graph` |
 | ITAGS entry point (skips PDDL task planning) | done | `entry="itags"`, `_run_itags` |
 | multi-robot compile to `ActionSequence` | done | `compile_plan` on `MultiRobotWrapper` |
+| tasks compiled to `Pick`/`Place`/`Gaze` | done | `_parameterize_tasks`, `_task_actions` |
+| executor honours the schedule's timings | **not done** | cross-repo, see below |
 | schedule published for inspection | done | `TaskScheduleMsg` on `~/task_schedule` |
 | schedule-aware replan decision | done | `goal_manager` `replan_horizon_s` |
 | portable across maps | done | verified on two DSGs, one arg (`--map`) |
@@ -105,10 +108,9 @@ domain already defines. Edit the repair-specific variants
 (`pddl_domain_description_with_constraints.yaml`,
 `pddl_in_context_examples_with_constraints.yaml`), never the shared files.
 
-**2. Turn on the ITAGS entry point in the repair config.** The
-`grstaps_repair` overlay sets `goal_format: constrained_pddl` but not `entry`,
-so it would default to the PDDL path — where `before` cannot be expressed at
-all. One line.
+**2. ~~Turn on the ITAGS entry point in the repair config.~~** Done — the
+`grstaps_repair` overlay sets `entry: itags` alongside
+`goal_format: constrained_pddl`, so `before` compiles to precedence pairs.
 
 **3. Make the `itags` binary reachable.** It is built from a `tools/` target
 added to grstapsx (`add_executable(itags ...)`), so any machine running this
@@ -116,6 +118,22 @@ needs that build. `ADT4_ITAGS_BINARY` overrides the default path.
 
 **4. Test through the live node**, not just offline: agent → goal_manager →
 plugin → solver → published plan and schedule.
+
+## What execution still cannot do
+
+Every task now compiles to the action it implies, so a mission actuates rather
+than merely driving. Two gaps remain, and both live outside omniplanner:
+
+- **The executor is timing-blind.** `ActionSequence` has no temporal fields —
+  which is why the schedule goes out separately on `TaskScheduleMsg` — so a
+  robot runs its actions back to back regardless of the timepoints the MILP
+  computed. Making it wait for a start time is a `robot_executor_interface`
+  change.
+- **Coalitions are not synchronised.** ITAGS puts two robots on one
+  `inspect-object` and the schedule has them there together, but each robot's
+  `ActionSequence` is independent and there is no rendezvous primitive to
+  compile into — the executor knows `Follow`, `Gaze`, `Pick` and `Place` and
+  nothing else. Both members `Gaze` whenever they happen to arrive.
 
 ## Risks worth naming
 
