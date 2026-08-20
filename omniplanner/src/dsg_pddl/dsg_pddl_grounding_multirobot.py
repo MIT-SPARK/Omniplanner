@@ -66,15 +66,41 @@ def _extract_forbidden_sets(constraints):
 # a lot.
 FORBIDDEN_RADIUS_M = 5.0
 
+# Env override so the radius can be retuned per map without a rebuild. Read at
+# call time, not import time, so a field test only has to restart the node.
+FORBIDDEN_RADIUS_ENV = "ADT4_FORBIDDEN_RADIUS_M"
+
+
+def _forbidden_radius_m():
+    """Exclusion radius in metres, from the environment or the default above.
+
+    A malformed value falls back rather than raising: this runs mid-mission on
+    every grounding, and a typo in the tmux env should not take the planner down.
+    """
+    raw = os.getenv(FORBIDDEN_RADIUS_ENV)
+    if raw is None:
+        return FORBIDDEN_RADIUS_M
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(
+            "%s=%r is not a number; using the %.1f m default",
+            FORBIDDEN_RADIUS_ENV,
+            raw,
+            FORBIDDEN_RADIUS_M,
+        )
+        return FORBIDDEN_RADIUS_M
+
 
 def _expand_forbidden_pois(forbidden_pois, symbols, symbol_lookup, layer_planner):
-    """Grow each forbidden POI into the set of symbols within FORBIDDEN_RADIUS_M.
+    """Grow each forbidden POI into the set of symbols within the exclusion radius.
 
     Distance is path distance through the places layer, not Euclidean, so a
     symbol that is metrically close but only reachable the long way around is
     left alone. Disconnected symbols come back as inf and are likewise excluded.
     """
-    if not forbidden_pois or FORBIDDEN_RADIUS_M <= 0:
+    radius = _forbidden_radius_m()
+    if not forbidden_pois or radius <= 0:
         return forbidden_pois
 
     expanded = set(forbidden_pois)
@@ -86,7 +112,7 @@ def _expand_forbidden_pois(forbidden_pois, symbols, symbol_lookup, layer_planner
             if s.symbol in expanded:
                 continue
             d = layer_planner.get_external_distance(origin.position[:2], s.position[:2])
-            if d < FORBIDDEN_RADIUS_M:
+            if d < radius:
                 expanded.add(s.symbol)
 
     if len(expanded) > len(forbidden_pois):
@@ -94,7 +120,7 @@ def _expand_forbidden_pois(forbidden_pois, symbols, symbol_lookup, layer_planner
             "Expanded %d forbidden POI(s) to %d symbols within %.1f m",
             len(forbidden_pois),
             len(expanded),
-            FORBIDDEN_RADIUS_M,
+            radius,
         )
     return expanded
 
