@@ -382,6 +382,12 @@ class GrstapsPlan:
     # {task id -> geometry}, see _parameterize_tasks. Empty for a plan built
     # without a DSG, which compiles to navigation only.
     task_geometry: Dict[int, dict] = field(default_factory=dict)
+    # [[i, j], ...]: task i finishes before task j starts. The solver's own
+    # array, which already merges the intrinsic chains with whatever `before`
+    # constraints compiled down to. This is what the executor gates on --
+    # timepoints assume the durations the solver was given and stop being true
+    # the moment a real action overruns, whereas an ordering does not decay.
+    precedence: List[List[int]] = field(default_factory=list)
 
 
 def _graph_config(vertex):
@@ -1617,4 +1623,7 @@ def make_plan(problem: GroundedGrstapsProblem, map_context: Any) -> GrstapsPlan:
         task_geometry=_parameterize_tasks(
             map_context, tasks, problem.location_of, problem.destination_of
         ),
+        precedence=[
+            list(pair) for pair in solution.get("precedence_constraints") or []
+        ],
     )
