@@ -363,6 +363,10 @@ class GroundedGrstapsProblem:
     symbol_of_vertex: Dict[int, str] = field(
         default_factory=dict
     )  # graph id -> dsg symbol
+    # {object pddl name -> destination pddl name}. Needed after solving, when
+    # the goal is out of scope but a relocation still has to be told where the
+    # object goes -- the solver's task name only ever carries the object.
+    destination_of: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -375,6 +379,9 @@ class GrstapsPlan:
     raw: Any = None
     location_of: Dict[str, str] = field(default_factory=dict)
     symbol_of_vertex: Dict[int, str] = field(default_factory=dict)
+    # {task id -> geometry}, see _parameterize_tasks. Empty for a plan built
+    # without a DSG, which compiles to navigation only.
+    task_geometry: Dict[int, dict] = field(default_factory=dict)
 
 
 def _graph_config(vertex):
@@ -824,8 +831,8 @@ def _nearest_vertex(vertices, x, y):
     return min(vertices, key=lambda v: math.hypot(v["x"] - x, v["y"] - y))
 
 
-def _symbol_position(dsg, symbol):
-    """Position of any DSG node by its symbol string, case-insensitively.
+def _find_node(dsg, symbol):
+    """Any DSG node by its symbol string, case-insensitively.
 
     The DSG spells object symbols uppercase (O16) but PDDL requires lowercase,
     so a goal arriving from the repair flow names o16 while the graph holds O16.
@@ -839,9 +846,122 @@ def _symbol_position(dsg, symbol):
             continue
         for node in layer.nodes:
             if node.id.str(True).lower() == wanted:
-                p = node.attributes.position
-                return float(p[0]), float(p[1])
+                return node
     return None
+
+
+def _symbol_position(dsg, symbol):
+    """2D position of a symbol, for the motion graph."""
+    node = _find_node(dsg, symbol)
+    if node is None:
+        return None
+    p = node.attributes.position
+    return float(p[0]), float(p[1])
+
+
+def _symbol_position_3d(dsg, symbol):
+    """3D position of a symbol, which is what Pick/Place/Gaze act on."""
+    node = _find_node(dsg, symbol)
+    if node is None:
+        return None
+    return np.array(node.attributes.position, dtype=float)
+
+
+def _semantic_label(dsg, symbol):
+    """Object class for a symbol, as Pick/Place's object_class expects.
+
+    The same labelspace lookup DsgContextProvider does for the fast-downward
+    path, done here because the DSG is in scope while a plan is parameterised
+    and is not by the time it is compiled.
+    """
+    node = _find_node(dsg, symbol)
+    if node is None:
+        return ""
+    try:
+        labelspace = dsg.get_labelspace(node.layer.layer, node.layer.partition)
+        return labelspace.get_node_category(node) or ""
+    except Exception:
+        return ""
+
+
+# GRSTAPS-X task name -> the kind of executor action it becomes. Names follow
+# the solver's own "<action> <target> :: <role>" convention.
+TASK_ACTION_KINDS = {
+    "visit-location": "visit",
+    "inspect-object": "inspect",
+    "relocate-object": "relocate",
+    "pick-object": "pick",
+    "place-object": "place",
+}
+
+
+def _parameterize_tasks(dsg, tasks, location_of, destination_of):
+    """Geometry each scheduled task needs before it can become a robot action.
+
+    The solver returns symbols and timings; every coordinate an executor acts on
+    still has to come from the DSG. This mirrors `dsg_pddl_planning`'s
+    `parameterize_*` helpers: in both pipelines the symbolic planner produces no
+    geometry, and a later pass supplies it.
+
+    The robot's own pose is deliberately absent. It is the end of whichever leg
+    that robot travelled to reach the task, which differs per robot for a
+    coalition task, so compile_plan supplies it. Everything here is a property
+    of the task and is shared by every robot assigned to it.
+    """
+    layer_planner = LayerPlanner(dsg, spark_dsg.DsgLayers.MESH_PLACES)
+    geometry = {}
+    for t in tasks or []:
+        name = t.get("name", "")
+        head = name.split()
+        kind = TASK_ACTION_KINDS.get(head[0]) if head else None
+        if kind is None:
+            logger.warning("Task %r has no executor action; skipping it", name)
+            continue
+        target = task_location(name)
+        position = _symbol_position_3d(dsg, location_of.get(target, target))
+        if position is None:
+            logger.warning(
+                "Task %r targets %s, which is not in the DSG; skipping it", name, target
+            )
+            continue
+
+        entry = {"action": kind, "target": target, "object_point": position}
+        if kind != "visit":
+            entry["object_class"] = _semantic_label(
+                dsg, location_of.get(target, target)
+            )
+
+        if kind in ("relocate", "place"):
+            dest = destination_of.get(target)
+            dest_point = (
+                _symbol_position_3d(dsg, location_of.get(dest, dest)) if dest else None
+            )
+            if dest_point is None:
+                # No destination means "put it back where it was found", which
+                # needs neither a carry nor a second position.
+                pass
+            elif kind == "place":
+                # place-object is named after the object but happens at the
+                # destination, so that is where the robot sets it down.
+                entry["object_point"] = dest_point
+            else:
+                entry["dest_point"] = dest_point
+                # An atomic relocation carries the object inside a single task,
+                # so the solver charges the carry to that task and never reports
+                # it as a transition. Without a path here the executor would be
+                # told to put the object down while still standing where it
+                # picked it up.
+                entry["carry_path"] = np.array(
+                    [
+                        [float(q[0]), float(q[1])]
+                        for q in layer_planner.get_external_path(
+                            position[:2], dest_point[:2]
+                        )
+                    ],
+                    dtype=float,
+                )
+        geometry[t.get("id")] = entry
+    return geometry
 
 
 @dispatch
@@ -1231,6 +1351,10 @@ def ground_problem(
         domain=domain,
         location_of=location_of,
         symbol_of_vertex=symbol_of_vertex,
+        destination_of={
+            str(k).lower(): str(v).lower()
+            for k, v in (goal.manipulate_destinations or {}).items()
+        },
     )
 
     # Wrap like the PDDL grounders do, because compile_plan dispatches on the
@@ -1490,4 +1614,7 @@ def make_plan(problem: GroundedGrstapsProblem, map_context: Any) -> GrstapsPlan:
         raw=payload,
         location_of=problem.location_of,
         symbol_of_vertex=symbol_of_vertex,
+        task_geometry=_parameterize_tasks(
+            map_context, tasks, problem.location_of, problem.destination_of
+        ),
     )
