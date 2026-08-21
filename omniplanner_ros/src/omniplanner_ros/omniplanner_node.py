@@ -324,11 +324,33 @@ class OmniPlannerRos(Node):
             robot_poses = self.get_robot_poses(self.dsg_frame)
             self.get_logger().info(f"Planning with robot poses {robot_poses}")
 
-            plan_request = callback(msg, robot_poses)
-            with self.dsg_lock:
-                plans = full_planning_pipeline(
-                    plan_request, self.dsg_last, self.feedback
+            try:
+                plan_request = callback(msg, robot_poses)
+                with self.dsg_lock:
+                    plans = full_planning_pipeline(
+                        plan_request, self.dsg_last, self.feedback
+                    )
+            except Exception as exc:
+                # An exception escaping a subscription callback tears down the
+                # rclpy executor and kills the node, so one unplannable goal
+                # would end the mission instead of just failing. Plan repair
+                # exists to let an operator change their mind, which means goals
+                # that cannot be solved -- a forbidden-poi that isolates the
+                # target, a symbol absent from the DSG, a goal the domain cannot
+                # express -- are ordinary traffic, not fatal events.
+                #
+                # dsg_pddl logs the specific reason before this point: look for
+                # "no connectivity left in the problem", which names the goal
+                # symbols nothing can reach.
+                self.get_logger().error(
+                    f"Planning failed for plugin {name}, keeping the node alive: {exc}"
                 )
+                # Otherwise the node reports itself as planning for ever and the
+                # status monitor never recovers.
+                with self.current_planner_lock and self.plan_time_start_lock:
+                    self.current_planner = None
+                    self.plan_time_start = None
+                return
 
             compiled_plans = compile_plan(self.robot_adaptors, self.dsg_frame, plans)
             plan_dict = collect_plans(compiled_plans)

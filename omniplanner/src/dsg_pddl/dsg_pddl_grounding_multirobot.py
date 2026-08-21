@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import time
 from typing import Any, Dict, List, Tuple
 
@@ -287,6 +288,46 @@ def generate_dense_region_init_multirobot(
     return initial_pddl
 
 
+def diagnose_unreachable_goal(goal_string, init_facts, symbols):
+    """Names the goal symbols nothing can reach, so a failure says what to fix.
+
+    fast-downward only reports that a problem is unsolvable, and the operator is
+    left with a 50k-line problem file. Almost always the cause is a constraint:
+    a forbidden-poi on or beside a goal strips every `connected` fact the goal
+    had, and no plan can reach it. That is cheap to detect here, where both the
+    goal and the surviving connectivity are in hand.
+
+    Returns the unreachable goal symbols, and logs them. Diagnostic only -- it
+    changes nothing about what is planned.
+    """
+    connected = set()
+    for fact in init_facts:
+        if fact and fact[0] == "connected" and len(fact) >= 3:
+            connected.add(fact[1])
+            connected.add(fact[2])
+
+    known = {sym.symbol for sym in symbols}
+    named = {tok for tok in re.findall(r"[a-z]+[0-9]+", (goal_string or "").lower())}
+    goal_symbols = named & known
+    unreachable = sorted(goal_symbols - connected)
+
+    if unreachable:
+        logger.error(
+            "Goal names %s, which %s no connectivity left in the problem: no plan "
+            "can reach %s. A forbidden-poi on or within the expansion radius of a "
+            "goal will do this -- check the constraints, or lower "
+            "%s (currently %.1f).",
+            ", ".join(unreachable),
+            "has" if len(unreachable) == 1 else "have",
+            "it" if len(unreachable) == 1 else "them",
+            FORBIDDEN_RADIUS_ENV,
+            _forbidden_radius_m(),
+        )
+    elif goal_symbols:
+        logger.debug("All goal symbols %s still connected", sorted(goal_symbols))
+    return unreachable
+
+
 def filter_goal_for_available_objects(
     goal_string: str, available_objects: List[str]
 ) -> str:
@@ -342,6 +383,9 @@ def generate_multirobot_region_pddl(
     # Build init facts via shared helpers
     init_facts_tuples: List[tuple] = generate_dense_region_init_multirobot(
         G, symbols_of_interest, robot_states, constraints=constraints
+    )
+    diagnose_unreachable_goal(
+        raw_pddl_goal_string, init_facts_tuples, symbols_of_interest
     )
 
     # Ensure robot symbols exist (with positions) for downstream planners
