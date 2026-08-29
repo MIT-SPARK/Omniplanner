@@ -89,9 +89,22 @@ def make_plan(grounded_problem: GroundedPddlProblem, map_context: Any) -> PddlPl
     # grounding used, or a goal position near an island place raises
     # NetworkXNoPath at compile time for a plan the solver already proved
     # (motion-tier v1 nl_s71: grounded fine, gate 1 verified, crashed here).
-    start = grounded_problem.symbols.get("pstart")
-    if start is not None and getattr(start, "position", None) is not None:
-        layer_planner = layer_planner.restricted_to_component(start.position)
+    # Single-robot grounding keys the start as "pstart"; the multirobot
+    # grounding keys one start per robot as "pstart{robot_id}", so an exact
+    # "pstart" lookup silently no-opped the restriction for every multirobot
+    # plan. Take every pstart* symbol and restrict to the UNION of their
+    # components: the robots' starts may live in different components, and
+    # restricting to just one of them would make the other robots' places
+    # unsnappable.
+    start_positions = [
+        start.position
+        for name, start in grounded_problem.symbols.items()
+        if name.startswith("pstart")
+        and start is not None
+        and getattr(start, "position", None) is not None
+    ]
+    if start_positions:
+        layer_planner = layer_planner.restricted_to_components(start_positions)
     last_pose = np.zeros(2)
     multirobot = "multirobot" in grounded_problem.domain.domain_name
     for p in plan:

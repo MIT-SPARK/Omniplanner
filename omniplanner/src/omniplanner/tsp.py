@@ -77,10 +77,25 @@ class LayerPlanner:
         traverse. Path queries still run on the full layer graph. Returns
         ``self`` unchanged when the layer is empty or fully connected.
         """
-        if len(self.node_ids) == 0:
+        return self.restricted_to_components([point])
+
+    def restricted_to_components(self, points):
+        """Like ``restricted_to_component``, but keeps the UNION of the
+        components containing the nodes nearest each of ``points``.
+
+        Multirobot problems have one start per robot, and those starts can sit
+        in different components of a saved DSG. Restricting to any single
+        robot's component would make the other robots' places unsnappable, so
+        the union is the right restriction there. ``None`` entries are ignored;
+        an empty list leaves the planner unrestricted.
+        """
+        points = [np.asarray(p) for p in points if p is not None]
+        if len(self.node_ids) == 0 or len(points) == 0:
             return self
-        anchor = self.get_closest_node_id(np.asarray(point))
-        component = nx.node_connected_component(self.nx_layer, anchor)
+        component = set()
+        for point in points:
+            anchor = self.get_closest_node_id(point)
+            component |= nx.node_connected_component(self.nx_layer, anchor)
         if len(component) == len(self.node_ids):
             return self
         import copy
