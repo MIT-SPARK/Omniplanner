@@ -108,3 +108,85 @@ def test_make_plan_expands_waypoints_despite_island():
     plan = make_plan(grounded.value, G)   # must not raise NetworkXNoPath
     gotos = [a for a in plan.symbolic_actions if a[0] == "goto-poi"]
     assert gotos, "expected at least one goto-poi action"
+
+
+# ---------------------------------------------------------------------------
+# regions whose member places include an island
+# ---------------------------------------------------------------------------
+
+
+def build_island_region_dsg():
+    """A room containing three places, one of which is an ISLAND mesh-place.
+
+    ``generate_place_containment`` reports every member of the room, but
+    ``place_sym_to_pos`` is built only from the component reachable from the
+    robot start, so ranking the members by distance to the region centroid
+    used to raise ``KeyError: 'p2'`` and kill grounding outright.
+    """
+    G = spark_dsg.DynamicSceneGraph()
+    G.add_layer(2, "O", spark_dsg.DsgLayers.OBJECTS)
+    G.add_layer(3, "p", spark_dsg.DsgLayers.PLACES)
+    G.add_layer(4, "R", spark_dsg.DsgLayers.ROOMS)
+    G.add_layer(20, "P", spark_dsg.DsgLayers.MESH_PLACES)
+
+    room = spark_dsg.RoomNodeAttributes()
+    room.position = np.array([0.0, 0.0, 0.0])
+    room.semantic_label = 0
+    G.add_node(spark_dsg.DsgLayers.ROOMS, spark_dsg.NodeSymbol("R", 0).value, room)
+
+    def add_place(idx, x):
+        # 3D place (what the room parents in this fixture shape) ...
+        a3 = spark_dsg.PlaceNodeAttributes()
+        a3.position = np.array([x, 0.0, 0.0])
+        G.add_node(
+            spark_dsg.DsgLayers.PLACES, spark_dsg.NodeSymbol("p", idx).value, a3
+        )
+        # ... and the mesh-place of the same index, which is what every other
+        # place-symbol source in the grounder is keyed off.
+        a2 = spark_dsg.PlaceNodeAttributes()
+        a2.position = np.array([x, 0.0, 0.0])
+        a2.semantic_label = 4  # ground
+        G.add_node(
+            spark_dsg.DsgLayers.MESH_PLACES, spark_dsg.NodeSymbol("P", idx).value, a2
+        )
+        G.insert_edge(
+            spark_dsg.NodeSymbol("R", 0).value, spark_dsg.NodeSymbol("p", idx).value
+        )
+
+    add_place(0, -1.0)  # main component (robot starts at the origin)
+    add_place(1, 1.0)  # main component
+    add_place(2, 6.0)  # ISLAND: no mesh-place edges at all
+
+    G.insert_edge(
+        spark_dsg.NodeSymbol("P", 0).value, spark_dsg.NodeSymbol("P", 1).value
+    )
+    return G
+
+
+def _ground_region_goal(goal_str):
+    with as_file(
+        files(dsg_pddl.domains).joinpath("RegionObjectRearrangementDomain.pddl")
+    ) as p:
+        domain = PddlDomain(open(p).read())
+    domain.scene_scope = "goal_relevant"
+    G = build_island_region_dsg()
+    goal = PddlGoal(robot_id="euclid", pddl_goal=goal_str)
+    return ground_problem(domain, G, {"euclid": np.array([0.0, 0.0])}, goal).value
+
+
+def test_region_with_island_member_grounds_without_keyerror():
+    gp = _ground_region_goal("(and (visited-region r0))")
+    assert "r0" in gp.symbols
+
+
+def test_region_members_are_restricted_to_reachable_places():
+    gp = _ground_region_goal("(and (visited-region r0))")
+    assert "p2" not in gp.symbols, (
+        "the island place must not be selected as a representative place "
+        "for the region:\n" + gp.problem_str
+    )
+    assert "(place-in-region p2 r0)" not in gp.problem_str, gp.problem_str
+    assert (
+        "(place-in-region p0 r0)" in gp.problem_str
+        or "(place-in-region p1 r0)" in gp.problem_str
+    ), gp.problem_str

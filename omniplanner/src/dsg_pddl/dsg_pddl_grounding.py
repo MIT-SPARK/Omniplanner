@@ -606,6 +606,22 @@ def generate_goal_relevant_pddl(
                         p,
                     )
                     continue
+                if p not in place_sym_to_pos:
+                    # place_sym_to_pos only holds places in the component
+                    # reachable from the robot start (see above). A region
+                    # that also contains an island place used to KeyError in
+                    # the ranking key below and kill grounding outright.
+                    # An unreachable representative place is useless anyway --
+                    # the connectivity facts for it would be dropped -- so
+                    # drop it here and rank only what the robot can reach.
+                    logger.debug(
+                        "Region '%s' contains place '%s' outside the "
+                        "component reachable from the robot start; it "
+                        "cannot serve as a representative place.",
+                        name,
+                        p,
+                    )
+                    continue
                 valid_members.append(p)
             # Rank members by distance to the REGION centroid, not the robot
             # start: hydra's member places cluster at the capture circle's
