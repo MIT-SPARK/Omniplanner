@@ -492,3 +492,8 @@ class GrstapsConfig(sc.Config):
     # {hilbert: spot_arm} when the sim spot stands in for one with an arm.
     # Species are spot, spot_arm, uav.
     robot_species: dict = None
+    # {trait: magnitude} an inspection's coalition must cover together, e.g.
+    # {ground: 2, sensor: 2} for two ground robots. Traits are ground, air,
+    # sensor, manipulator. Unset keeps the default ground+air pair, which a
+    # fleet with no UAV can never field.
+    inspect_requirement: dict = None
