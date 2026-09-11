@@ -51,6 +51,8 @@ DEFAULT_DURATION = 5.0
 # adding a capability later does not renumber existing vectors.
 #   0 ground-mobile   1 air-mobile   2 sensor   3 manipulator
 GROUND, AIR, SENSOR, MANIP = 0, 1, 2, 3
+# The same dimensions by name, for requirements stated in a config file.
+TRAIT_INDEX = {"ground": GROUND, "air": AIR, "sensor": SENSOR, "manipulator": MANIP}
 
 
 def _traits(*dims):
@@ -70,6 +72,26 @@ def _coalition_traits(requirements):
     for dim, magnitude in requirements.items():
         v[dim] = magnitude
     return v
+
+
+# What an inspection demands of its coalition by default: a ground robot and an
+# air robot together, which no single species covers. A fleet without a UAV can
+# never meet it, so GrstapsDomain.inspect_requirement lets a deployment ask for
+# a team its robots can actually field -- two ground robots, say.
+DEFAULT_INSPECT_REQUIREMENT = {"ground": 1, "air": 1, "sensor": 2}
+
+
+def requirement_traits(requirement):
+    """{trait name -> magnitude} as a trait vector, e.g. {"ground": 2, "sensor": 2}."""
+    unknown = sorted(set(requirement) - set(TRAIT_INDEX))
+    if unknown:
+        raise ValueError(
+            f"Unknown trait(s) {unknown} in a task requirement; known traits are "
+            f"{sorted(TRAIT_INDEX)}."
+        )
+    return _coalition_traits(
+        {TRAIT_INDEX[name]: magnitude for name, magnitude in requirement.items()}
+    )
 
 
 # Speed is what lets the makespan objective discriminate between platforms that
@@ -95,6 +117,16 @@ ROBOT_TYPE_SPECIES = {
     "uav": "uav",
     "drone": "uav",
     "quadrotor": "uav",
+}
+
+# robot_types whose executor cannot carry out a GRSTAPS-X plan, and why. A plan's
+# actions wait on the tasks they follow and on coalition partners; a robot whose
+# executor ignores those gates breaks the plan for everyone else. It runs its
+# own tasks out of order, and a Spot waiting on one of them -- or on it arriving
+# for a joint task -- waits forever. Such robots are left out of the fleet; a
+# robot_species override for a specific robot puts it back in.
+UNPLANNABLE_ROBOT_TYPES = {
+    "husky": "its phoenix executor does not wait on plan ordering or coalition partners",
 }
 
 
@@ -312,6 +344,12 @@ class GrstapsDomain(PlanningDomain):
     # specific robot's capabilities differ from its declared platform, e.g.
     # {"hilbert": "spot_arm"} for a sim spot standing in for one with an arm.
     robot_species: Dict[str, str] = field(default_factory=dict)
+    # {trait name -> magnitude} an inspection's coalition must cover together.
+    # The default is a ground+air pair; a fleet with no UAV can never field it,
+    # so such a deployment asks for e.g. {"ground": 2, "sensor": 2} instead.
+    inspect_requirement: Dict[str, float] = field(
+        default_factory=lambda: dict(DEFAULT_INSPECT_REQUIREMENT)
+    )
     forbidden_radius_m: float = 5.0  # matches the PDDL grounder's expansion
     license_retries: int = 4  # WLS token checkout is flaky; see _run_solver
     license_retry_delay_s: float = 3.0
@@ -541,7 +579,9 @@ def _visit_targets(pddl_goal: str):
     return out
 
 
-def enumerate_tasks(goal, durations, vertex_of, atomic_manipulation=True):
+def enumerate_tasks(
+    goal, durations, vertex_of, atomic_manipulation=True, inspect_traits=None
+):
     """Goal -> (tasks, {symbol -> [task indices]}, intrinsic precedence pairs).
 
     This is the job the PDDL task planner does for us on the other path. Our
@@ -556,6 +596,8 @@ def enumerate_tasks(goal, durations, vertex_of, atomic_manipulation=True):
     """
     tasks: List[dict] = []
     of_symbol: Dict[str, List[int]] = {}
+    if inspect_traits is None:
+        inspect_traits = requirement_traits(DEFAULT_INSPECT_REQUIREMENT)
     precedence: List[List[int]] = []
 
     def add(name, traits, duration, sym, end=None):
@@ -583,7 +625,7 @@ def enumerate_tasks(goal, durations, vertex_of, atomic_manipulation=True):
     for sym in goal.inspect_points or []:
         add(
             f"inspect-object {sym.lower()} :: joint_observation",
-            _coalition_traits({GROUND: 1, AIR: 1, SENSOR: 2}),
+            inspect_traits,
             durations["inspect-object"],
             sym,
         )
@@ -1131,6 +1173,19 @@ def ground_problem(
         if robot_pose is None:
             logger.warning("Skipping robot %s: no pose available", robot_id)
             continue
+        robot_type = str((getattr(goal, "robot_types", None) or {}).get(robot_id, ""))
+        robot_type = robot_type.strip().lower()
+        if robot_type in UNPLANNABLE_ROBOT_TYPES and robot_id not in (
+            domain.robot_species or {}
+        ):
+            logger.warning(
+                "Skipping robot %s: a %s cannot execute a GRSTAPS-X plan, since %s. "
+                "Set robot_species for it to plan with it anyway.",
+                robot_id,
+                robot_type,
+                UNPLANNABLE_ROBOT_TYPES[robot_type],
+            )
+            continue
         v = _nearest_vertex(vertices, float(robot_pose[0]), float(robot_pose[1]))
         # The allocator looks each start up in `nodes`; without it the config
         # fails to parse with "json is missing field 'x'".
@@ -1272,9 +1327,7 @@ def ground_problem(
                 "subtasks": [
                     {
                         "role": "joint_observation",
-                        "base_traits": _coalition_traits(
-                            {GROUND: 1, AIR: 1, SENSOR: 2}
-                        ),
+                        "base_traits": requirement_traits(domain.inspect_requirement),
                         "duration": durations["inspect-object"],
                         "location": "arg0",
                     },
@@ -1322,7 +1375,11 @@ def ground_problem(
         # the same problem in a form a human (and the other entry point) can
         # check against.
         tasks, of_symbol, precedence = enumerate_tasks(
-            goal, durations, vertex_of, domain.atomic_manipulation
+            goal,
+            durations,
+            vertex_of,
+            domain.atomic_manipulation,
+            inspect_traits=requirement_traits(domain.inspect_requirement),
         )
         if not tasks:
             raise ValueError("No tasks to allocate; nothing to plan for.")
