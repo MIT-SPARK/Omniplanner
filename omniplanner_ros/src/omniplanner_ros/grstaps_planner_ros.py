@@ -353,6 +353,10 @@ class GrstapsRos:
             goal_points=found["visit"],
             inspect_points=found["inspect"],
             manipulate_points=found["manipulate"],
+            # Without these a relocation collapses to "put it back where you
+            # found it": the task ends where it started, so no carry is planned
+            # and the Place goes down on the pick point.
+            manipulate_destinations=found["destinations"],
             robot_id=msg.goal.robot_id,
             constraints=persistent + per_msg,
         )
