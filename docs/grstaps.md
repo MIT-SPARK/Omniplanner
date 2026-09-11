@@ -192,10 +192,6 @@ the forbidden area; here A\* physically cannot route through an isolated vertex.
 
 ### What is not honoured — read this before trusting a constraint
 
-- **`forbidden-edge` is silently ignored.** The PDDL grounder handles it
-  (`_extract_forbidden_sets` returns both sets); the GRSTAPS path reads only
-  `forbidden-poi`. A `forbidden-edge` constraint will appear to be accepted and
-  will have no effect.
 - **The radius is euclidean here, path distance in the PDDL grounder.** A place
   that is metrically near a forbidden POI but only reachable the long way round
   is pruned here and kept there. The two planners will not always agree.
@@ -254,6 +250,21 @@ experiment is unaffected.
 > `resolve_override_dirs` collects only *leaf* keys, so a non-leaf parent
 > contributes no override files — `grstaps_repair: [grstaps]` would silently
 > generate a config with no GRSTAPS plugin in it at all.
+
+### Coalitions and the fleet
+
+An inspection is one task allocated to a team, whose trait vectors must add up
+to `inspect_requirement`. The default is a ground robot plus a UAV; the
+`grstaps_repair` config asks for two ground robots, because the run-adt4 fleet
+has no UAV and the default could never be allocated there:
+
+```yaml
+inspect_requirement: {ground: 2, sensor: 2}   # traits: ground, air, sensor, manipulator
+```
+
+Robots whose executor ignores plan ordering -- `husky`, on the phoenix executor --
+are left out of the fleet with a warning (`UNPLANNABLE_ROBOT_TYPES`); a
+`robot_species` entry for a specific robot puts it back.
 
 ### Environment
 
@@ -319,18 +330,20 @@ minimises **makespan**, so it has a reason to spread work across the fleet.
 
 ## Limitations
 
-This is a proof of concept and is not ready to replace fast-downward.
+Status is tracked in [grstaps-roadmap.md](grstaps-roadmap.md); in short:
 
-- **One action type.** The mission domain has only `visit-location`. No pick,
-  place, or ordering beyond what the scheduler derives.
-- **Trait vectors are trivial.** Every robot and subtask is `[1,0,...]`, so
-  allocation has no capability signal to reason about — the fleet is
-  homogeneous by construction.
-- **The schedule is discarded.** `compile_plan` emits route geometry only,
-  because `ActionSequenceMsg` cannot carry the start/finish times GRSTAPS-X
-  computes — which is most of what the solver is for.
-- **Single-robot compilation.** `compile_plan` handles one robot's assignment;
-  multi-robot output would need a `MultiRobotWrapper` path.
-- **One `Follow` per route, not per leg**, which is the likely cause of the
-  executor cutting corners between waypoints.
-- `forbidden-edge` unsupported — see [Constraints](#constraints).
+- **No deadlines or time windows.** Time enters as task durations, the MILP
+  schedule, and finish-to-start ordering (`before`, plus the intrinsic
+  inspect -> pick -> place chain). The solver has deadline machinery, but
+  nothing exposes it.
+- **Ordering is executed, timepoints are not.** The executor gates on
+  precedence and coalition readiness; the schedule's times are published on
+  `TaskScheduleMsg` for inspection only.
+- **Gates exist in the Spot executor only**, so huskies are excluded from the
+  fleet -- see [Coalitions and the fleet](#coalitions-and-the-fleet).
+- **Traits and durations are predefined** per species and per action type.
+  Only the inspection's coalition requirement is configurable.
+- **`before` needs `entry: itags`.** The PDDL entry cannot order unrelated
+  targets.
+- **The robot binding in a goal is discarded** -- assignment is the
+  allocator's job.
