@@ -657,6 +657,41 @@ def ordering_precedence(constraints, of_symbol):
     return pairs
 
 
+def precedence_cycle(n_tasks, pairs):
+    """A cycle in the ordering as task indices, first index repeated last.
+
+    None when the ordering is acyclic. The solver aborts with SIGABRT and no
+    message on a cyclic ordering, and an LLM can easily state one -- before(a,
+    b) alongside before(b, a) -- so it is caught here, where the task names are
+    still at hand to say which tasks are involved.
+    """
+    successors = {}
+    for a, b in pairs:
+        successors.setdefault(a, []).append(b)
+    on_path, finished = set(), set()
+    for root in range(n_tasks):
+        if root in finished:
+            continue
+        path = [root]
+        on_path.add(root)
+        stack = [iter(successors.get(root, ()))]
+        while stack:
+            for child in stack[-1]:
+                if child in on_path:
+                    return path[path.index(child) :] + [child]
+                if child not in finished:
+                    path.append(child)
+                    on_path.add(child)
+                    stack.append(iter(successors.get(child, ())))
+                    break
+            else:
+                done = path.pop()
+                on_path.discard(done)
+                finished.add(done)
+                stack.pop()
+    return None
+
+
 def task_location(task_name: str):
     """Pull the location symbol out of a GRSTAPS-X task name.
 
@@ -1310,6 +1345,13 @@ def ground_problem(
                 len(user_pairs),
                 len(user_pairs) - len(raw_pairs),
                 len(raw_pairs),
+            )
+        cycle = precedence_cycle(len(tasks), precedence + user_pairs)
+        if cycle:
+            raise ValueError(
+                "The ordering is contradictory, so no schedule exists: "
+                + " -> ".join(tasks[i]["name"] for i in cycle)
+                + ". Look for a before() constraint stated in both directions."
             )
         itags_input = {
             "tasks": tasks,
