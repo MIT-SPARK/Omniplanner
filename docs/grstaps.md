@@ -195,10 +195,13 @@ the forbidden area; here A\* physically cannot route through an isolated vertex.
 - **The radius is euclidean here, path distance in the PDDL grounder.** A place
   that is metrically near a forbidden POI but only reachable the long way round
   is pruned here and kept there. The two planners will not always agree.
-- **A forbidden POI near a goal makes the goal unreachable.** Pruning runs
-  before the goal is snapped to a vertex, so if the target's vertex is isolated
-  the solver fails with *"Searched the entire space"* rather than reporting the
-  conflict.
+- **A forbidden POI that cuts off a goal is reported, not planned around.**
+  Pruning isolates vertices, so a target can survive in the graph with nothing
+  able to reach it. Grounding runs a reachability check from the fleet's own
+  vertices and raises *"No robot can reach <symbol>"*, naming the radius knob.
+  Without it the solver returns a plan whose route is empty, which compiles to
+  an ActionSequence with no actions: the schedule claims the task while the
+  robot stands still.
 - A symbol not present in the DSG logs a warning and is skipped, not rejected.
 
 Constraints reach the planner from two places and both are merged: persistent

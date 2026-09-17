@@ -910,6 +910,29 @@ def _prune_graph(graph, forbidden_xy, forbidden_edges_xy, radius, distance_fn=No
     return graph, len(banned)
 
 
+def reachable_vertices(graph, start_ids):
+    """Vertex ids reachable from any start over the graph's surviving edges.
+
+    Pruning a forbidden POI isolates vertices rather than deleting them, so a
+    target can go on existing in the graph with nothing able to get to it. The
+    solver does not report that as a failure -- it returns a plan whose route is
+    empty, which compiles to an ActionSequence with no actions at all, so the
+    schedule claims the task while the robot stands still.
+    """
+    neighbours = {}
+    for e in graph.get("edges") or []:
+        neighbours.setdefault(e["vertex_a"], []).append(e["vertex_b"])
+        neighbours.setdefault(e["vertex_b"], []).append(e["vertex_a"])
+    seen = set(start_ids)
+    stack = list(seen)
+    while stack:
+        for nxt in neighbours.get(stack.pop(), ()):
+            if nxt not in seen:
+                seen.add(nxt)
+                stack.append(nxt)
+    return seen
+
+
 def _nearest_vertex(vertices, x, y):
     return min(vertices, key=lambda v: math.hypot(v["x"] - x, v["y"] - y))
 
@@ -1194,6 +1217,23 @@ def ground_problem(
 
     if not fleet:
         raise ValueError("No robot in robot_states has a pose; nothing to plan for.")
+
+    # Say so when a target is cut off, rather than letting the solver "succeed"
+    # with an empty route. Seeding the search with the fleet's own vertices
+    # keeps a target a robot already stands on reachable, which it is.
+    reachable = reachable_vertices(graph, [v["id"] for _, v in fleet])
+    stranded = sorted(n for n, v in vertex_of.items() if v["id"] not in reachable)
+    if stranded:
+        cause = (
+            "a forbidden-poi constraint isolates it"
+            if forbidden_pts or forbidden_edges
+            else "the motion graph is disconnected there"
+        )
+        raise ValueError(
+            f"No robot can reach {', '.join(stranded)}: {cause}. Lower "
+            f"forbidden_radius_m (now {domain.forbidden_radius_m:.1f} m), drop the "
+            "constraint, or choose a different target."
+        )
 
     durations = {
         "visit-location": domain.visit_duration_s,
