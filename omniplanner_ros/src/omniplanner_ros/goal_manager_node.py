@@ -151,6 +151,8 @@ class GoalManager(Node):
         # Updated by the omniplanner's `on_plan_compiled` hook publishing on
         # ~/plan_visited_pois (which is itself a remap of a per-robot topic).
         self._plan_visited_pois: Set[str] = set()
+        # What the planner says the whole plan covers, when it reports that.
+        self._plan_covered_pois: Set[str] = set()
         self._cache_valid: bool = False
         # Constraints the cached plan was grounded under, so we can tell when a
         # new goal changes them and a skip would be unsound.
@@ -184,6 +186,11 @@ class GoalManager(Node):
         )
         self._failed_sub = self.create_subscription(
             String, "~/planner_failed", self._planner_failed_cb, 10
+        )
+        # Fleet-wide coverage, from a planner that reports it. The topic above
+        # carries only this robot's share of a multi-robot plan.
+        self._coverage_sub = self.create_subscription(
+            String, "~/plan_coverage", self._coverage_cb, 10
         )
         self._schedule_sub = self.create_subscription(
             TaskScheduleMsg, "~/plan_schedule", self._schedule_cb, 10
@@ -223,6 +230,23 @@ class GoalManager(Node):
         self.get_logger().warning(
             f"planner produced no plan ({msg.data}); resuming the current plan"
         )
+
+    def _coverage_cb(self, msg: String) -> None:
+        """Every POI the active plan visits, whichever robot visits it."""
+        try:
+            pois = set(json.loads(msg.data))
+        except Exception as exc:
+            self.get_logger().warning(f"Bad plan_coverage payload: {exc}")
+            return
+        self._plan_covered_pois = pois
+        self._cache_valid = True
+        self._running_constraints = self._plan_constraints
+        self.get_logger().info(f"Updated fleet coverage: {len(pois)} POIs")
+
+    @property
+    def _coverage(self) -> Set[str]:
+        """This robot's POIs plus whatever the fleet plan covers elsewhere."""
+        return self._plan_visited_pois | self._plan_covered_pois
 
     def _schedule_cb(self, msg: TaskScheduleMsg) -> None:
         """Record when the active plan reaches each POI.
@@ -280,9 +304,9 @@ class GoalManager(Node):
         if constraint_signature(msg.constraints) != self._plan_constraints:
             return False  # constraints changed; the cached plan predates them
         forbidden = extract_forbidden_pois(msg.constraints)
-        if forbidden & self._plan_visited_pois:
+        if forbidden & self._coverage:
             return False  # current plan would step on a now-forbidden POI
-        if goal_satisfied_by(msg.goal.pddl_goal, self._plan_visited_pois) is not True:
+        if goal_satisfied_by(msg.goal.pddl_goal, self._coverage) is not True:
             return False
         # Covered, but possibly not soon enough to be worth keeping.
         return not self._late_pois(msg.goal.pddl_goal)
@@ -306,16 +330,16 @@ class GoalManager(Node):
     def _log_skip(self, msg: ConstrainedPddlGoalMsg) -> None:
         self.get_logger().info(
             f"cached plan satisfies goal; resuming without replan. "
-            f"goal={msg.goal.pddl_goal!r} cached={sorted(self._plan_visited_pois)}"
+            f"goal={msg.goal.pddl_goal!r} cached={sorted(self._coverage)}"
         )
 
     def _log_replan(self, msg: ConstrainedPddlGoalMsg) -> None:
         forbidden = extract_forbidden_pois(msg.constraints)
-        sat = goal_satisfied_by(msg.goal.pddl_goal, self._plan_visited_pois)
+        sat = goal_satisfied_by(msg.goal.pddl_goal, self._coverage)
         if not self._cache_valid:
             reason = "no cached plan yet"
-        elif forbidden & self._plan_visited_pois:
-            reason = f"plan visits forbidden POIs {forbidden & self._plan_visited_pois}"
+        elif forbidden & self._coverage:
+            reason = f"plan visits forbidden POIs {forbidden & self._coverage}"
         elif sat is False:
             reason = "cached plan violates new goal"
         elif late := self._late_pois(msg.goal.pddl_goal):
@@ -327,7 +351,7 @@ class GoalManager(Node):
             reason = "goal satisfaction unknown for cached plan"
         self.get_logger().info(
             f"replanning: {reason}. goal={msg.goal.pddl_goal!r} "
-            f"forbidden={forbidden} cached={sorted(self._plan_visited_pois)}; "
+            f"forbidden={forbidden} cached={sorted(self._coverage)}; "
             f"forwarded to planner"
         )
 
