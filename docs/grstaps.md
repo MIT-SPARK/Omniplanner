@@ -222,6 +222,11 @@ def on_plan_compiled(self, plans, plan_dict):   # grstaps_planner_ros.py
     # -> /<robot>/omniplanner_node/plan_visited_pois
 ```
 
+The union of every robot's POIs also goes out on `~/plan_covered_pois`, which
+goal_manager reads: it runs on one robot, so a per-robot topic would show it
+only that robot's share of a fleet plan and it would replan goals the plan
+already satisfies.
+
 Per-robot coverage is exact rather than inferred: `agents[].individual_plan`
 holds the solver's own task ordering, and each task's name (`"visit-location o8
 :: visit"`) names its target.

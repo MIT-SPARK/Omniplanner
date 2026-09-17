@@ -307,6 +307,7 @@ class GrstapsRos:
         self._node = None
         self._visited_pois_pubs: dict = {}  # {robot_name -> ROS publisher}
         self._schedule_pub = None
+        self._coverage_pub = None
 
     def get_plan_callback(self):
         # Two ways in: a plain list of symbols, or the plan-repair flow's
@@ -416,7 +417,8 @@ class GrstapsRos:
         plan = _peel_symbolic(plans)
         if not isinstance(plan, GrstapsPlan):
             return
-        for robot_name, pois in _extract_visited_pois(plan).items():
+        by_robot = _extract_visited_pois(plan)
+        for robot_name, pois in by_robot.items():
             pub = self._visited_pois_pubs.get(robot_name)
             if pub is None:
                 pub = self._node.create_publisher(
@@ -426,6 +428,16 @@ class GrstapsRos:
                 )
                 self._visited_pois_pubs[robot_name] = pub
             pub.publish(String(data=json.dumps(sorted(pois))))
+        # The whole plan's coverage, not one robot's share of it. goal_manager
+        # runs on a single robot and reads that robot's topic, so on a fleet plan
+        # it would otherwise miss every POI a partner covers and replan a goal the
+        # plan already satisfies.
+        if self._coverage_pub is None:
+            self._coverage_pub = self._node.create_publisher(
+                String, "~/plan_covered_pois", 1
+            )
+        covered = sorted({poi for pois in by_robot.values() for poi in pois})
+        self._coverage_pub.publish(String(data=json.dumps(covered)))
         self._publish_schedule(plan, plan_dict)
 
     def grstaps_callback(self, msg, robot_poses):
