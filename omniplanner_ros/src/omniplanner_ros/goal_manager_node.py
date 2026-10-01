@@ -124,6 +124,10 @@ class GoalManager(Node):
         # Constraints the cached plan was grounded under, so we can tell when a
         # new goal changes them and a skip would be unsound.
         self._plan_constraints: frozenset = frozenset()
+        # Constraints of the plan that is actually running, kept while a
+        # forwarded goal is being planned: if that planning fails, the running
+        # plan is still the one built under these.
+        self._running_constraints: frozenset = frozenset()
 
         # Subscriptions (private; remap at launch time).
         self._goal_sub = self.create_subscription(
@@ -131,6 +135,9 @@ class GoalManager(Node):
         )
         self._visited_sub = self.create_subscription(
             String, "~/plan_visited_pois", self._visited_pois_cb, 10
+        )
+        self._failed_sub = self.create_subscription(
+            String, "~/planner_failed", self._planner_failed_cb, 10
         )
 
         # Publishers (private; remap at launch time).
@@ -152,7 +159,21 @@ class GoalManager(Node):
             return
         self._plan_visited_pois = pois
         self._cache_valid = True
+        self._running_constraints = self._plan_constraints
         self.get_logger().info(f"Updated plan cache: {len(pois)} visited POIs")
+
+    def _planner_failed_cb(self, msg: String) -> None:
+        """The forwarded goal produced no plan: carry on with the current one.
+
+        The executor was paused when the goal arrived and only a new plan would
+        have released it, so without this the robot waits for ever -- possibly
+        holding an object. The goal is dropped; the operator has to restate it.
+        """
+        self._plan_constraints = self._running_constraints
+        self._resume_executor()
+        self.get_logger().warning(
+            f"planner produced no plan ({msg.data}); resuming the current plan"
+        )
 
     def _commanded_goal_cb(self, msg: ConstrainedPddlGoalMsg) -> None:
         # Flow: pause → decide → resume_or_forward → log.

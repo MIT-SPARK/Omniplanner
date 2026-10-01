@@ -27,6 +27,7 @@ from robot_executor_msgs.msg import ActionSequenceMsg
 from robot_vocalizer.plan_vocalizer import PlanVocalizer
 from ros_system_monitor_msgs.msg import NodeInfoMsg
 from spark_config import Config, config_field, register_config
+from std_msgs.msg import String
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 from visualization_msgs.msg import MarkerArray
@@ -221,6 +222,11 @@ class OmniPlannerRos(Node):
             MarkerArray, "~/compiled_plan_viz_out", qos_profile=latching_reliable_qos
         )
 
+        # Says why a plan request produced no plan. Whoever paused the executor
+        # to wait for that plan (the goal manager) needs to hear it, or the
+        # robot stays paused with nothing coming.
+        self.plan_failed_pub = self.create_publisher(String, "~/plan_failed", 10)
+
         self.heartbeat_pub = self.create_publisher(NodeInfoMsg, "~/node_status", 1)
         heartbeat_timer_group = MutuallyExclusiveCallbackGroup()
         timer_period_s = 0.1
@@ -350,6 +356,7 @@ class OmniPlannerRos(Node):
                 with self.current_planner_lock and self.plan_time_start_lock:
                     self.current_planner = None
                     self.plan_time_start = None
+                self.plan_failed_pub.publish(String(data=f"{name}: {exc}"))
                 return
 
             compiled_plans = compile_plan(self.robot_adaptors, self.dsg_frame, plans)
