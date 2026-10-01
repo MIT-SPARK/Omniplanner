@@ -137,10 +137,15 @@ class MultiRobotPddlConstrainedPlannerRos(MultiRobotPddlPlannerRos):
         ]
         merged = persistent + per_msg
 
+        # Plan only what is left of the mission, when the node tracks it.
+        world_state_for = getattr(self._node, "world_state_for", None)
         goal = PddlGoal(
             pddl_goal=msg.goal.pddl_goal,
             robot_id=msg.goal.robot_id,
             constraints=merged,
+            world_state=(
+                world_state_for(msg.goal.pddl_goal) if world_state_for else None
+            ),
         )
         return PlanRequest(domain=self.domain, goal=goal, robot_states=robot_poses)
 

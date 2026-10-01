@@ -350,11 +350,47 @@ def filter_goal_for_available_objects(
     return f"(and {' '.join(safe_goals)})"
 
 
+def apply_world_state(init_facts, world_state, symbols, robot_ids):
+    """Start the problem from what the mission has already done.
+
+    Fast-downward plans from :init, so a replan only plans what is left once
+    :init is true: places visited stay visited, and an object a robot holds is
+    in its hand -- not lying where it was picked up, to be picked up again.
+    """
+    known = {s.symbol for s in symbols}
+    held = {}
+    for robot, objects in (world_state.holding or {}).items():
+        if robot not in robot_ids:
+            continue
+        for obj in objects:
+            if obj in known:
+                held[obj] = robot
+    facts = [
+        f
+        for f in init_facts
+        if not (f and f[0] == "object-in-place" and len(f) >= 2 and f[1] in held)
+    ]
+    for obj, robot in sorted(held.items()):
+        facts.append(("holding", robot, obj))
+    for robot in sorted(set(held.values())):
+        facts.append(("hand-full", robot))
+    facts += [("visited-poi", s) for s in sorted(world_state.visited & known)]
+    if held or world_state.visited or world_state.inspected:
+        logger.info(
+            "Planning from mission state: holding=%s, %d visited, %d inspected",
+            {o: r for o, r in held.items()},
+            len(world_state.visited & known),
+            len(world_state.inspected & known),
+        )
+    return facts
+
+
 def generate_multirobot_region_pddl(
     G: spark_dsg.DynamicSceneGraph,
     raw_pddl_goal_string: str,
     robot_states: np.ndarray,
     constraints=None,
+    world_state=None,
 ) -> Tuple[str, List[PddlSymbol]]:
     """Generate a multi-robot PDDL problem for domain region-object-rearrangement-domain-multirobot-fd.
 
@@ -396,9 +432,16 @@ def generate_multirobot_region_pddl(
             PddlSymbol(rid, "robot", [], position=np.array(pose[:2]))
         )
 
-    # Add suspicious facts for all objects
+    # Every object starts suspicious, except those the mission already inspected.
     object_symbols = [s for s in symbols_of_interest if s.layer == "object"]
-    init_facts_tuples += [("suspicious", o.symbol) for o in object_symbols]
+    inspected = world_state.inspected if world_state is not None else set()
+    init_facts_tuples += [
+        ("suspicious", o.symbol) for o in object_symbols if o.symbol not in inspected
+    ]
+    if world_state is not None:
+        init_facts_tuples = apply_world_state(
+            init_facts_tuples, world_state, symbols_of_interest, robot_ids
+        )
 
     # Build objects dict using shared generator and adding robots
     pddl_objects = generate_objects(symbols_of_interest)
@@ -455,6 +498,7 @@ def ground_problem(
                 goal.pddl_goal,
                 pddl_compliant_robot_states,
                 constraints=goal.constraints,
+                world_state=getattr(goal, "world_state", None),
             )
             # logger.warning(f"!!!!!!!!!!!!!!pddl_problem: {pddl_problem}")
         case _:

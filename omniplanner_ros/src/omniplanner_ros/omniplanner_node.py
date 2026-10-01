@@ -303,6 +303,14 @@ class OmniPlannerRos(Node):
         msg.notes = notes
         self.heartbeat_pub.publish(msg)
 
+    def finalize_plans(self, plan_dict, robot_poses):
+        """Last look at the compiled plans before they are published.
+
+        {robot -> ActionSequence} in, the same out. Subclasses may add actions
+        that belong to no planner, e.g. putting down an object first.
+        """
+        return plan_dict
+
     def get_robot_poses(self, dsg_frame):
         pose_dict = {}
         for name, pose_adaptor in self.robot_adaptors.items():
@@ -361,6 +369,7 @@ class OmniPlannerRos(Node):
 
             compiled_plans = compile_plan(self.robot_adaptors, self.dsg_frame, plans)
             plan_dict = collect_plans(compiled_plans)
+            plan_dict = self.finalize_plans(plan_dict, robot_poses)
             for robot_name, compiled_plan in plan_dict.items():
                 self.robot_adaptors[robot_name].publish_plan(to_msg(compiled_plan))
                 # TODO: combine markers into single array so that latching works
