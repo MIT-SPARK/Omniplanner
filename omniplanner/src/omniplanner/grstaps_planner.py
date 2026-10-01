@@ -383,6 +383,9 @@ class GrstapsGoal:
     # empty every robot falls back to the default species, which is the old
     # homogeneous behaviour.
     robot_types: Dict[str, str] = field(default_factory=dict)
+    # What the mission has already done (omniplanner.world_state.WorldState):
+    # grounding plans only the rest. None plans the whole goal.
+    world_state: Any = None
 
 
 @dataclass
@@ -398,6 +401,11 @@ class GroundedGrstapsProblem:
     # object goes -- the solver's task name only ever carries the object.
     destination_of: Dict[str, str] = field(default_factory=dict)
     motion_graph: dict = field(default_factory=dict)
+    # {robot -> [{object, object_class, carry_path, dest_point}]}: objects a
+    # robot already holds, carried and put down before its scheduled tasks.
+    prefix: Dict[str, List[dict]] = field(default_factory=dict)
+    # Everything the goal asks for is done: no solver run, only the prefix.
+    nothing_to_solve: bool = False
 
 
 @dataclass
@@ -419,6 +427,8 @@ class GrstapsPlan:
     # timepoints assume the durations the solver was given and stop being true
     # the moment a real action overruns, whereas an ordering does not decay.
     precedence: List[List[int]] = field(default_factory=list)
+    # See GroundedGrstapsProblem.prefix.
+    prefix: Dict[str, List[dict]] = field(default_factory=dict)
 
 
 def _graph_config(vertex):
@@ -995,6 +1005,177 @@ TASK_ACTION_KINDS = {
 }
 
 
+def _nearest_place(dsg, symbol):
+    """The mesh place nearest a symbol, lowercase: where an object "is"."""
+    xy = _symbol_position(dsg, symbol)
+    if xy is None:
+        return None
+    best, best_d = None, math.inf
+    for node in dsg.get_layer(spark_dsg.DsgLayers.MESH_PLACES).nodes:
+        p = node.attributes.position
+        d = math.hypot(p[0] - xy[0], p[1] - xy[1])
+        if d < best_d:
+            best, best_d = node.id.str(True).lower(), d
+    return best
+
+
+def _fleet_names(robot_states, goal, domain, quiet=False):
+    """Robots that can take part: a pose, and an executor that runs these plans."""
+    names = []
+    for robot_id, robot_pose in robot_states.items():
+        if robot_pose is None:
+            if not quiet:
+                logger.warning("Skipping robot %s: no pose available", robot_id)
+            continue
+        robot_type = str((getattr(goal, "robot_types", None) or {}).get(robot_id, ""))
+        robot_type = robot_type.strip().lower()
+        if robot_type in UNPLANNABLE_ROBOT_TYPES and robot_id not in (
+            domain.robot_species or {}
+        ):
+            if not quiet:
+                logger.warning(
+                    "Skipping robot %s: a %s cannot execute a GRSTAPS-X plan, since %s. "
+                    "Set robot_species for it to plan with it anyway.",
+                    robot_id,
+                    robot_type,
+                    UNPLANNABLE_ROBOT_TYPES[robot_type],
+                )
+            continue
+        names.append(robot_id)
+    return names
+
+
+def _wrap(fleet_names, grounded, robot_id):
+    """Wrap like the PDDL grounders do, because compile_plan dispatches on the
+    wrapper to decide how to reach the adaptors. Returning a bare problem hands
+    the whole adaptor dict to compile_plan, which then fails on adaptor.name.
+
+    A single-robot fleet stays a RobotWrapper so the existing single-robot path
+    is untouched; a real fleet becomes a MultiRobotWrapper, whose compile
+    dispatch splits the solved plan by agent. Without this only one robot's
+    assignment was ever published, which silently discarded the allocation the
+    solver had just computed.
+    """
+    if len(fleet_names) <= 1:
+        return RobotWrapper(fleet_names[0] if fleet_names else robot_id, grounded)
+    wrapper = MultiRobotWrapper(fleet_names, grounded)
+    # GRSTAPS-X uses the real robot names throughout the scenario config and
+    # echoes them back in agents[].name, so inner and outer names coincide and
+    # the remap is the identity.
+    for name in fleet_names:
+        wrapper.set_name_remap(name, name)
+    return wrapper
+
+
+def residual_goal(goal, dsg):
+    """The part of a goal the mission has not done yet, plus objects held for it.
+
+    Returns (goal, held): visits to places already visited, inspections already
+    made and relocations already finished (the object lies at its destination,
+    by the same nearest-place reading fast-downward's :init uses) are dropped.
+    A relocation whose object a robot is holding is taken out of the solver
+    altogether -- the allocator cannot pin a task to one robot -- and returned
+    as held = {robot -> [(object, destination or None)]}, to be carried and put
+    down by that robot before anything else.
+    """
+    state = getattr(goal, "world_state", None)
+    if state is None:
+        return goal, {}
+    visited = set(state.visited)
+    inspected = set(state.inspected)
+    dests = dict(goal.manipulate_destinations or {})
+    held, manipulate, done = {}, [], []
+    for obj in goal.manipulate_points:
+        holder = state.holder_of(obj)
+        if holder is not None:
+            held.setdefault(holder, []).append((obj, dests.pop(obj, None)))
+        elif obj in dests and _nearest_place(dsg, obj) == dests[obj]:
+            done.append(f"relocate {obj}")
+            dests.pop(obj)
+        else:
+            manipulate.append(obj)
+    visits = [s for s in goal.goal_points if s not in visited]
+    inspects = [s for s in goal.inspect_points if s not in inspected]
+    done += [f"visit {s}" for s in goal.goal_points if s in visited]
+    done += [f"inspect {s}" for s in goal.inspect_points if s in inspected]
+    dropped = done or held
+    if dropped:
+        logger.info(
+            "Already done: %s; held, carried first: %s",
+            ", ".join(done) or "nothing",
+            {r: [o for o, _ in objs] for r, objs in held.items()} or "nothing",
+        )
+    extra = goal.extra_precedence
+    if dropped and extra:
+        # Pairs index the full task list; with tasks gone they point elsewhere.
+        logger.warning(
+            "Dropping %d direct precedence pair(s): tasks removed", len(extra)
+        )
+        extra = []
+    return (
+        replace(
+            goal,
+            goal_points=visits,
+            inspect_points=inspects,
+            manipulate_points=manipulate,
+            manipulate_destinations=dests,
+            extra_precedence=extra,
+        ),
+        held,
+    )
+
+
+def _carry_prefix(dsg, graph, vertices, pose, held):
+    """Carry each held object to its destination: [(entry, ...)], end vertex.
+
+    The route is the shortest path over the motion graph the solver also gets,
+    so it honours forbidden places. An object with no destination is put down
+    where the robot stands.
+    """
+    routes = nx.Graph()
+    routes.add_nodes_from(v["id"] for v in vertices)
+    routes.add_weighted_edges_from(
+        (e["vertex_a"], e["vertex_b"], e["cost"]) for e in graph["edges"]
+    )
+    by_id = {v["id"]: v for v in vertices}
+    here = _nearest_vertex(vertices, float(pose[0]), float(pose[1]))
+    entries = []
+    for obj, dest in held:
+        if dest is None:
+            put_at = np.array([float(pose[0]), float(pose[1]), 0.0])
+            entries.append(
+                {
+                    "object": obj,
+                    "object_class": _semantic_label(dsg, obj),
+                    "carry_path": np.zeros((0, 2)),
+                    "dest_point": put_at,
+                }
+            )
+            continue
+        put_at = _symbol_position_3d(dsg, dest)
+        if put_at is None:
+            raise ValueError(f"Destination {dest} of held {obj} is not in the DSG")
+        end = _nearest_vertex(vertices, *put_at[:2])
+        try:
+            path = nx.shortest_path(routes, here["id"], end["id"], weight="weight")
+        except nx.NetworkXNoPath as exc:
+            raise ValueError(
+                f"No permitted route to carry held {obj} to {dest}"
+            ) from exc
+        entries.append(
+            {
+                "object": obj,
+                "object_class": _semantic_label(dsg, obj),
+                "carry_path": np.array(
+                    [[by_id[i]["x"], by_id[i]["y"]] for i in path], dtype=float
+                ),
+                "dest_point": np.asarray(put_at, dtype=float),
+            }
+        )
+        here = end
+    return entries, here
+
+
 def _parameterize_tasks(dsg, tasks, location_of, destination_of, motion_graph=None):
     """Geometry each scheduled task needs before it can become a robot action.
 
@@ -1114,6 +1295,7 @@ def ground_problem(
             k.lower(): v.lower() for k, v in goal.manipulate_destinations.items()
         },
     )
+    goal, held = residual_goal(goal, dsg)
 
     pose = robot_states.get(goal.robot_id)
     if pose is None:
@@ -1164,6 +1346,34 @@ def ground_problem(
         radius_m,
         path_distance,
     )
+
+    prefix, start_after_prefix = {}, {}
+    for robot, objects in held.items():
+        name = next((r for r in robot_states if r.lower() == robot), None)
+        if name is None or robot_states.get(name) is None:
+            raise ValueError(f"{robot} holds {[o for o, _ in objects]} but has no pose")
+        prefix[name], start_after_prefix[name] = _carry_prefix(
+            dsg, graph, vertices, robot_states[name], objects
+        )
+
+    if not (goal.goal_points or goal.inspect_points or goal.manipulate_points):
+        # Nothing left for the solver -- it rejects an empty task list -- so
+        # the plan is just the carries, or nothing at all for an achieved goal.
+        logger.info(
+            "Nothing left to schedule%s",
+            f"; carrying held objects first: {sorted(prefix)}" if prefix else "",
+        )
+        return _wrap(
+            _fleet_names(robot_states, goal, domain, quiet=True),
+            GroundedGrstapsProblem(
+                scenario_dir="",
+                domain=domain,
+                motion_graph=graph,
+                prefix=prefix,
+                nothing_to_solve=True,
+            ),
+            goal.robot_id,
+        )
 
     scenario_dir = os.path.join(
         domain.repo_root, "data", "grstapsx", domain.scenario_name
@@ -1223,24 +1433,13 @@ def ground_problem(
     # Every robot with a pose joins the fleet, so GRSTAPS-X can actually
     # allocate. Robots without one are skipped rather than failing the request.
     fleet = []
-    for robot_id, robot_pose in robot_states.items():
-        if robot_pose is None:
-            logger.warning("Skipping robot %s: no pose available", robot_id)
-            continue
-        robot_type = str((getattr(goal, "robot_types", None) or {}).get(robot_id, ""))
-        robot_type = robot_type.strip().lower()
-        if robot_type in UNPLANNABLE_ROBOT_TYPES and robot_id not in (
-            domain.robot_species or {}
-        ):
-            logger.warning(
-                "Skipping robot %s: a %s cannot execute a GRSTAPS-X plan, since %s. "
-                "Set robot_species for it to plan with it anyway.",
-                robot_id,
-                robot_type,
-                UNPLANNABLE_ROBOT_TYPES[robot_type],
-            )
-            continue
-        v = _nearest_vertex(vertices, float(robot_pose[0]), float(robot_pose[1]))
+    for robot_id in _fleet_names(robot_states, goal, domain):
+        robot_pose = robot_states[robot_id]
+        # A robot carrying a held object starts its schedule where it puts it
+        # down: the carry runs before anything the solver gives it.
+        v = start_after_prefix.get(robot_id) or _nearest_vertex(
+            vertices, float(robot_pose[0]), float(robot_pose[1])
+        )
         # The allocator looks each start up in `nodes`; without it the config
         # fails to parse with "json is missing field 'x'".
         nodes[f"_start_{v['id']}"] = {"x": v["x"], "y": v["y"], "id": v["id"]}
@@ -1533,29 +1732,9 @@ def ground_problem(
             for k, v in (goal.manipulate_destinations or {}).items()
         },
         motion_graph=graph,
+        prefix=prefix,
     )
-
-    # Wrap like the PDDL grounders do, because compile_plan dispatches on the
-    # wrapper to decide how to reach the adaptors. Returning a bare problem
-    # hands the whole adaptor dict to compile_plan, which then fails on
-    # adaptor.name.
-    #
-    # A single-robot fleet stays a RobotWrapper so the existing single-robot
-    # path is untouched; a real fleet becomes a MultiRobotWrapper, whose
-    # compile dispatch splits the solved plan by agent. Without this only one
-    # robot's assignment was ever published, which silently discarded the
-    # allocation the solver had just computed.
-    fleet_names = [robot_id for robot_id, _ in fleet]
-    if len(fleet_names) <= 1:
-        return RobotWrapper(fleet_names[0] if fleet_names else goal.robot_id, grounded)
-
-    wrapper = MultiRobotWrapper(fleet_names, grounded)
-    # GRSTAPS-X uses the real robot names throughout the scenario config and
-    # echoes them back in agents[].name, so inner and outer names coincide and
-    # the remap is the identity.
-    for name in fleet_names:
-        wrapper.set_name_remap(name, name)
-    return wrapper
+    return _wrap([robot_id for robot_id, _ in fleet], grounded, goal.robot_id)
 
 
 def _solver_command(d: GrstapsDomain, rel: str):
@@ -1691,6 +1870,8 @@ def _run_itags(problem: GroundedGrstapsProblem):
 
 @dispatch
 def make_plan(problem: GroundedGrstapsProblem, map_context: Any) -> GrstapsPlan:
+    if problem.nothing_to_solve:
+        return GrstapsPlan(makespan=0.0, tasks=[], prefix=problem.prefix)
     if problem.domain.entry == "itags":
         result, solution_file = _run_itags(problem)
     else:
@@ -1802,4 +1983,5 @@ def make_plan(problem: GroundedGrstapsProblem, map_context: Any) -> GrstapsPlan:
         precedence=[
             list(pair) for pair in solution.get("precedence_constraints") or []
         ],
+        prefix=problem.prefix,
     )
