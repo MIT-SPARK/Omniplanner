@@ -55,10 +55,9 @@ class OmniPlannerRepairRos(OmniPlannerRos):
 
         super().__init__()
 
-        # A completed path counts as visiting what it passes this close to.
-        # Waypoints are graph nodes, but a route to an object may stop at the
-        # nearest node rather than on the object itself.
-        self.declare_parameter("visited_radius_m", 1.5)
+        # A completed path counts as visiting what it passes this close to (and
+        # any object whose nearest place it reaches; see symbols_near).
+        self.declare_parameter("visited_radius_m", 1.0)
         self.world_tracker.visited_radius_m = float(
             self.get_parameter("visited_radius_m").value
         )

@@ -74,15 +74,31 @@ def _layer_nodes(dsg, layer):
 
 
 def symbols_near(dsg, points: Iterable, radius_m: float) -> Set[str]:
-    """Objects and mesh places within radius_m (in the plane) of any point."""
+    """Objects and mesh places a path visited.
+
+    A place or object within radius_m (in the plane) of a waypoint, and an
+    object whose nearest mesh place is a waypoint: a route to an object stops
+    at that place -- GRSTAPS-X snaps every target to it -- which can be farther
+    from the object than any sensible radius (2.2 m for one object in b45).
+    """
     pts = np.array([[float(p[0]), float(p[1])] for p in points], dtype=float)
     if len(pts) == 0:
         return set()
+    places = np.array(
+        [
+            np.asarray(n.attributes.position, dtype=float)[:2]
+            for n in _layer_nodes(dsg, spark_dsg.DsgLayers.MESH_PLACES)
+        ]
+    ).reshape(-1, 2)
     near = set()
     for layer in (spark_dsg.DsgLayers.OBJECTS, spark_dsg.DsgLayers.MESH_PLACES):
         for node in _layer_nodes(dsg, layer):
             xy = np.asarray(node.attributes.position, dtype=float)[:2]
-            if np.min(np.linalg.norm(pts - xy, axis=1)) <= radius_m:
+            reached = np.min(np.linalg.norm(pts - xy, axis=1)) <= radius_m
+            if not reached and layer == spark_dsg.DsgLayers.OBJECTS and len(places):
+                stop = places[np.argmin(np.linalg.norm(places - xy, axis=1))]
+                reached = np.min(np.linalg.norm(pts - stop, axis=1)) <= 0.05
+            if reached:
                 near.add(node.id.str(True).lower())
     return near
 
@@ -143,7 +159,7 @@ def split_held(
 class WorldStateTracker:
     """Accumulates mission progress from executor action reports."""
 
-    def __init__(self, visited_radius_m: float = 1.5):
+    def __init__(self, visited_radius_m: float = 1.0):
         self.visited_radius_m = visited_radius_m
         self.visited: Set[str] = set()
         self.inspected: Set[str] = set()

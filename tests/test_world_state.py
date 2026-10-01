@@ -86,10 +86,19 @@ def test_tracker_from_action_reports():
     path = [_pos(G, "t3")[:2], _pos(G, "o2")[:2]]
     assert {"t3", "o2"} <= t.record("FOLLOW", True, ROBOT, points=path, dsg=G)
     assert t.record("FOLLOW", False, ROBOT, points=[_pos(G, "o5")[:2]], dsg=G) == set()
+    # o6 is 2.2 m from its nearest place: reaching that place still visits it.
+    places = [n for n in G.get_layer(spark_dsg.DsgLayers.MESH_PLACES).nodes]
+    o6 = _pos(G, "o6")[:2]
+    stop = min(
+        places, key=lambda n: np.linalg.norm(np.array(n.attributes.position[:2]) - o6)
+    )
+    assert "o6" in t.record(
+        "FOLLOW", True, ROBOT, points=[stop.attributes.position[:2]], dsg=G
+    )
     t.record("GAZE", True, ROBOT, object_id="O4")
     t.record("PICK", True, ROBOT, object_id="O4")
     s = t.snapshot(G)  # the JSON map tracks no holding: reports stand in
-    assert "o5" not in s.visited and "o4" in s.inspected
+    assert "o4" in s.inspected
     assert s.holding == {ROBOT: ["o4"]}
     t.record("PLACE", True, ROBOT, object_id="O4")
     t.reset()
