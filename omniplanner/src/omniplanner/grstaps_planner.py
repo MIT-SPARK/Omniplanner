@@ -18,6 +18,10 @@ from typing import Any, Dict, List
 import networkx as nx
 import numpy as np
 import spark_dsg
+from dsg_pddl.dsg_pddl_grounding_multirobot import (
+    FORBIDDEN_RADIUS_ENV,
+    _forbidden_radius_m,
+)
 from dsg_pddl.pddl_utils import lisp_string_to_ast
 from plum import dispatch
 
@@ -336,7 +340,9 @@ class GrstapsDomain(PlanningDomain):
     inspect_requirement: Dict[str, float] = field(
         default_factory=lambda: dict(DEFAULT_INSPECT_REQUIREMENT)
     )
-    forbidden_radius_m: float = 5.0  # matches the PDDL grounder's expansion
+    # None -> the fast-downward grounder's radius (1 m, or ADT4_FORBIDDEN_RADIUS_M),
+    # read at each grounding, so one "avoid X" means the same to both planners.
+    forbidden_radius_m: float = None
     license_retries: int = 4  # WLS token checkout is flaky; see _run_solver
     license_retry_delay_s: float = 3.0
 
@@ -1146,11 +1152,16 @@ def ground_problem(
                 + math.hypot(b[0] - vb["x"], b[1] - vb["y"])
             )
 
+    radius_m = (
+        _forbidden_radius_m()
+        if domain.forbidden_radius_m is None
+        else domain.forbidden_radius_m
+    )
     graph, _ = _prune_graph(
         graph,
         forbidden_pts,
         forbidden_edges,
-        domain.forbidden_radius_m,
+        radius_m,
         path_distance,
     )
 
@@ -1251,7 +1262,8 @@ def ground_problem(
         )
         raise ValueError(
             f"No robot can reach {', '.join(stranded)}: {cause}. Lower "
-            f"forbidden_radius_m (now {domain.forbidden_radius_m:.1f} m), drop the "
+            f"the forbidden radius (now {radius_m:.1f} m, set by "
+            f"{FORBIDDEN_RADIUS_ENV}), drop the "
             "constraint, or choose a different target."
         )
 

@@ -108,7 +108,8 @@ constraints: [["before", "o4", "o8"]]
 
 IDs are map-specific; look them up in the current DSG. Missing goal/destination
 IDs and contradictory precedence are rejected. A `forbidden-poi` radius uses
-weighted graph distance in metres (default 5 m); it removes incident edges,
+weighted graph distance in metres (default 1 m, shared with fast-downward and
+overridden by `ADT4_FORBIDDEN_RADIUS_M`); it removes incident edges,
 not continuous geometric regions. Invalid constraint symbols are still warned
 and skipped, and an absent forbidden edge has no effect.
 
