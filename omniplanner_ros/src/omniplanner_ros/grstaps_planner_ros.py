@@ -231,6 +231,23 @@ def compile_grstaps_plan(plan: GrstapsPlan, plan_id, robot_name, frame_id):
     predecessors, coalitions = _ordering(plan)
     actions = []
     at = None
+    # Objects this robot already holds: carry each to where the goal wants it
+    # and put it down, before any scheduled task. They are not solver tasks --
+    # the allocator cannot pin a task to the one robot holding the object.
+    for held in (plan.prefix or {}).get(robot_name, []):
+        carry = held["carry_path"]
+        if len(carry):
+            actions.append(Follow(frame=frame_id, path2d=carry))
+            at = carry[-1]
+        actions.append(
+            Place(
+                frame=frame_id,
+                object_class=held["object_class"] or "",
+                robot_point=ensure_3d(at) if at is not None else held["dest_point"],
+                object_point=held["dest_point"],
+                object_id=held["object"],
+            )
+        )
     for leg, task in _agent_steps(plan, robot_name):
         task_id = str(task.get("id")) if task.get("id") is not None else ""
         travel = None
@@ -346,6 +363,8 @@ class GrstapsRos:
             for c in msg.constraints
         ]
 
+        # Plan only what is left of the mission, when the node tracks it.
+        world_state_for = getattr(self._node, "world_state_for", None)
         goal = GrstapsGoal(
             goal_points=found["visit"],
             inspect_points=found["inspect"],
@@ -356,6 +375,9 @@ class GrstapsRos:
             manipulate_destinations=found["destinations"],
             robot_id=msg.goal.robot_id,
             constraints=persistent + per_msg,
+            world_state=(
+                world_state_for(msg.goal.pddl_goal) if world_state_for else None
+            ),
         )
         return self._request(goal, robot_poses)
 
