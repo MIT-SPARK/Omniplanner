@@ -235,7 +235,7 @@ def goal_from_pddl(pddl_goal, robot_id, constraints=None):
     This is the boundary the LLM sits above: everything from the goal STRING
     downwards is exercised here. parse_goal_targets sorts the goal's predicates
     into task kinds -- visited-*/at-* are visits, safe/(not suspicious) is an
-    inspection, holding/object-in-place is a manipulation -- using the same
+    inspection, object-in-place is a relocation -- using the same
     vocabulary the multirobot fast-downward domain already defines.
     """
     found = parse_goal_targets(pddl_goal)
@@ -483,7 +483,9 @@ print("2. Manipulation (capability decides who CAN)")
 print("=" * 80)
 plan = solve(
     G,
-    goal_from_pddl(f"(holding worker {manipulate_target.lower()})", "worker"),
+    GrstapsGoal(
+        [], "worker", manipulate_points=[manipulate_target], robot_types=ROBOT_TYPES
+    ),
     entry_mode,
     "ex_manip",
 )
@@ -499,10 +501,12 @@ print("3. Coalition inspection, then the full inspect -> pick -> place chain")
 print("=" * 80)
 plan = solve(
     G,
-    goal_from_pddl(
-        f"(and (not (suspicious {manipulate_target.lower()}))"
-        f"(holding worker {manipulate_target.lower()}))",
+    GrstapsGoal(
+        [],
         "worker",
+        inspect_points=[manipulate_target],
+        manipulate_points=[manipulate_target],
+        robot_types=ROBOT_TYPES,
     ),
     entry_mode,
     "ex_chain",
@@ -554,10 +558,11 @@ if entry_mode != "itags":
 else:
     plan = solve(
         G,
-        goal_from_pddl(
-            f"(and (visited-object {visit_target.lower()})"
-            f"(holding worker {manipulate_target.lower()}))",
+        GrstapsGoal(
+            [visit_target],
             "worker",
+            manipulate_points=[manipulate_target],
+            robot_types=ROBOT_TYPES,
             constraints=[
                 ConstraintFact(
                     "before", [visit_target.lower(), manipulate_target.lower()]

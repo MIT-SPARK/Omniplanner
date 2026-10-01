@@ -1,22 +1,8 @@
-"""GRSTAPS-X as an omniplanner planning domain (single-agent proof of concept).
+"""GRSTAPS-X fleet planning: DSG grounding, allocation and scheduling.
 
-Slots into the existing pipeline the same way every other planner does --
-`ground_problem` on the domain type, then `make_plan` -- so nothing in the PDDL
-or TSP paths changes.
-
-Where it differs from the PDDL planners: omniplanner normally compiles the DSG
-*into* the PDDL problem (hundreds of symbols, `connected` facts, distances).
-GRSTAPS-X keeps geometry out of the PDDL and takes a separate euclidean motion
-graph, so grounding here means writing four files:
-
-    domain.pddl               mission logic only (visit-location)
-    problem.pddl              which locations to visit
-    action_trait_config.json  robots, species traits, action -> subtask traits
-    maps/ground_graph.json    the DSG mesh-places layer as a motion graph
-
-Deliberately minimal: one species, trivial trait vectors, no coalitions. The
-point is to prove the pipeline drives the solver end to end; traits and
-multi-robot allocation are the next layer.
+The PDDL entry searches for tasks; the ITAGS entry enumerates tasks and explicit
+precedence directly. Both use a separate motion graph and produce GrstapsPlan.
+See the repository README for supported goals and execution limitations.
 """
 
 import json
@@ -26,9 +12,10 @@ import os
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List
 
+import networkx as nx
 import numpy as np
 import spark_dsg
 from dsg_pddl.pddl_utils import lisp_string_to_ast
@@ -39,7 +26,6 @@ from omniplanner.omniplanner import (
     PlanningDomain,
     RobotWrapper,
 )
-from omniplanner.tsp import LayerPlanner
 
 logger = logging.getLogger(__name__)
 
@@ -405,6 +391,7 @@ class GroundedGrstapsProblem:
     # the goal is out of scope but a relocation still has to be told where the
     # object goes -- the solver's task name only ever carries the object.
     destination_of: Dict[str, str] = field(default_factory=dict)
+    motion_graph: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -507,16 +494,15 @@ def parse_goal_targets(pddl_goal: str):
     normalised = (pddl_goal or "").replace(")(", ") (")
     try:
         ast = lisp_string_to_ast(normalised)
-    except Exception:
-        logger.warning("Could not parse PDDL goal %r", pddl_goal)
-        return {"visit": [], "inspect": [], "manipulate": [], "destinations": {}}
+    except Exception as exc:
+        raise ValueError(f"Could not parse GRSTAPS-X goal {pddl_goal!r}") from exc
 
     # destinations: {object -> place to leave it}, from (object-in-place ?o ?p)
     found = {"visit": [], "inspect": [], "manipulate": [], "destinations": {}}
 
     def walk(node, negated=False):
         if isinstance(node, str) or not node:
-            return
+            raise ValueError("Expected a non-empty GRSTAPS-X goal expression")
         head = node[0]
         if not isinstance(head, str):
             # ((pred a)) -- an extra pair of parens wraps the clause in a list.
@@ -524,35 +510,39 @@ def parse_goal_targets(pddl_goal: str):
             for sub in node:
                 walk(sub, negated)
             return
-        if head in ("and", "or"):
+        if head == "and":
+            if len(node) < 2 or negated:
+                raise ValueError("GRSTAPS-X requires a non-empty positive conjunction")
             for sub in node[1:]:
                 walk(sub, negated)
             return
         if head == "not":
+            if len(node) != 2:
+                raise ValueError("not requires exactly one goal expression")
             for sub in node[1:]:
                 walk(sub, not negated)
             return
         entry = _GOAL_PREDS.get(head)
-        if entry is None or len(node) < 2:
-            return
+        if entry is None or head in ("at-place", "at-object", "holding"):
+            raise ValueError(
+                f"Unsupported GRSTAPS-X goal predicate {head!r}; use visited-*, "
+                "safe, (not (suspicious ...)), or object-in-place. Robot-bound "
+                "final poses, pick-and-hold and disjunctions are not implemented."
+            )
+        arity = 3 if head == "object-in-place" else 2
+        if len(node) != arity or not all(isinstance(s, str) for s in node[1:]):
+            raise ValueError(f"Invalid arguments for GRSTAPS-X predicate {head!r}")
         kind, idx = entry
         # (not (suspicious o)) asks for an inspection; a bare (suspicious o)
         # asks to MAKE something suspicious, which is not a thing we can plan.
         if head == "suspicious" and not negated:
-            logger.warning("Ignoring goal (suspicious %s): not achievable", node[-1])
-            return
+            raise ValueError("Use (not (suspicious object)) to request inspection")
         # Every other predicate here states something to ACHIEVE, so negating it
         # asks for the opposite -- "do not visit", "do not hold". Nothing in the
         # domain can achieve an absence, and silently planning the positive
         # would do the very thing the goal forbids.
         if negated and head != "suspicious":
-            logger.warning(
-                "Ignoring goal (not (%s %s)): a negative goal is not achievable. "
-                "Drop the `not` to ask for it.",
-                head,
-                " ".join(str(a) for a in node[1:]),
-            )
-            return
+            raise ValueError(f"Unsupported negative GRSTAPS-X goal: {head}")
         try:
             symbol = node[idx]
         except IndexError:
@@ -846,10 +836,8 @@ def _prune_graph(graph, forbidden_xy, forbidden_edges_xy, radius, distance_fn=No
     leaving them isolated and therefore unreachable.
 
     `distance_fn(a_xy, b_xy)` measures the exclusion radius. It defaults to
-    euclidean, but the caller passes navigable path distance so that this
-    planner and the PDDL grounder agree on what a radius means -- a place that
-    is metrically close but only reachable the long way round should not be
-    excluded.
+    euclidean, but the caller passes weighted navigable distance in metres.
+    A place nearby across a wall can remain outside the path-distance radius.
     """
     banned = set()
     if forbidden_xy:
@@ -1001,7 +989,7 @@ TASK_ACTION_KINDS = {
 }
 
 
-def _parameterize_tasks(dsg, tasks, location_of, destination_of):
+def _parameterize_tasks(dsg, tasks, location_of, destination_of, motion_graph=None):
     """Geometry each scheduled task needs before it can become a robot action.
 
     The solver returns symbols and timings; every coordinate an executor acts on
@@ -1014,7 +1002,15 @@ def _parameterize_tasks(dsg, tasks, location_of, destination_of):
     coalition task, so compile_plan supplies it. Everything here is a property
     of the task and is shared by every robot assigned to it.
     """
-    layer_planner = LayerPlanner(dsg, spark_dsg.DsgLayers.MESH_PLACES)
+    # Carry routes must use exactly the graph passed to the solver, including
+    # forbidden edges/areas. Rebuilding from the DSG reopens those routes.
+    graph = motion_graph or _mesh_place_graph(dsg)[0]
+    vertices = {v["id"]: v for v in graph["vertices"]}
+    routes = nx.Graph()
+    routes.add_nodes_from(vertices)
+    routes.add_weighted_edges_from(
+        (e["vertex_a"], e["vertex_b"], e["cost"]) for e in graph["edges"]
+    )
     geometry = {}
     for t in tasks or []:
         name = t.get("name", "")
@@ -1057,14 +1053,18 @@ def _parameterize_tasks(dsg, tasks, location_of, destination_of):
                 # it as a transition. Without a path here the executor would be
                 # told to put the object down while still standing where it
                 # picked it up.
+                start = _nearest_vertex(list(vertices.values()), *position[:2])
+                end = _nearest_vertex(list(vertices.values()), *dest_point[:2])
+                try:
+                    path = nx.shortest_path(
+                        routes, start["id"], end["id"], weight="weight"
+                    )
+                except nx.NetworkXNoPath as exc:
+                    raise ValueError(
+                        f"No permitted carry route from {target} to {dest}"
+                    ) from exc
                 entry["carry_path"] = np.array(
-                    [
-                        [float(q[0]), float(q[1])]
-                        for q in layer_planner.get_external_path(
-                            position[:2], dest_point[:2]
-                        )
-                    ],
-                    dtype=float,
+                    [[vertices[i]["x"], vertices[i]["y"]] for i in path], dtype=float
                 )
         geometry[t.get("id")] = entry
     return geometry
@@ -1084,6 +1084,31 @@ def ground_problem(
     # other at runtime.
     logger.info("Grounding GRSTAPS-X problem for %s", goal.robot_id)
 
+    if domain.entry not in ("pddl", "itags"):
+        raise ValueError(f"Unknown GRSTAPS-X entry {domain.entry!r}")
+    if domain.entry == "itags" and domain.run_mode != "native":
+        raise ValueError("entry='itags' requires run_mode='native'")
+    if domain.entry == "pddl" and (
+        goal.manipulate_destinations
+        or goal.extra_precedence
+        or any(getattr(c, "predicate", None) == "before" for c in goal.constraints)
+    ):
+        raise ValueError(
+            "Relocation destinations and explicit ordering require entry='itags'"
+        )
+    # Match PDDL's case-insensitive symbols and avoid duplicate scheduled tasks.
+    goal = replace(
+        goal,
+        goal_points=list(dict.fromkeys(s.lower() for s in goal.goal_points)),
+        inspect_points=list(dict.fromkeys(s.lower() for s in goal.inspect_points)),
+        manipulate_points=list(
+            dict.fromkeys(s.lower() for s in goal.manipulate_points)
+        ),
+        manipulate_destinations={
+            k.lower(): v.lower() for k, v in goal.manipulate_destinations.items()
+        },
+    )
+
     pose = robot_states.get(goal.robot_id)
     if pose is None:
         raise ValueError(
@@ -1099,23 +1124,27 @@ def ground_problem(
     )
     path_distance = None
     if forbidden_pts:
-        # Same measure the PDDL grounder uses, so a 5 m exclusion means the same
-        # thing to both planners. Built lazily -- it is only needed when a
-        # forbidden POI is actually present.
-        try:
-            layer_planner = LayerPlanner(dsg, spark_dsg.DsgLayers.MESH_PLACES)
+        # Use edge lengths in metres. LayerPlanner's unweighted shortest-path
+        # distance counts edges and cannot implement a radius measured in m.
+        routes = nx.Graph()
+        routes.add_nodes_from(v["id"] for v in vertices)
+        routes.add_weighted_edges_from(
+            (e["vertex_a"], e["vertex_b"], e["cost"]) for e in graph["edges"]
+        )
+        distances = {}
 
-            def path_distance(a, b):
-                return layer_planner.get_external_distance(
-                    np.array([a[0], a[1]]), np.array([b[0], b[1]])
+        def path_distance(a, b):
+            va = _nearest_vertex(vertices, *a)
+            vb = _nearest_vertex(vertices, *b)
+            if va["id"] not in distances:
+                distances[va["id"]] = nx.single_source_dijkstra_path_length(
+                    routes, va["id"]
                 )
-        except Exception as exc:
-            logger.warning(
-                "Could not build a path-distance planner (%s); falling back to "
-                "euclidean exclusion, which may over-prune around walls.",
-                exc,
+            return (
+                math.hypot(a[0] - va["x"], a[1] - va["y"])
+                + distances[va["id"]].get(vb["id"], math.inf)
+                + math.hypot(b[0] - vb["x"], b[1] - vb["y"])
             )
-            path_distance = None
 
     graph, _ = _prune_graph(
         graph,
@@ -1157,11 +1186,8 @@ def ground_problem(
     for sym in all_targets:
         xy = _symbol_position(dsg, sym)
         if xy is None:
-            # A symbol the graph does not have is the agent's mistake, not a
-            # reason to take the planner down: raising here propagates out of
-            # the subscription callback and kills the whole omniplanner node,
-            # losing every other robot's planning with it. Drop it loudly and
-            # plan for the rest.
+            # Reject the whole request below rather than silently dropping part
+            # of a mission. The ROS node catches the error and remains alive.
             missing.append(sym)
             continue
         v = _nearest_vertex(vertices, *xy)
@@ -1175,13 +1201,7 @@ def ground_problem(
         vertex_of[name] = v
 
     if missing:
-        logger.warning(
-            "Goal symbol(s) %s are not in the DSG; ignoring them. Planning for "
-            "%d of %d requested target(s).",
-            ", ".join(missing),
-            len(loc_names),
-            len(all_targets),
-        )
+        raise ValueError(f"Goal symbol(s) not in the DSG: {', '.join(missing)}")
     if not loc_names:
         raise ValueError(
             "None of the requested goal symbols "
@@ -1500,6 +1520,7 @@ def ground_problem(
             str(k).lower(): str(v).lower()
             for k, v in (goal.manipulate_destinations or {}).items()
         },
+        motion_graph=graph,
     )
 
     # Wrap like the PDDL grounders do, because compile_plan dispatches on the
@@ -1760,7 +1781,11 @@ def make_plan(problem: GroundedGrstapsProblem, map_context: Any) -> GrstapsPlan:
         location_of=problem.location_of,
         symbol_of_vertex=symbol_of_vertex,
         task_geometry=_parameterize_tasks(
-            map_context, tasks, problem.location_of, problem.destination_of
+            map_context,
+            tasks,
+            problem.location_of,
+            problem.destination_of,
+            problem.motion_graph,
         ),
         precedence=[
             list(pair) for pair in solution.get("precedence_constraints") or []

@@ -1,19 +1,7 @@
-"""ROS plugin exposing GRSTAPS-X as an omniplanner planner.
+"""GRSTAPS-X ROS goals, fleet action compilation, coverage and schedule output.
 
-Registers like every other planner, so `run-adt4` can drive it: put
-
-    planners:
-      grstaps_planner:
-        plugin:
-          type: Grstaps
-
-in omniplanner_plugins.yaml and publish a GotoPointsGoalMsg to
-``~/grstaps_planner/grstaps_goal``. That message already carries exactly what a
-single-agent GRSTAPS goal needs (a robot id and the symbols to visit), so no new
-message type is required for the proof of concept.
-
-The solver runs in its docker image (it needs Gurobi + OMPL), invoked the same
-way pddl_planning invokes fast-downward.
+Accepts point-list goals or constrained PDDL goals from the repair flow.
+The native ITAGS entry supports relocation destinations and explicit ordering.
 """
 
 from __future__ import annotations
@@ -222,6 +210,14 @@ def _ordering(plan: GrstapsPlan):
             coalitions[str(t.get("id"))] = [
                 names[i] for i in members if 0 <= i < len(names)
             ]
+    # A successor of a joint task must wait for every participant to finish,
+    # including when the successor runs on a robot outside that coalition.
+    for task_id, prior in predecessors.items():
+        predecessors[task_id] = [
+            f"{p}@{robot}" if robot else p
+            for p in prior
+            for robot in coalitions.get(p, [""])
+        ]
     return predecessors, coalitions
 
 
@@ -238,7 +234,7 @@ def compile_grstaps_plan(plan: GrstapsPlan, plan_id, robot_name, frame_id):
     for leg, task in _agent_steps(plan, robot_name):
         task_id = str(task.get("id")) if task.get("id") is not None else ""
         travel = None
-        if leg is not None and len(leg) >= 2:
+        if leg is not None and len(leg):
             travel = Follow(frame=frame_id, path2d=leg)
             actions.append(travel)
         if leg is not None and len(leg):
@@ -380,7 +376,7 @@ class GrstapsRos:
         robot_of_task = {}
         for agent in plan.agents or []:
             for task_id in agent.get("individual_plan") or []:
-                robot_of_task[task_id] = agent.get("name", "")
+                robot_of_task.setdefault(task_id, []).append(agent.get("name", ""))
 
         msg = TaskScheduleMsg()
         msg.header.stamp = self._node.get_clock().now().to_msg()
@@ -390,14 +386,17 @@ class GrstapsRos:
         )
         msg.makespan = float(plan.makespan)
         for t in sorted(plan.tasks or [], key=lambda t: t.get("start_timepoint", 0.0)):
-            st = ScheduledTaskMsg()
-            st.robot_name = robot_of_task.get(t.get("id"), "")
-            name = t.get("name", "")
-            st.action = name.split()[0] if name.split() else ""
-            st.target = task_location(name) or ""
-            st.start_time = float(t.get("start_timepoint", 0.0))
-            st.finish_time = float(t.get("finish_timepoint", 0.0))
-            msg.tasks.append(st)
+            # The message has one robot_name, so represent a coalition with
+            # one row per participant instead of silently losing all but one.
+            for robot_name in robot_of_task.get(t.get("id"), [""]):
+                st = ScheduledTaskMsg()
+                st.robot_name = robot_name
+                name = t.get("name", "")
+                st.action = name.split()[0] if name.split() else ""
+                st.target = task_location(name) or ""
+                st.start_time = float(t.get("start_timepoint", 0.0))
+                st.finish_time = float(t.get("finish_timepoint", 0.0))
+                msg.tasks.append(st)
         self._schedule_pub.publish(msg)
         logger.info(
             "Published schedule: makespan=%.2f s, %d task(s)",
