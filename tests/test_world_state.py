@@ -136,6 +136,43 @@ def test_held_object_is_carried_not_picked_again():
 
 
 @needs_map
+def test_plan_starting_with_the_object_in_hand_compiles():
+    # Live, this raised: Place took its class from a pick earlier in the plan.
+    from robot_executor_interface.action_descriptions import Pick, Place
+
+    from omniplanner.omniplanner import SymbolicContext
+    from omniplanner_ros.pddl_planner_ros import compile_pddl_plan
+
+    G = _map()
+    robot_xy = _pos(G, "o4")[:2] + np.array([1.0, 0.0])
+    text = (
+        files(dsg_pddl.domains)
+        .joinpath("RegionObjectRearrangementDomain_MultiRobot_FD_Explore.pddl")
+        .read_text()
+    )
+    req = PlanRequest(
+        domain=MultiRobotPddlDomain(text),
+        goal=PddlGoal(
+            pddl_goal="(object-in-place o4 t598)",
+            robot_id=ROBOT,
+            world_state=WorldState(holding={ROBOT: ["o4"]}),
+        ),
+        robot_states={ROBOT: robot_xy},
+    )
+    plan = full_planning_pipeline(req, G)
+    while hasattr(plan, "value"):
+        plan = plan.value
+    # project the robot argument away, as the multi-robot compile path does
+    plan.symbolic_actions = [
+        (a[0],) + tuple(a[2:]) if a[0] != "inspect" else a
+        for a in plan.symbolic_actions
+    ]
+    seq = compile_pddl_plan(SymbolicContext({}, plan), "p", ROBOT, "map")
+    assert not any(isinstance(a, Pick) for a in seq.actions)
+    assert isinstance(seq.actions[-1], Place) and seq.actions[-1].object_id == "o4"
+
+
+@needs_map
 def test_inspected_object_is_not_inspected_again():
     G = _map()
     start = _pos(G, "t3")[:2]

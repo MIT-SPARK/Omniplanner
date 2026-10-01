@@ -143,6 +143,11 @@ def compile_multirobot_pddl_plan(
     return result
 
 
+def _object_class(context, obj):
+    """An object's semantic label from the plan context, or "" if unknown."""
+    return (context.get(obj) or {}).get("semantic_label", "") if context else ""
+
+
 def compile_pddl_plan(
     contextualized_plan: SymbolicContext[PddlPlan], plan_id, robot_name, frame_id
 ):
@@ -168,15 +173,10 @@ def compile_pddl_plan(
                 )
             case "pick-object":
                 robot_point, pick_point = parameters
-                object_class = ""
-                if symbolic_action[1] in context:
-                    attrs = context[symbolic_action[1]]
-                    if "semantic_label" in attrs:
-                        object_class = attrs["semantic_label"]
                 actions.append(
                     Pick(
                         frame=frame_id,
-                        object_class=object_class,
+                        object_class=_object_class(context, symbolic_action[1]),
                         robot_point=ensure_3d(robot_point),
                         object_point=ensure_3d(pick_point),
                         object_id=symbolic_action[1],
@@ -184,10 +184,12 @@ def compile_pddl_plan(
                 )
             case "place-object":
                 robot_point, place_point = parameters
+                # Looked up here, not carried over from the pick: a plan that
+                # starts with the object already in hand has no pick.
                 actions.append(
                     Place(
                         frame=frame_id,
-                        object_class=object_class,
+                        object_class=_object_class(context, symbolic_action[1]),
                         robot_point=ensure_3d(robot_point),
                         object_point=ensure_3d(place_point),
                         object_id=symbolic_action[1],
