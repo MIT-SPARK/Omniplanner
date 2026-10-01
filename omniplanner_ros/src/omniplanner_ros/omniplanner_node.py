@@ -344,6 +344,11 @@ class OmniPlannerRos(Node):
                     plans = full_planning_pipeline(
                         plan_request, self.dsg_last, self.feedback
                     )
+                compiled_plans = compile_plan(
+                    self.robot_adaptors, self.dsg_frame, plans
+                )
+                plan_dict = collect_plans(compiled_plans)
+                plan_dict = self.finalize_plans(plan_dict, robot_poses)
             except Exception as exc:
                 # An exception escaping a subscription callback tears down the
                 # rclpy executor and kills the node, so one unplannable goal
@@ -367,9 +372,6 @@ class OmniPlannerRos(Node):
                 self.plan_failed_pub.publish(String(data=f"{name}: {exc}"))
                 return
 
-            compiled_plans = compile_plan(self.robot_adaptors, self.dsg_frame, plans)
-            plan_dict = collect_plans(compiled_plans)
-            plan_dict = self.finalize_plans(plan_dict, robot_poses)
             for robot_name, compiled_plan in plan_dict.items():
                 self.robot_adaptors[robot_name].publish_plan(to_msg(compiled_plan))
                 # TODO: combine markers into single array so that latching works
