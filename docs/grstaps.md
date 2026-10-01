@@ -1,357 +1,84 @@
-# GRSTAPS-X in omniplanner
-
-## In one paragraph
-
-GRSTAPS-X is an external C++ solver that does task planning, allocation, MILP
-scheduling and motion planning in one pass. It is wired in as **another
-planning domain**, dispatched exactly like the PDDL and TSP planners, so no
-existing planner was modified. Give it a `GrstapsDomain` and it grounds the DSG
-into a small scenario on disk, shells out to the solver, and parses the
-schedule back. It can be driven either by a plain list of points or by the
-plan-repair flow's `ConstrainedPddlGoalMsg`, which is what lets the heracles
-agent talk to it.
-
-**Constraints, short answer:** GRSTAPS-X itself has no notion of constraints.
-Omniplanner enforces them *before* the solver runs, by cutting the forbidden
-region out of the motion graph. See [Constraints](#constraints) — including
-what is **not** honoured.
-
----
-
-## The 30-second version
-
-```
-heracles agent ──ConstrainedPddlGoalMsg──▶ goal_manager ──▶ omniplanner_node
-                                               │                    │
-                                    "do I even need to replan?"      ▼
-                                               ▲            grstaps_planner
-                                               │                    │
-                                     plan_visited_pois ◀────────────┘
-                                                            ground → solve → compile
-```
-
-The goal manager decides *whether* to replan; it does not care *who* plans.
-Pointing it at GRSTAPS-X instead of fast-downward is one launch argument
-(`planner_goal_topic`). The agent is unchanged and never names a planner.
-
----
-
-## How it plugs in
-
-Omniplanner dispatches on the domain type via `plum`. GRSTAPS-X adds two
-methods and touches nothing else:
-
-```python
-ground_problem(GrstapsDomain, dsg, robot_states, goal) -> RobotWrapper[GroundedGrstapsProblem]
-make_plan(GroundedGrstapsProblem, map_context)         -> GrstapsPlan
-compile_plan(adaptor, frame, GrstapsPlan)              -> ActionSequence
-```
-
-| file | role |
-|---|---|
-| `omniplanner/src/omniplanner/grstaps_planner.py` | domain, grounding, solver invocation, plan parsing |
-| `omniplanner_ros/src/omniplanner_ros/grstaps_planner_ros.py` | ROS plugin, goal callbacks, `compile_plan`, repair hook |
-
-### Where it differs from the PDDL planners
-
-This is the substantive design difference, not an implementation detail.
-
-The PDDL planners compile the DSG *into* the problem file — every place becomes
-a symbol, every adjacency a `connected` fact, every pair a `distance`. The
-state space therefore grows with the map, which is why fast-downward peaked at
-5.1 GB on a 1279-place graph.
-
-GRSTAPS-X keeps geometry **out** of the PDDL. The mission PDDL knows only
-"there are locations, visit them"; the metric world is handed over separately
-as a euclidean motion graph. Grounding is consequently map-independent — the
-same code planned unmodified against 96-, 202- and 1279-place graphs.
-
----
-
-## What grounding writes
-
-`ground_problem` writes a scenario under
-`$ADT4_GRSTAPS_ROOT/data/grstapsx/<scenario_name>/`:
-
-| file | contents |
-|---|---|
-| `domain.pddl` | mission logic only — a single `visit-location` durative action |
-| `problem.pddl` | the locations to visit, one per goal symbol |
-| `action_trait_config.json` | robots, species traits, action→subtask traits |
-| `maps/ground_graph.json` | the DSG mesh-places layer as a euclidean motion graph |
-
-Two non-obvious invariants, both learned the hard way:
-
-- A location's `x`/`y` in `nodes` must be its **snapped motion-graph vertex's**
-  coordinates, not the object's own. The solver treats `x/y` and `id` as the
-  same point; a mismatch fails allocation with *"Searched the entire space, but
-  couldn't find a solution."*
-- `nodes` must contain a `_start_<id>` entry per robot, or config parsing fails
-  with *"json is missing field 'x'."*
-
-Goal symbols become PDDL location names by lowercasing (`O8` → `o8`), matching
-what the PDDL planners do, so plans from either planner name the same symbols
-and stay comparable. Symbol lookup into the DSG is case-insensitive, since the
-DSG stores `O8` but a PDDL goal always arrives lowercase.
-
----
-
-## Bridging the domain gap
-
-The fast-downward domain and GRSTAPS-X's own domains are not two dialects of
-the same thing — they are structurally incompatible. Nothing translates one
-into the other. Instead we **write a third, minimal domain** in the GRSTAPS-X
-idiom and carry only the goal targets across.
-
-### Three domains, side by side
-
-| | FD multirobot (`...MultiRobot_FD_Explore.pddl`) | GRSTAPS-X native (`wpc_spread`) | ours (`dsg-visit`) |
-|---|---|---|---|
-| actions | 4 — `goto-poi`, `inspect`, `pick-object`, `place-object` | 12 durative — recon, scan, strike, capture, rescue, supply | **1** — `visit-location` |
-| robots in PDDL | yes: every predicate takes `?r - robot` | **none at all** | none |
-| movement | `goto-poi` + `connected` / `distance` functions | not in PDDL | not in PDDL |
-| who allocates | the planner, as part of search | ITAGS downstream, from trait vectors | ITAGS (but traits are trivial) |
-| coalitions | not expressible | one action, split by config `action_templates` | none |
-| objective | `minimize (total-cost)` | durative, constant durations | `minimize (total-time)` |
-
-### Why the FD domain cannot simply be handed over
-
-- **Robot parameters defeat the point.** GRSTAPS-X domains are robot-agnostic
-  *by design* — robots enter through the config's trait vectors, and deciding
-  who does what is ITAGS' job. A domain that binds `?r - robot` into every
-  action has already made the allocation decision the solver exists to make.
-- **The motion graph is in the wrong place.** `connected` and `distance` put
-  geometry inside the PDDL. GRSTAPS-X takes the motion graph separately and
-  would be planning over a duplicated, and much larger, world.
-- **Ordering is expressed differently.** FD chains actions through robot state
-  (`at-poi ?r ?p`); GRSTAPS-X chains them through *location* state
-  (`reconed` → `ground-scanned` → `ground-threat-neutralized` → `secured`),
-  precisely so that no robot needs naming.
-
-### What actually crosses the boundary
-
-Only the goal targets. `_visit_targets` walks the incoming PDDL goal, accepts
-`visited-{place,object,poi}` and `at-{place,object}`, and takes each atom's
-last argument. Grounding then emits a fresh problem:
-
-```
-(and (visited-object o8))        ── _visit_targets ──▶  ["o8"]
-
-(define (problem omniplanner_grstaps)
-  (:domain dsg-visit)
-  (:objects o8 - location)
-  (:init   (is-location o8))
-  (:goal   (and (visited o8)))
-  (:metric minimize (total-time)))
-```
-
-Two idioms in `dsg-visit` are copied deliberately from `wpc_spread`, and both
-are load-bearing rather than stylistic:
-
-- **`is-location` as a static marker.** It exists only to give the action a
-  *positive* precondition. Without one, the grounder's reachability analysis
-  prunes the action and the whole chain collapses.
-- **Latching positives only.** Never write `not` on a predicate absent from
-  `:init` — it breaks the SAS translator's binary-variable assumption.
-
-### What the simplification costs
-
-- `pick-object`, `place-object` and `inspect` are gone. The only thing
-  expressible is "be at this location".
-- Region-level goals (`explored-region`), and the `safe` / `suspicious`
-  predicates, have no equivalent.
-- **The robot binding is discarded.** Taking the last argument turns
-  `(at-object hilbert o15)` into `o15` — "robot hilbert must reach o15" becomes
-  "someone reaches o15". For GRSTAPS-X that is arguably correct, since
-  assignment is its job, but a goal naming a specific robot is not honoured as
-  written.
-
-The ceiling here is what we generate, not what the solver accepts: GRSTAPS-X's
-own `b45` example runs 12 actions. Richer behaviour means extending
-`DOMAIN_PDDL` **and** adding matching `action_trait_config.json` entries — which
-is also the point at which trait vectors and coalitions start to mean something.
-
----
-
-## Constraints
-
-**GRSTAPS-X never sees a constraint.** There is no constraint syntax in the
-mission PDDL and none is passed to the solver. Instead, `ground_problem` prunes
-the motion graph before writing it:
-
-1. `_forbidden_positions` resolves each `forbidden-poi` symbol to a position.
-2. `_prune_graph` finds every vertex within `forbidden_radius_m` (default 5.0 m)
-   of any of those positions and **drops all of its edges**.
-
-Vertices are kept but isolated, because vertex ids are indices into the vertex
-list — deleting entries would renumber every edge in the file.
-
-The result is stronger than the PDDL path's approach. Dropping `connected`
-facts between POIs still leaves the metric path free to cut straight through
-the forbidden area; here A\* physically cannot route through an isolated vertex.
-
-### What is not honoured — read this before trusting a constraint
-
-- **The radius is euclidean here, path distance in the PDDL grounder.** A place
-  that is metrically near a forbidden POI but only reachable the long way round
-  is pruned here and kept there. The two planners will not always agree.
-- **A forbidden POI that cuts off a goal is reported, not planned around.**
-  Pruning isolates vertices, so a target can survive in the graph with nothing
-  able to reach it. Grounding runs a reachability check from the fleet's own
-  vertices and raises *"No robot can reach <symbol>"*, naming the radius knob.
-  Without it the solver returns a plan whose route is empty, which compiles to
-  an ActionSequence with no actions: the schedule claims the task while the
-  robot stands still.
-- A symbol not present in the DSG logs a warning and is skipped, not rejected.
-
-Constraints reach the planner from two places and both are merged: persistent
-ones accumulated by `omniplanner_repair_node` on the node, and per-message ones
-carried on the goal. This matches `MultiRobotPddlConstrained`, so switching
-planners does not silently drop constraints a user already stated.
-
----
-
-## The repair loop
-
-`goal_manager` skips a replan when the current plan already satisfies a new
-goal. That decision needs to know which POIs the active plan visits, which the
-planner publishes:
-
-```python
-def on_plan_compiled(self, plans, plan_dict):   # grstaps_planner_ros.py
-    # -> /<robot>/omniplanner_node/plan_visited_pois
-```
-
-The union of every robot's POIs also goes out on `~/plan_covered_pois`, which
-goal_manager reads: it runs on one robot, so a per-robot topic would show it
-only that robot's share of a fleet plan and it would replan goals the plan
-already satisfies.
-
-Per-robot coverage is exact rather than inferred: `agents[].individual_plan`
-holds the solver's own task ordering, and each task's name (`"visit-location o8
-:: visit"`) names its target.
-
-Without this hook the repair flow still behaves *correctly* — an empty cache
-reads as "no plan yet" and forces a replan — but it never skips anything, which
-is the entire point of plan repair.
-
----
-
-## Configuration
-
-Two configs, differing only in how a goal arrives:
-
-| config | `goal_format` | subscribes | driven by |
-|---|---|---|---|
-| `grstaps` | `points` (default) | `GotoPointsGoalMsg` on `grstaps_planner/grstaps_goal` | a manual point list |
-| `grstaps_repair` | `constrained_pddl` | `ConstrainedPddlGoalMsg` on `grstaps_planner/pddl_goal` | goal_manager / heracles agent |
-
-Experiments: `spot_grstaps`, `spot_grstaps_repair`,
-`spot_grstaps_heracles_repair`.
-
-The repair experiments pass `planner_goal_topic:=grstaps_planner/pddl_goal` to
-`master.launch.yaml`, which is the whole of the planner switch. The argument
-defaults to `multi_robot_pddl_constrained/pddl_goal`, so every existing
-experiment is unaffected.
-
-> `grstaps_repair` is a standalone config, not an inheritor of `grstaps`.
-> `resolve_override_dirs` collects only *leaf* keys, so a non-leaf parent
-> contributes no override files — `grstaps_repair: [grstaps]` would silently
-> generate a config with no GRSTAPS plugin in it at all.
-
-### Coalitions and the fleet
-
-An inspection is one task allocated to a team, whose trait vectors must add up
-to `inspect_requirement`. The default is a ground robot plus a UAV; the
-`grstaps_repair` config asks for two ground robots, because the run-adt4 fleet
-has no UAV and the default could never be allocated there:
-
-```yaml
-inspect_requirement: {ground: 2, sensor: 2}   # traits: ground, air, sensor, manipulator
-```
-
-Robots whose executor ignores plan ordering -- `husky`, on the phoenix executor --
-are left out of the fleet with a warning (`UNPLANNABLE_ROBOT_TYPES`); a
-`robot_species` entry for a specific robot puts it back.
-
-### Environment
-
-Nothing machine-specific belongs in a tracked config; paths come from the
-environment, and every one has a default.
-
-| variable | default | meaning |
-|---|---|---|
-| `ADT4_GRSTAPS_ROOT` | `~/grstapsx` | repo root; scenarios are written under `data/` |
-| `ADT4_GRSTAPS_BINARY` | `~/grstapsx/build-native/grstapsx_example` | native solver binary |
-| `ADT4_GRSTAPS_CONDA_PREFIX` | `~/miniconda3/envs/grstapsx` | env supplying OMPL etc. |
-| `ADT4_GUROBI_LICENSE` | `~/gurobi.lic` | Gurobi licence |
-| `ADT4_GUROBI_HOME` | `~/opt/gurobi1103/linux64` | Gurobi install |
-
-`run_mode` selects `native` (Named-User licence, no network) or `docker` (WLS
-licence, 2 concurrent sessions — hence the licence retry logic in
-`_run_solver`). With none of this installed the plugin simply fails at goal
-time; the rest of omniplanner is unaffected.
-
-Building the solver natively needs OMPL **1.6.x** — `find_package(ompl 1.6.0)`
-with `SameMajorVersion` rejects 2.x, and the upstream `environment.yml` does not
-pin it.
-
----
-
-## Reading the log
-
-```
-GRSTAPS-X solved: makespan=49.834, 1 task(s), 1 agent(s)
-  visit-location o8 :: visit      44.83 ->   49.83 s  coalition=[0]
-  robot hilbert: task order [0], 1 leg(s), 18 waypoint(s)
-      1. visit-location o8       -> o8     (O8)   44.83 -> 49.83 s
-      leg 1 (18 pts): t4330 -> t4907 -> t35 -> t4871 -> t3 -> t4887 -> t73
-                   -> t140 -> t283 -> t824 -> t417 -> t299 -> t604 -> t990
-                   -> t1405 -> t1139 -> t1104 -> t1015
-```
-
-The numbered list is the solver's actual sequencing. The leg is the metric
-route rendered as DSG place symbols — `symbol_of_vertex` inverts the vertex
-numbering the solver works in. Reading the route as `t####` symbols is how you
-tell a genuine traversal from one that cuts through a wall, which bare
-coordinates will not show you.
-
----
-
-## Measured against fast-downward
-
-Same DSG, robot poses and targets; targets farthest-point sampled so allocation
-actually matters.
-
-| case | planner | solve | total | max robot |
-|---|---|---|---|---|
-| 1279 places, 3 robots, 9 targets | fast-downward | 46.5 s (5.1 GB peak) | 363.8 m | 194.0 m |
-| 1279 places, 3 robots, 9 targets | GRSTAPS-X | **1.2 s** | **277.7 m** | **156.4 m** |
-| 96 places, 3 robots, 9 targets | fast-downward | 1.9 s | — | 54.7 m |
-| 96 places, 3 robots, 9 targets | GRSTAPS-X | **0.3 s** | — | **45.7 m** |
-
-The objectives genuinely differ: the multirobot PDDL domain minimises
-`total-cost`, a sum, so concentrating work on one robot is free; GRSTAPS-X
-minimises **makespan**, so it has a reason to spread work across the fleet.
-
----
-
-## Limitations
-
-Status is tracked in [grstaps-roadmap.md](grstaps-roadmap.md); in short:
-
-- **No deadlines or time windows.** Time enters as task durations, the MILP
-  schedule, and finish-to-start ordering (`before`, plus the intrinsic
-  inspect -> pick -> place chain). The solver has deadline machinery, but
-  nothing exposes it.
-- **Ordering is executed, timepoints are not.** The executor gates on
-  precedence and coalition readiness; the schedule's times are published on
-  `TaskScheduleMsg` for inspection only.
-- **Gates exist in the Spot executor only**, so huskies are excluded from the
-  fleet -- see [Coalitions and the fleet](#coalitions-and-the-fleet).
-- **Traits and durations are predefined** per species and per action type.
-  Only the inspection's coalition requirement is configurable.
-- **`before` needs `entry: itags`.** The PDDL entry cannot order unrelated
-  targets.
-- **The robot binding in a goal is discarded** -- assignment is the
-  allocator's job.
+# GRSTAPS-X integration reference
+
+The [README](../README.md) describes the current pipeline, algorithms, and
+supported behavior. This replaces the earlier visit-only prototype guide.
+
+## Source map
+
+| Component | Source |
+| --- | --- |
+| Domain, goal parsing, grounding, solver invocation | [`grstaps_planner.py`](../omniplanner/src/omniplanner/grstaps_planner.py) |
+| ROS callbacks, action compilation, coverage/schedule | [`grstaps_planner_ros.py`](../omniplanner_ros/src/omniplanner_ros/grstaps_planner_ros.py) |
+| Generic dispatch and wrappers | [`omniplanner.py`](../omniplanner/src/omniplanner/omniplanner.py) |
+| Keep/replan decision | [`goal_manager_node.py`](../omniplanner_ros/src/omniplanner_ros/goal_manager_node.py) |
+| Executor gate state | [`plan_progress.py`](../../spot_tools/robot_executor_interface/robot_executor_interface/src/robot_executor_interface/plan_progress.py) |
+| Spot execution | [`spot_executor.py`](../../spot_tools/spot_tools/src/spot_executor/spot_executor.py) |
+| Agent prompt | [`pddl_domain_description_grstaps.yaml`](../../heracles_agents/examples/prompts/common/pddl_domain_description_grstaps.yaml) |
+| Regression/native integration checks | [`test_grstaps_integration.py`](../tests/test_grstaps_integration.py) |
+
+Algorithm descriptions were checked against the installed GRSTAPS-X source:
+`include/grstapsx/task_planning_full/task_plan_search.hpp`,
+`include/grstapsx/task_allocation/itags/itags.hpp`,
+`src/task_allocation/itags/time_extended_task_allocation_quality.cpp`,
+`normalized_schedule_quality.cpp`, and
+`src/geometric_planning/motion_planners/euclidean_graph_motion_planner.cpp`.
+The copied `wpc_spread/action_trait_config.json` selects deterministic MILP
+scheduling. OmniPlanner does not expose all upstream solver modes.
+
+## Paths and artifacts
+
+| Environment variable | Default |
+| --- | --- |
+| `ADT4_GRSTAPS_ROOT` | `~/grstapsx` |
+| `ADT4_GRSTAPS_BINARY` | `~/grstapsx/build-native/grstapsx_example` |
+| `ADT4_ITAGS_BINARY` | `~/grstapsx/build-native/itags` |
+| `ADT4_GRSTAPS_CONDA_PREFIX` | `~/miniconda3/envs/grstapsx` |
+| `ADT4_GUROBI_HOME` | `~/opt/gurobi1103/linux64` |
+| `ADT4_GUROBI_LICENSE` | `~/gurobi.lic` |
+
+Set these **before starting Python/ROS**: dataclass defaults read the environment
+at import time. Changing the repository root does not automatically change the
+binary defaults. `run_mode` defaults to Docker; the repair overlay explicitly
+sets native mode. The ITAGS adapter invokes a local binary and requires native
+mode. Native linking uses Gurobi and conda library directories.
+
+`solver_params_from` defaults to `wpc_spread`; its configuration must exist in
+the solver checkout. Grounding writes:
+
+- `maps/ground_graph.json`: vertices, weighted edges, and applied exclusions.
+- `action_trait_config.json`: species, starts, traits, action templates, and
+  copied allocation/scheduling parameters.
+- `domain.pddl` / `problem.pddl`: generated mission logic and goals.
+- `itags_input.json`: explicit tasks and precedence, for `entry: itags`.
+
+ITAGS returns `<scenario_dir>/itags_solution.json`. The PDDL example returns
+`<binary_build_dir>/solutions/<scenario_name>/problem/itags_files/itags_solution.json`
+(native) or the equivalent path under `build/` (Docker). Stale results are
+removed before solving. Use distinct `scenario_name` values for concurrent
+planner instances: the default directory is shared, not request-isolated.
+
+A graph location's coordinates must equal its snapped vertex coordinates;
+robot starts also need entries in the PDDL configuration's `nodes` table.
+The ITAGS JSON embeds complete start configurations directly.
+
+## Execution contract
+
+Coalition inspection is **one task assigned to several robots**, not separate
+independent observer tasks. Each participant approaches, waits for predecessors,
+announces READY, and waits for every partner. Dependent tasks use qualified
+completion IDs such as `0@hilbert` so all coalition members must finish.
+Both qualified and ordinary DONE events are emitted for compatibility with solo
+predecessors. Deploy planner and Spot executor changes together.
+
+Zero-travel tasks retain a one-point `Follow` checkpoint. The executor checks
+actual arrival and navigates from its current pose if it has drifted. Atomic
+relocation emits `Pick → Follow(carry) → Place` with a shared task ID; carry
+routing uses the pruned solver graph. A scheduled action that exhausts retries
+stops the sequence without announcing DONE.
+
+`TaskScheduleMsg` has a scalar `robot_name`, so a coalition is published as one
+schedule row per participant with the same target and timepoints. The reported
+makespan is unchanged. Timepoints, nominal durations, and species speeds are
+planning estimates, not execution deadlines.
+
+See [validation evidence](integration-audit.md) and [remaining work](grstaps-roadmap.md).
