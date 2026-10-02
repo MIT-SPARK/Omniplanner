@@ -133,6 +133,10 @@ class GoalManager(Node):
         # running goal; a goal the planner rejected never becomes it.
         self._running_goal = None
         self._pending_goal = None
+        # Why the planner is replanning on its own (the scene changed, a pick
+        # failed), while that replan is outstanding. If it cannot be planned,
+        # the running plan is no longer valid either: stop and tell the operator.
+        self._replan_reason = None
 
         # Subscriptions (private; remap at launch time).
         self._goal_sub = self.create_subscription(
@@ -173,6 +177,7 @@ class GoalManager(Node):
         self._cache_valid = True
         self._running_constraints = self._plan_constraints
         self._running_goal = self._pending_goal
+        self._replan_reason = None  # the replan succeeded
         self.get_logger().info(f"Updated plan cache: {len(pois)} visited POIs")
 
     def _planner_failed_cb(self, msg: String) -> None:
@@ -186,15 +191,21 @@ class GoalManager(Node):
         why = msg.data.split(": ", 1)[-1]  # drop the plugin name
         goal = self._pending_goal.goal if self._pending_goal is not None else None
         target = f"'{goal.pddl_goal}'" if goal else "the goal"
+        if self._replan_reason is not None:
+            # The world changed under the plan and nothing fits the goal any
+            # more. Resuming would drive the robot on to what is no longer there.
+            robot = goal.robot_id if goal else "the robot"
+            self._notify_operator(
+                f"Cannot repair the plan: {self._replan_reason}. "
+                f"No plan achieves {target} ({why}). "
+                f"{robot} has stopped. Please give a new instruction."
+            )
+            self._replan_reason = None
+            return
         self._resume_executor()
         self._notify_operator(
             f"Could not plan {target} ({why}). Continuing the current plan."
         )
-
-    def _notify_operator(self, text: str) -> None:
-        self.get_logger().warning(f"operator: {text}")
-        self._display_pub.publish(String(data=text))
-        self._alert_pub.publish(String(data=text))
 
     def _replan_request_cb(self, msg: String) -> None:
         """The plan no longer fits the world (e.g. the scene changed): replan.
@@ -208,13 +219,20 @@ class GoalManager(Node):
             self.get_logger().info(f"replan requested ({msg.data}), but no goal yet")
             return
         self._pause_executor()
+        self._replan_reason = msg.data
         self._goal_pub.publish(goal)
         self.get_logger().info(
             f"replanning: {msg.data}. goal={goal.goal.pddl_goal!r}; forwarded to planner"
         )
 
+    def _notify_operator(self, text: str) -> None:
+        self.get_logger().warning(f"operator: {text}")
+        self._display_pub.publish(String(data=text))
+        self._alert_pub.publish(String(data=text))
+
     def _commanded_goal_cb(self, msg: ConstrainedPddlGoalMsg) -> None:
         # Flow: pause → decide → resume_or_forward → log.
+        self._replan_reason = None  # a new instruction supersedes it
         self._pause_executor()
         if self._goal_already_satisfied(msg):
             self._resume_executor()
