@@ -129,9 +129,8 @@ def affecting_changes(
             f" {moved:.1f} m" if moved is not None and moved != math.inf else ""
         )
         if sym in deps:
-            out.append(
-                (sym, f"{sym} {what}, and the plan still has to {deps[sym][0]} it")
-            )
+            verb = {"gaze": "inspect"}.get(deps[sym][0], deps[sym][0])
+            out.append((sym, f"{sym} {what}, and the plan still has to {verb} it"))
         elif sym in goal["relocate"]:
             out.append((sym, f"{sym} {what}, and the goal says where it must end up"))
         elif sym in goal["visit"] and sym not in visited:
