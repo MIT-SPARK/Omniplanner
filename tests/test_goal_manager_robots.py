@@ -19,6 +19,7 @@ def _manager():
         get_logger=lambda: NS(info=lambda *_: None, warning=lambda *_: None),
         _notify_operator=lambda text: None,
         _pending_goal=None,
+        _replan_reason=None,
         _running_constraints=frozenset(),
         _plan_constraints=frozenset(),
         _cache_valid=True,
