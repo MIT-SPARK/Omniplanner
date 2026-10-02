@@ -128,7 +128,10 @@ class GoalManager(Node):
         # forwarded goal is being planned: if that planning fails, the running
         # plan is still the one built under these.
         self._running_constraints: frozenset = frozenset()
-        # The goal being planned, so a planning failure can say which one.
+        # The goal of the plan being executed, and of the one being planned.
+        # A replan request (the scene changed under the plan) re-sends the
+        # running goal; a goal the planner rejected never becomes it.
+        self._running_goal = None
         self._pending_goal = None
 
         # Subscriptions (private; remap at launch time).
@@ -140,6 +143,9 @@ class GoalManager(Node):
         )
         self._failed_sub = self.create_subscription(
             String, "~/planner_failed", self._planner_failed_cb, 10
+        )
+        self._replan_sub = self.create_subscription(
+            String, "~/replan_request", self._replan_request_cb, 10
         )
 
         # Publishers (private; remap at launch time).
@@ -166,6 +172,7 @@ class GoalManager(Node):
         self._plan_visited_pois = pois
         self._cache_valid = True
         self._running_constraints = self._plan_constraints
+        self._running_goal = self._pending_goal
         self.get_logger().info(f"Updated plan cache: {len(pois)} visited POIs")
 
     def _planner_failed_cb(self, msg: String) -> None:
@@ -188,6 +195,23 @@ class GoalManager(Node):
         self.get_logger().warning(f"operator: {text}")
         self._display_pub.publish(String(data=text))
         self._alert_pub.publish(String(data=text))
+
+    def _replan_request_cb(self, msg: String) -> None:
+        """The plan no longer fits the world (e.g. the scene changed): replan.
+
+        Re-sends the goal the running plan was made for. The planner plans
+        from the current map and mission state, so only what is left is
+        planned, around the change.
+        """
+        goal = self._running_goal or self._pending_goal
+        if goal is None:
+            self.get_logger().info(f"replan requested ({msg.data}), but no goal yet")
+            return
+        self._pause_executor()
+        self._goal_pub.publish(goal)
+        self.get_logger().info(
+            f"replanning: {msg.data}. goal={goal.goal.pddl_goal!r}; forwarded to planner"
+        )
 
     def _commanded_goal_cb(self, msg: ConstrainedPddlGoalMsg) -> None:
         # Flow: pause → decide → resume_or_forward → log.

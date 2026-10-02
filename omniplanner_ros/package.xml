@@ -10,6 +10,7 @@
   <depend>omniplanner_msgs</depend>
   <depend>python3-parse</depend>
   <depend>std_srvs</depend>
+  <depend>heracles_ros_interfaces</depend>
 
   <export>
     <build_type>ament_python</build_type>

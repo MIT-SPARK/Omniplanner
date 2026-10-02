@@ -214,15 +214,21 @@ def _repair_node_stub(holding, dsg=None):
     for robot, objects in holding.items():
         for obj in objects:
             tracker.record("PICK", True, robot, object_id=obj)
-    return NS(
+    from omniplanner_ros.omniplanner_repair_node import OmniPlannerRepairRos as N
+
+    node = NS(
         _current_dsg=lambda: dsg,
         _world_lock=threading.Lock(),
+        _plan_lock=threading.Lock(),
         world_tracker=tracker,
         _pending_release={},
+        _planning_goal="",
         robot_adaptors={"hilbert": None},
         dsg_frame="map",
         get_logger=lambda: NS(info=lambda *_: None, error=lambda *_: None),
     )
+    node._put_down_first = N._put_down_first.__get__(node)
+    return node
 
 
 def test_dropped_object_is_put_down_first():
