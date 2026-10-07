@@ -391,7 +391,7 @@ def generate_multirobot_region_pddl(
     robot_states: np.ndarray,
     constraints=None,
     world_state=None,
-) -> Tuple[str, List[PddlSymbol]]:
+) -> Tuple[str, List[PddlSymbol], str]:
     """Generate a multi-robot PDDL problem for domain region-object-rearrangement-domain-multirobot-fd.
 
     If ``constraints`` is non-empty, the corresponding ``(connected ...)`` facts
@@ -420,8 +420,14 @@ def generate_multirobot_region_pddl(
     init_facts_tuples: List[tuple] = generate_dense_region_init_multirobot(
         G, symbols_of_interest, robot_states, constraints=constraints
     )
-    diagnose_unreachable_goal(
+    unreachable = diagnose_unreachable_goal(
         raw_pddl_goal_string, init_facts_tuples, symbols_of_interest
+    )
+    failure_hint = (
+        f"{', '.join(unreachable)} cannot be reached: the constraints cut off every "
+        f"path to it (a forbidden-poi on it or within {_forbidden_radius_m():.1f} m)"
+        if unreachable
+        else ""
     )
 
     # Ensure robot symbols exist (with positions) for downstream planners
@@ -472,7 +478,7 @@ def generate_multirobot_region_pddl(
     except Exception as e:
         logger.warning(f"Failed to persist multi-robot region PDDL dump: {e}")
 
-    return problem_str, symbols_of_interest
+    return problem_str, symbols_of_interest, failure_hint
 
 
 @dispatch
@@ -493,7 +499,7 @@ def ground_problem(
         #     )
 
         case "region-object-rearrangement-domain-multirobot-fd":
-            pddl_problem, symbols = generate_multirobot_region_pddl(
+            pddl_problem, symbols, failure_hint = generate_multirobot_region_pddl(
                 dsg,
                 goal.pddl_goal,
                 pddl_compliant_robot_states,
@@ -517,7 +523,8 @@ def ground_problem(
         name for name, pose in robot_states.items() if pose is not None
     ]
     wrapper = MultiRobotWrapper(
-        valid_robot_names, GroundedPddlProblem(domain, pddl_problem, symbol_dict)
+        valid_robot_names,
+        GroundedPddlProblem(domain, pddl_problem, symbol_dict, failure_hint),
     )
     for outer_name in valid_robot_names:
         inner_name = outer_name.lower()

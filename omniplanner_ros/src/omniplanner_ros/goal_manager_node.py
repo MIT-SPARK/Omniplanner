@@ -128,6 +128,8 @@ class GoalManager(Node):
         # forwarded goal is being planned: if that planning fails, the running
         # plan is still the one built under these.
         self._running_constraints: frozenset = frozenset()
+        # The goal being planned, so a planning failure can say which one.
+        self._pending_goal = None
 
         # Subscriptions (private; remap at launch time).
         self._goal_sub = self.create_subscription(
@@ -146,6 +148,10 @@ class GoalManager(Node):
         )
         self._pause_pub = self.create_publisher(Bool, "~/executor_pause", 10)
         self._resume_pub = self.create_publisher(Bool, "~/executor_resume", 10)
+        # Messages for the operator: shown in the rviz instruction panel
+        # (~/operator_display) and published for any other UI (~/operator_alert).
+        self._display_pub = self.create_publisher(String, "~/operator_display", 10)
+        self._alert_pub = self.create_publisher(String, "~/operator_alert", 10)
 
         self.get_logger().info("goal_manager up; awaiting goals on ~/commanded_goal")
 
@@ -170,10 +176,18 @@ class GoalManager(Node):
         holding an object. The goal is dropped; the operator has to restate it.
         """
         self._plan_constraints = self._running_constraints
+        why = msg.data.split(": ", 1)[-1]  # drop the plugin name
+        goal = self._pending_goal.goal if self._pending_goal is not None else None
+        target = f"'{goal.pddl_goal}'" if goal else "the goal"
         self._resume_executor()
-        self.get_logger().warning(
-            f"planner produced no plan ({msg.data}); resuming the current plan"
+        self._notify_operator(
+            f"Could not plan {target} ({why}). Continuing the current plan."
         )
+
+    def _notify_operator(self, text: str) -> None:
+        self.get_logger().warning(f"operator: {text}")
+        self._display_pub.publish(String(data=text))
+        self._alert_pub.publish(String(data=text))
 
     def _commanded_goal_cb(self, msg: ConstrainedPddlGoalMsg) -> None:
         # Flow: pause → decide → resume_or_forward → log.
@@ -216,6 +230,7 @@ class GoalManager(Node):
         # Record what the incoming plan will be grounded under, so the next goal
         # can tell whether the constraints have since changed.
         self._plan_constraints = constraint_signature(msg.constraints)
+        self._pending_goal = msg
         self._goal_pub.publish(msg)
 
     # ------------- logging -------------

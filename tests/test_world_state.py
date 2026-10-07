@@ -46,7 +46,7 @@ def _pos(G, sym):
     raise KeyError(sym)
 
 
-def _fd(G, goal, start_xy, world_state=None):
+def _fd(G, goal, start_xy, world_state=None, constraints=()):
     text = (
         files(dsg_pddl.domains)
         .joinpath("RegionObjectRearrangementDomain_MultiRobot_FD_Explore.pddl")
@@ -54,7 +54,12 @@ def _fd(G, goal, start_xy, world_state=None):
     )
     req = PlanRequest(
         domain=MultiRobotPddlDomain(text),
-        goal=PddlGoal(pddl_goal=goal, robot_id=ROBOT, world_state=world_state),
+        goal=PddlGoal(
+            pddl_goal=goal,
+            robot_id=ROBOT,
+            world_state=world_state,
+            constraints=list(constraints),
+        ),
         robot_states={ROBOT: np.array(start_xy)},
     )
     plan = full_planning_pipeline(req, G)

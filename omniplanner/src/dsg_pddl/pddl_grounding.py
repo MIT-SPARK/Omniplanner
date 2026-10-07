@@ -197,3 +197,6 @@ class GroundedPddlProblem:
     domain: PddlDomain
     problem_str: str
     symbols: Dict[str, PddlSymbol]
+    # Why the problem likely has no plan, found while grounding; "" if nothing
+    # stood out. Goes into the failure message the operator sees.
+    failure_hint: str = ""
