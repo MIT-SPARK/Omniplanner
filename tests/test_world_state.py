@@ -253,3 +253,34 @@ def test_object_the_goal_still_wants_stays_held():
     )
     assert state.holding == {"hilbert": ["o4"]}
     assert node._pending_release == {}
+
+
+@needs_map
+def test_compiled_pick_and_place_carry_the_object_class():
+    # The real grasp finds the object by class; an empty one fails on hardware
+    # (the simulated grasp ignores it, so sim never showed this).
+    from types import SimpleNamespace as NS
+
+    import omniplanner_ros.pddl_planner_ros  # noqa: F401  registers compile_plan
+    from omniplanner.compile_plan import collect_plans, compile_plan
+
+    G = _map()
+    text = (
+        files(dsg_pddl.domains)
+        .joinpath("RegionObjectRearrangementDomain_MultiRobot_FD_Explore.pddl")
+        .read_text()
+    )
+    req = PlanRequest(
+        domain=MultiRobotPddlDomain(text),
+        goal=PddlGoal(pddl_goal="(object-in-place o4 t598)", robot_id=ROBOT),
+        robot_states={ROBOT: _pos(G, "t3")[:2], "euclid": _pos(G, "o5")[:2]},
+    )
+    plans = full_planning_pipeline(req, G)
+    adaptors = {r: NS(name=r) for r in (ROBOT, "euclid")}
+    acts = [
+        a
+        for seq in collect_plans(compile_plan(adaptors, "map", plans)).values()
+        for a in seq.actions
+        if type(a).__name__ in ("Pick", "Place")
+    ]
+    assert len(acts) == 2 and all(a.object_class == "trash" for a in acts)

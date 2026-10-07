@@ -144,8 +144,16 @@ def compile_multirobot_pddl_plan(
 
 
 def _object_class(context, obj):
-    """An object's semantic label from the plan context, or "" if unknown."""
-    return (context.get(obj) or {}).get("semantic_label", "") if context else ""
+    """An object's semantic label from the plan context, or "" if unknown.
+
+    The context is a DsgContextProvider, a dict that looks symbols up in the
+    scene graph on demand: use ``in`` and ``[]``, which do that lookup. As a
+    plain dict it is empty, so truthiness and ``.get`` miss every object.
+    """
+    if obj not in context:
+        return ""
+    attrs = context[obj]
+    return attrs["semantic_label"] if "semantic_label" in attrs else ""
 
 
 def compile_pddl_plan(
