@@ -16,10 +16,9 @@ def _manager():
         _pending_goal=None,
         _plan_visited_pois=set(),
         _cache_valid=False,
-        _pause_pub=NS(publish=lambda m: sent.__setitem__("pause", sent["pause"] + 1)),
-        _resume_pub=NS(
-            publish=lambda m: sent.__setitem__("resume", sent["resume"] + 1)
-        ),
+        _plan_robots={"hilbert"},
+        _paused={"hilbert"},
+        _executor_cmd=lambda robot, verb: sent.__setitem__(verb, sent[verb] + 1),
         _goal_pub=NS(publish=sent["goals"].append),
         _display_pub=NS(publish=lambda m: sent["display"].append(m.data)),
         _alert_pub=NS(publish=lambda m: sent["alert"].append(m.data)),

@@ -1,3 +1,4 @@
+import json
 import logging
 import threading
 import time
@@ -227,6 +228,12 @@ class OmniPlannerRos(Node):
         # robot stays paused with nothing coming.
         self.plan_failed_pub = self.create_publisher(String, "~/plan_failed", 10)
 
+        # Which robots the latest plan gave actions to (JSON list), so the goal
+        # manager can pause them for the next goal without being told names.
+        self.plan_robots_pub = self.create_publisher(
+            String, "~/plan_robots", qos_profile=latching_reliable_qos
+        )
+
         self.heartbeat_pub = self.create_publisher(NodeInfoMsg, "~/node_status", 1)
         heartbeat_timer_group = MutuallyExclusiveCallbackGroup()
         timer_period_s = 0.1
@@ -377,6 +384,7 @@ class OmniPlannerRos(Node):
                 self.compiled_plan_viz_pub.publish(
                     to_viz_msg(compiled_plan, robot_name)
                 )
+            self.plan_robots_pub.publish(String(data=json.dumps(sorted(plan_dict))))
 
             # Plugin extension point: let the plugin react to a freshly
             # compiled plan (e.g. to publish derived information such as the

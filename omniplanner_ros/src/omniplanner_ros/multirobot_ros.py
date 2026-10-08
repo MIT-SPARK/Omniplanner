@@ -113,6 +113,7 @@ class MultiRobotPddlConstrainedPlannerRos(MultiRobotPddlPlannerRos):
         super().__init__(config)
         self._node = None
         self._visited_pois_pubs: dict = {}  # {robot_name -> ROS publisher}
+        self._all_visited_pub = None  # the union, for the goal manager
 
     def get_plan_callback(self):
         return ConstrainedPddlGoalMsg, "pddl_goal", self.pddl_callback
@@ -166,6 +167,12 @@ class MultiRobotPddlConstrainedPlannerRos(MultiRobotPddlPlannerRos):
             msg = String()
             msg.data = json.dumps(sorted(pois))
             pub.publish(msg)
+        if self._all_visited_pub is None:
+            self._all_visited_pub = self._node.create_publisher(
+                String, "~/plan_visited_pois_all", 1
+            )
+        everything = set().union(*visited.values()) if visited else set()
+        self._all_visited_pub.publish(String(data=json.dumps(sorted(everything))))
 
 
 @sc.register_config(
