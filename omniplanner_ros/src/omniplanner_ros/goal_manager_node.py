@@ -200,20 +200,34 @@ class GoalManager(Node):
         self._plan_robots = robots
 
     def _planner_failed_cb(self, msg: String) -> None:
-        """The forwarded goal produced no plan: carry on with the current one.
+        """The forwarded goal produced no plan.
 
         The executor was paused when the goal arrived and only a new plan would
         have released it, so without this the robot waits for ever -- possibly
         holding an object. The goal is dropped; the operator has to restate it.
+
+        Carry on with the current plan only if it was made under the same
+        constraints. If the failed goal changed them (e.g. "avoid o14"), the
+        current plan may break them, so stop the robots instead.
         """
-        self._plan_constraints = self._running_constraints
         why = msg.data.split(": ", 1)[-1]  # drop the plugin name
-        goal = self._pending_goal.goal if self._pending_goal is not None else None
-        target = f"'{goal.pddl_goal}'" if goal else "the goal"
-        self._resume_executor()
-        self._notify_operator(
-            f"Could not plan {target} ({why}). Continuing the current plan."
+        goal = self._pending_goal
+        target = f"'{goal.goal.pddl_goal}'" if goal else "the goal"
+        same_constraints = goal is None or (
+            constraint_signature(goal.constraints) == self._running_constraints
         )
+        self._plan_constraints = self._running_constraints
+        if same_constraints:
+            self._resume_executor()
+            self._notify_operator(
+                f"Could not plan {target} ({why}). Continuing the current plan."
+            )
+        else:
+            self._stop_executor()
+            self._notify_operator(
+                f"Could not plan {target} ({why}). Stopped: the current plan "
+                "was made without these constraints."
+            )
 
     def _notify_operator(self, text: str) -> None:
         self.get_logger().warning(f"operator: {text}")
@@ -268,6 +282,12 @@ class GoalManager(Node):
         for robot in sorted(self._paused):
             self._executor_cmd(robot, "resume")
         self._paused = set()
+
+    def _stop_executor(self) -> None:
+        for robot in sorted(self._paused):
+            self._executor_cmd(robot, "stop")
+        self._paused = set()
+        self._cache_valid = False  # nothing is running any more
 
     def _forward_for_replanning(self, msg: ConstrainedPddlGoalMsg) -> None:
         # Record what the incoming plan will be grounded under, so the next goal
