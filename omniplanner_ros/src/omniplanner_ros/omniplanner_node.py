@@ -14,7 +14,10 @@ from hydra_ros import DsgSubscriber
 from nav_msgs.msg import Path
 from omniplanner.compile_plan import collect_plans, compile_plan
 from omniplanner.omniplanner import full_planning_pipeline
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.callback_groups import (
+    MutuallyExclusiveCallbackGroup,
+    ReentrantCallbackGroup,
+)
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import (
@@ -203,6 +206,15 @@ class OmniPlannerRos(Node):
         self.plan_time_start_lock = threading.Lock()
 
         self.dsg_lock = threading.Lock()
+
+        # Goals are counted as they arrive, even while an older goal is still
+        # planning; planning itself runs one goal at a time. A plan finished
+        # after a newer goal arrived is dropped: the operator replaced it.
+        self.goal_count = 0
+        self.goal_count_lock = threading.Lock()
+        self.planning_lock = threading.Lock()
+        self.goal_group = ReentrantCallbackGroup()
+
         DsgSubscriber(self, "~/dsg_in", self.dsg_callback)
 
         latching_reliable_qos = QoSProfile(
@@ -332,7 +344,22 @@ class OmniPlannerRos(Node):
         )
 
         def plan_handler(msg):
+            with self.goal_count_lock:
+                self.goal_count += 1
+                number = self.goal_count
+            with self.planning_lock:
+                plan_goal(msg, superseded=lambda: number != self.goal_count)
+
+        def done_planning():
+            with self.current_planner_lock and self.plan_time_start_lock:
+                self.current_planner = None
+                self.plan_time_start = None
+
+        def plan_goal(msg, superseded):
             self.get_logger().info(f"Handling plan for plugin {name}")
+            if superseded():
+                self.get_logger().info(f"Skipping a superseded {name} goal")
+                return
 
             if self.dsg_last is None:
                 self.get_logger().error("Got plan request, but no DSG!")
@@ -368,10 +395,17 @@ class OmniPlannerRos(Node):
                 )
                 # Otherwise the node reports itself as planning for ever and the
                 # status monitor never recovers.
-                with self.current_planner_lock and self.plan_time_start_lock:
-                    self.current_planner = None
-                    self.plan_time_start = None
-                self.plan_failed_pub.publish(String(data=f"{name}: {exc}"))
+                done_planning()
+                # A newer goal is already waiting; this failure no longer matters.
+                if not superseded():
+                    self.plan_failed_pub.publish(String(data=f"{name}: {exc}"))
+                return
+
+            if superseded():
+                self.get_logger().info(
+                    f"Dropping the plan for a superseded {name} goal"
+                )
+                done_planning()
                 return
 
             compiled_plans = compile_plan(self.robot_adaptors, self.dsg_frame, plans)
@@ -399,9 +433,7 @@ class OmniPlannerRos(Node):
                         f"on_plan_compiled hook for plugin {name} raised: {exc}"
                     )
 
-            with self.current_planner_lock and self.plan_time_start_lock:
-                self.current_planner = None
-                self.plan_time_start = None
+            done_planning()
             self.get_logger().info("Published Plan")
 
         resolved_topic_name = name + "/" + topic
@@ -413,6 +445,7 @@ class OmniPlannerRos(Node):
             f"~/{resolved_topic_name}",
             plan_handler,
             1,
+            callback_group=self.goal_group,
         )
 
 
