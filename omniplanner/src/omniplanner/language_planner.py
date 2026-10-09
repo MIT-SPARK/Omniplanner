@@ -1,12 +1,47 @@
 import ast
+import logging
 from dataclasses import dataclass
 from typing import Any
 
+import parse
 from dsg_pddl.pddl_grounding import PddlDomain, PddlGoal
 from nlu_interface.interface import LLMInterface
 from plum import dispatch
 
 from omniplanner.goto_points import GotoPointsDomain, GotoPointsGoal
+
+logger = logging.getLogger(__name__)
+
+
+def _log_llm_usage(llm_interface) -> None:
+    """Log token usage of the last LLM call (OpenAI responses carry ``usage``)."""
+    try:
+        resp = llm_interface.response_history[-1]
+        usage = resp.usage
+        logger.info(
+            "LLM usage: model=%s input_tokens=%s output_tokens=%s",
+            getattr(resp, "model", "?"),
+            usage.input_tokens,
+            usage.output_tokens,
+        )
+    except Exception:  # noqa: BLE001 - usage is best-effort telemetry
+        pass
+
+
+def _assign_to_addressed_robot(goal_dict, goal):
+    """If the operator addressed one robot and the LLM gave the whole goal to a
+    single *different* robot the command never mentions, give it back."""
+    if not goal.robot_id or not isinstance(goal_dict, dict) or len(goal_dict) != 1:
+        return goal_dict
+    ((assigned, pddl_goal),) = goal_dict.items()
+    if assigned == goal.robot_id or assigned.lower() in goal.command.lower():
+        return goal_dict
+    logger.warning(
+        "LLM assigned the goal to %r but the instruction was issued to %r; reassigning",
+        assigned,
+        goal.robot_id,
+    )
+    return {goal.robot_id: pddl_goal}
 
 
 @dataclass
@@ -31,8 +66,17 @@ def ground_problem(
     feedback: Any = None,
 ):
     if domain.domain_type == "goto_points":
+        # No LLM here: the command must already be a list of node symbols.
+        points = goal.command.split()
+        bad = [p for p in points if parse.parse("{}({:d})", p) is None]
+        if not points or bad:
+            raise ValueError(
+                f"domain_type 'goto_points' expects node symbols like 'O(12) P(850)', "
+                f"got {bad or goal.command!r}; use domain_type 'Pddl' (or 'default') "
+                "for natural-language commands"
+            )
         language_grounded_goal = GotoPointsGoal(
-            goal_points=goal.command.split(" "), robot_id=goal.robot_id
+            goal_points=points, robot_id=goal.robot_id
         )
         problem_type = GotoPointsDomain()
         return ground_problem(
@@ -40,8 +84,22 @@ def ground_problem(
         )
     elif domain.domain_type == "Pddl":
         # Query the LLM & Parse the response
-        response = domain.llm_interface.request_plan_specification(goal.command, dsg)
-        goal_dict = ast.literal_eval(response)
+        instruction = goal.command
+        if goal.robot_id:
+            # The prompt describes a whole robot team; without this the LLM picks
+            # an arbitrary robot even though the operator addressed one.
+            instruction = (
+                f"{goal.command}\n(This instruction was issued to robot "
+                f"'{goal.robot_id}'. Assign the tasks to '{goal.robot_id}' unless the "
+                "instruction explicitly names other robots.)"
+            )
+        response = domain.llm_interface.request_plan_specification(instruction, dsg)
+        _log_llm_usage(domain.llm_interface)
+        try:
+            goal_dict = ast.literal_eval(response)
+        except (ValueError, SyntaxError) as e:
+            raise ValueError(f"LLM returned an unparsable goal: {response!r}") from e
+        goal_dict = _assign_to_addressed_robot(goal_dict, goal)
         # Publish feedback to the rviz interface
         if feedback is not None:
             publish = feedback.plugin_feedback_collectors["language_planner"].publish[
