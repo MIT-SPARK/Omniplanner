@@ -9,6 +9,7 @@
 
   <depend>omniplanner_msgs</depend>
   <depend>python3-parse</depend>
+  <depend>std_srvs</depend>
 
   <export>
     <build_type>ament_python</build_type>

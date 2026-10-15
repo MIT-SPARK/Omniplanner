@@ -10,9 +10,11 @@ paths via roslaunch ``remap``::
   remap:
     - {from: ~/commanded_goal,    to: /<robot>/commanded_goal}
     - {from: ~/planner_goal,      to: /<robot>/omniplanner_node/multi_robot_pddl_constrained/pddl_goal}
-    - {from: ~/plan_visited_pois, to: /<robot>/omniplanner_node/plan_visited_pois}
-    - {from: ~/executor_pause,   to: /<robot>/spot_executor_node/pause}
-    - {from: ~/executor_resume,  to: /<robot>/spot_executor_node/resume}
+    - {from: ~/plan_visited_pois, to: /<robot>/omniplanner_node/plan_visited_pois_all}
+    - {from: ~/plan_robots,       to: /<robot>/omniplanner_node/plan_robots}
+
+Executors are addressed directly, as ``/<name>/spot_executor_node/{pause,resume,stop}``
+for every robot in the running plan, so a base station needs no robot names.
 
 The current implementation is specific to the multi-robot PDDL "visit POIs"
 domain. The decision is broken out into ``_goal_already_satisfied`` so it's
@@ -22,12 +24,13 @@ clear what would need to change to support other domains in the future.
 from __future__ import annotations
 
 import json
-from typing import Optional, Set
+from typing import Dict, Optional, Set, Tuple
 
 import rclpy
 from dsg_pddl.pddl_utils import lisp_string_to_ast
 from omniplanner_msgs.msg import ConstrainedPddlGoalMsg
 from rclpy.node import Node
+from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 from std_msgs.msg import Bool, String
 
 # Goal-side predicates we treat as "must visit".
@@ -75,12 +78,30 @@ def _eval_goal_against_visited(ast, visited: Set[str]) -> Optional[bool]:
 
 
 def goal_satisfied_by(pddl_goal: str, visited: Set[str]) -> Optional[bool]:
-    """Wrap parsing + evaluation. Returns None on parse failure."""
+    """Wrap parsing + evaluation. Returns None on parse failure.
+
+    ``lisp_string_to_ast`` does not split adjacent parens: "(a)(b)" parses as a
+    single clause containing a ")(" token rather than two clauses. Goals in that
+    form -- which is what the heracles in-context examples emit -- then had only
+    their first conjunct evaluated, so a partly-satisfied multi-target goal could
+    report True and skip a replan that was actually needed. Normalise first.
+    """
     try:
-        ast = lisp_string_to_ast(pddl_goal)
+        ast = lisp_string_to_ast((pddl_goal or "").replace(")(", ") ("))
     except Exception:
         return None
     return _eval_goal_against_visited(ast, visited)
+
+
+def constraint_signature(constraint_facts) -> frozenset:
+    """Hashable identity of a constraint set, for "did the constraints change?".
+
+    Skipping a replan is only sound if the cached plan was built under the same
+    constraints. Comparing against the plan's visited POIs is not enough: a new
+    forbidden POI the plan merely passes close to would not intersect, and we
+    would resume into it.
+    """
+    return frozenset((c.predicate, tuple(c.symbols)) for c in constraint_facts or [])
 
 
 def extract_forbidden_pois(constraint_facts) -> Set[str]:
@@ -93,16 +114,29 @@ def extract_forbidden_pois(constraint_facts) -> Set[str]:
 
 
 class GoalManager(Node):
-    """Pause executor, decide if replan is needed, then either resume or forward."""
+    """Pause executors, decide if replan is needed, then either resume or forward."""
 
     def __init__(self):
         super().__init__("goal_manager")
 
-        # Per-robot caches: latest set of POIs visited by the active plan.
-        # Updated by the omniplanner's `on_plan_compiled` hook publishing on
-        # ~/plan_visited_pois (which is itself a remap of a per-robot topic).
+        # POIs visited by the active plan, across all its robots. Updated by
+        # the omniplanner's `on_plan_compiled` hook.
         self._plan_visited_pois: Set[str] = set()
+        # Robots the running plan gave actions to, and those of them paused
+        # for a goal that has not been settled yet.
+        self._plan_robots: Set[str] = set()
+        self._paused: Set[str] = set()
+        self._executor_pubs: Dict[Tuple[str, str], object] = {}
         self._cache_valid: bool = False
+        # Constraints the cached plan was grounded under, so we can tell when a
+        # new goal changes them and a skip would be unsound.
+        self._plan_constraints: frozenset = frozenset()
+        # Constraints of the plan that is actually running, kept while a
+        # forwarded goal is being planned: if that planning fails, the running
+        # plan is still the one built under these.
+        self._running_constraints: frozenset = frozenset()
+        # The goal being planned, so a planning failure can say which one.
+        self._pending_goal = None
 
         # Subscriptions (private; remap at launch time).
         self._goal_sub = self.create_subscription(
@@ -111,13 +145,25 @@ class GoalManager(Node):
         self._visited_sub = self.create_subscription(
             String, "~/plan_visited_pois", self._visited_pois_cb, 10
         )
+        self._failed_sub = self.create_subscription(
+            String, "~/planner_failed", self._planner_failed_cb, 10
+        )
+        # Latched, so a restarted goal manager still knows who is executing.
+        self._robots_sub = self.create_subscription(
+            String,
+            "~/plan_robots",
+            self._plan_robots_cb,
+            QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL),
+        )
 
         # Publishers (private; remap at launch time).
         self._goal_pub = self.create_publisher(
             ConstrainedPddlGoalMsg, "~/planner_goal", 10
         )
-        self._pause_pub = self.create_publisher(Bool, "~/executor_pause", 10)
-        self._resume_pub = self.create_publisher(Bool, "~/executor_resume", 10)
+        # Messages for the operator: shown in the rviz instruction panel
+        # (~/operator_display) and published for any other UI (~/operator_alert).
+        self._display_pub = self.create_publisher(String, "~/operator_display", 10)
+        self._alert_pub = self.create_publisher(String, "~/operator_alert", 10)
 
         self.get_logger().info("goal_manager up; awaiting goals on ~/commanded_goal")
 
@@ -131,7 +177,62 @@ class GoalManager(Node):
             return
         self._plan_visited_pois = pois
         self._cache_valid = True
+        self._running_constraints = self._plan_constraints
         self.get_logger().info(f"Updated plan cache: {len(pois)} visited POIs")
+
+    def _plan_robots_cb(self, msg: String) -> None:
+        """A new plan went out: it now decides who is executing.
+
+        A robot in it was preempted by its new action sequence, which also
+        clears its pause. A paused robot left out of it would otherwise sit
+        paused for ever, or, once resumed, carry on with the superseded plan,
+        so it is stopped.
+        """
+        try:
+            robots = set(json.loads(msg.data))
+        except Exception as exc:
+            self.get_logger().warning(f"Bad plan_robots payload: {exc}")
+            return
+        for robot in sorted(self._paused - robots):
+            self.get_logger().info(f"{robot} is not in the new plan; stopping it")
+            self._executor_cmd(robot, "stop")
+        self._paused = set()
+        self._plan_robots = robots
+
+    def _planner_failed_cb(self, msg: String) -> None:
+        """The forwarded goal produced no plan.
+
+        The executor was paused when the goal arrived and only a new plan would
+        have released it, so without this the robot waits for ever -- possibly
+        holding an object. The goal is dropped; the operator has to restate it.
+
+        Carry on with the current plan only if it was made under the same
+        constraints. If the failed goal changed them (e.g. "avoid o14"), the
+        current plan may break them, so stop the robots instead.
+        """
+        why = msg.data.split(": ", 1)[-1]  # drop the plugin name
+        goal = self._pending_goal
+        target = f"'{goal.goal.pddl_goal}'" if goal else "the goal"
+        same_constraints = goal is None or (
+            constraint_signature(goal.constraints) == self._running_constraints
+        )
+        self._plan_constraints = self._running_constraints
+        if same_constraints:
+            self._resume_executor()
+            self._notify_operator(
+                f"Could not plan {target} ({why}). Continuing the current plan."
+            )
+        else:
+            self._stop_executor()
+            self._notify_operator(
+                f"Could not plan {target} ({why}). Stopped: the current plan "
+                "was made without these constraints."
+            )
+
+    def _notify_operator(self, text: str) -> None:
+        self.get_logger().warning(f"operator: {text}")
+        self._display_pub.publish(String(data=text))
+        self._alert_pub.publish(String(data=text))
 
     def _commanded_goal_cb(self, msg: ConstrainedPddlGoalMsg) -> None:
         # Flow: pause → decide → resume_or_forward → log.
@@ -155,6 +256,8 @@ class GoalManager(Node):
         """
         if not self._cache_valid:
             return False
+        if constraint_signature(msg.constraints) != self._plan_constraints:
+            return False  # constraints changed; the cached plan predates them
         forbidden = extract_forbidden_pois(msg.constraints)
         if forbidden & self._plan_visited_pois:
             return False  # current plan would step on a now-forbidden POI
@@ -162,13 +265,35 @@ class GoalManager(Node):
 
     # ------------- side effects -------------
 
+    def _executor_cmd(self, robot: str, verb: str) -> None:
+        pub = self._executor_pubs.get((robot, verb))
+        if pub is None:
+            pub = self.create_publisher(Bool, f"/{robot}/spot_executor_node/{verb}", 10)
+            self._executor_pubs[(robot, verb)] = pub
+        pub.publish(Bool(data=True))
+
     def _pause_executor(self) -> None:
-        self._pause_pub.publish(Bool(data=True))
+        """Pause every robot of the running plan; an idle one ignores it."""
+        for robot in sorted(self._plan_robots):
+            self._executor_cmd(robot, "pause")
+        self._paused |= self._plan_robots
 
     def _resume_executor(self) -> None:
-        self._resume_pub.publish(Bool(data=True))
+        for robot in sorted(self._paused):
+            self._executor_cmd(robot, "resume")
+        self._paused = set()
+
+    def _stop_executor(self) -> None:
+        for robot in sorted(self._paused):
+            self._executor_cmd(robot, "stop")
+        self._paused = set()
+        self._cache_valid = False  # nothing is running any more
 
     def _forward_for_replanning(self, msg: ConstrainedPddlGoalMsg) -> None:
+        # Record what the incoming plan will be grounded under, so the next goal
+        # can tell whether the constraints have since changed.
+        self._plan_constraints = constraint_signature(msg.constraints)
+        self._pending_goal = msg
         self._goal_pub.publish(msg)
 
     # ------------- logging -------------

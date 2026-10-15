@@ -32,7 +32,7 @@ class LayerPlanner:
             [dsg.get_node(v).attributes.position[:2] for v in self.node_ids]
         )
         self.node_value_to_position = {
-            v: dsg.get_node(v).attributes.position[:2] for v in self.node_ids
+            v: np.array(dsg.get_node(v).attributes.position[:2]) for v in self.node_ids
         }
 
         if precompute_shortest_paths:

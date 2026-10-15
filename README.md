@@ -267,6 +267,56 @@ planners:
       type: Pddl
       domain_name: RegionObjectRearrangementDomain
 ```
+
+## Plan repair: mission progress and constraints
+
+`omniplanner_repair_node` is a drop-in replacement for `omniplanner_node` that
+remembers what the robots have already done during a mission. When a new goal
+or constraint arrives (e.g. "avoid object o14"), it replans only the part of
+the mission that is left, instead of starting over. In Awesome-DCIST-T4 it is
+launched with `launch_omniplanner_repair:=true`, which also starts the
+`goal_manager` that forwards operator goals to it.
+
+The node adds the following interfaces. Private names (`~/...`) resolve under
+the node's namespace and name; for example, a node named `omniplanner_node` in
+namespace `base_station` exposes
+`/base_station/omniplanner_node/reset_mission_state`.
+
+| Interface | Type | Purpose |
+| --- | --- | --- |
+| `~/<plugin>/pddl_goal` (subscription) | `omniplanner_msgs/msg/ConstrainedPddlGoalMsg` | A goal plus constraints for that goal only, for a `MultiRobotPddlConstrained` plugin (e.g. `~/multi_robot_pddl_constrained/pddl_goal`). The goal's constraints are combined with the persistent list below. They are not remembered for later goals. |
+| `~/constraints` (subscription) | `omniplanner_msgs/msg/ConstraintList` | Sets the persistent constraint list applied to every later goal. Each message replaces the previous list; publish an empty list to clear it. |
+| `/action_done` (subscription) | `robot_executor_msgs/msg/ActionDoneMsg` | Records actions the executors finished successfully (see below). This topic is global unless remapped. |
+| `~/reset_mission_state` (service) | `std_srvs/srv/Trigger` | Forgets visited places and inspected objects, for starting a new mission. Holding state and constraints are kept. It does not stop execution or trigger replanning. |
+
+What each successful action on `/action_done` records (failed actions record
+nothing):
+
+* `FOLLOW`: places and objects along the finished path are marked visited:
+  those within `visited_radius_m` (parameter, default `1.0` m) of a path
+  waypoint, plus any object whose nearest place is a waypoint. (A route to an
+  object stops at its nearest place, which can be more than 1 m away.)
+* `GAZE`: the object is marked inspected.
+* `PICK` / `PLACE`: the robot is marked as holding, or no longer holding, the
+  object. This is only a fallback: when the scene graph says what a robot
+  holds, the scene graph wins.
+
+This progress is kept in memory, so restarting the node forgets it.
+
+Reset progress before starting a new mission (replace the namespace and node
+name to match your launch):
+
+```bash
+ros2 service call /base_station/omniplanner_node/reset_mission_state std_srvs/srv/Trigger '{}'
+```
+
+The reply is `success: true` with the message `forgot visited places and
+inspected objects`. To clear the persistent constraints:
+
+```bash
+ros2 topic pub --once /base_station/omniplanner_node/constraints omniplanner_msgs/msg/ConstraintList '{constraints: []}'
+```
+
 ## Fast Downward Configuration
 
 The PDDL solver invocation in `solve_pddl`

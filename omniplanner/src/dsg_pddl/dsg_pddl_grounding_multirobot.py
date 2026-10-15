@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import time
 from typing import Any, Dict, List, Tuple
 
@@ -50,6 +51,87 @@ def _extract_forbidden_sets(constraints):
     return forbidden_pois, forbidden_edges
 
 
+# A forbidden-poi names one node, but the robot should stay out of its
+# neighbourhood, not just off the node itself. Expand each forbidden POI to every
+# symbol within this many metres of it, measured as navigable path distance.
+#
+# Node spacing decides what a given radius means, and it varies enough between
+# maps that one number cannot be right for both:
+#
+#   b45                 median nearest-neighbour 2.1 m; 5 m pulls in ~9 symbols,
+#                       about the 8.3 average graph degree plus a margin
+#   plan_repair_graph   nearest neighbour 0.61 m; 5 m pulls in 38 symbols
+#
+# 5 m was tuned on b45 and is far too wide on the denser graph, where it
+# swallowed a goal object lying 2.4 m from the forbidden POI, isolated it, and
+# left the problem unsolvable. 1 m keeps the exclusion to the node and its
+# immediate neighbour there and the same goal plans fine.
+#
+# The tension is real: 1 m is below b45's node spacing, so on a sparse map it
+# expands to nothing and only the named node is excluded. Retune per map --
+# ADT4_FORBIDDEN_RADIUS_M overrides this without a rebuild -- or switch to graph
+# adjacency, which would be spacing-independent and is the better long-term fix.
+FORBIDDEN_RADIUS_M = 1.0
+
+# Env override so the radius can be retuned per map without a rebuild. Read at
+# call time, not import time, so a field test only has to restart the node.
+FORBIDDEN_RADIUS_ENV = "ADT4_FORBIDDEN_RADIUS_M"
+
+
+def _forbidden_radius_m():
+    """Exclusion radius in metres, from the environment or the default above.
+
+    A malformed value falls back rather than raising: this runs mid-mission on
+    every grounding, and a typo in the tmux env should not take the planner down.
+    """
+    raw = os.getenv(FORBIDDEN_RADIUS_ENV)
+    if raw is None:
+        return FORBIDDEN_RADIUS_M
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(
+            "%s=%r is not a number; using the %.1f m default",
+            FORBIDDEN_RADIUS_ENV,
+            raw,
+            FORBIDDEN_RADIUS_M,
+        )
+        return FORBIDDEN_RADIUS_M
+
+
+def _expand_forbidden_pois(forbidden_pois, symbols, symbol_lookup, layer_planner):
+    """Grow each forbidden POI into the set of symbols within the exclusion radius.
+
+    Distance is path distance through the places layer, not Euclidean, so a
+    symbol that is metrically close but only reachable the long way around is
+    left alone. Disconnected symbols come back as inf and are likewise excluded.
+    """
+    radius = _forbidden_radius_m()
+    if not forbidden_pois or radius <= 0:
+        return forbidden_pois
+
+    expanded = set(forbidden_pois)
+    for name in forbidden_pois:
+        origin = symbol_lookup.get(name)
+        if origin is None:
+            continue
+        for s in symbols:
+            if s.symbol in expanded:
+                continue
+            d = layer_planner.get_external_distance(origin.position[:2], s.position[:2])
+            if d < radius:
+                expanded.add(s.symbol)
+
+    if len(expanded) > len(forbidden_pois):
+        logger.info(
+            "Expanded %d forbidden POI(s) to %d symbols within %.1f m",
+            len(forbidden_pois),
+            len(expanded),
+            radius,
+        )
+    return expanded
+
+
 def _edge_allowed(s, t, forbidden_pois, forbidden_edges):
     if s.symbol in forbidden_pois or t.symbol in forbidden_pois:
         return False
@@ -92,19 +174,12 @@ def generate_dense_region_symbol_connectivity_multirobot(
         10,
         layer_planner,
     )
-    start_connection_threshold = 20
-    for robot_id in robot_states.keys():
-        start_symbol_key = f"pstart{robot_id}"
-        if start_symbol_key in symbol_lookup:
-            start_symbol = symbol_lookup[start_symbol_key]
-            start_position = start_symbol.position
+    # No synthetic start edges: robots begin at a real place (see
+    # robot_start_places), so they inherit that node's own connectivity.
 
-            for s in symbols:
-                if s.symbol.startswith("pstart"):  # Skip other robot start positions
-                    continue
-                d = layer_planner.get_external_distance(start_position, s.position)
-                if d < start_connection_threshold:
-                    edges.append((start_symbol, s, d))
+    forbidden_pois = _expand_forbidden_pois(
+        forbidden_pois, symbols, symbol_lookup, layer_planner
+    )
 
     if forbidden_pois or forbidden_edges:
         before = len(edges)
@@ -123,15 +198,66 @@ def generate_dense_region_symbol_connectivity_multirobot(
     return edges
 
 
-def nearest_place_for_position(place_symbols: List[PddlSymbol], pos: np.ndarray) -> str:
-    best_name = place_symbols[0].symbol
-    best_d = float("inf")
+def nearest_place_for_position(place_symbols: List[PddlSymbol], pos: np.ndarray):
+    """(place symbol, metres away) for the place closest to `pos`.
+
+    Compared in 2D: symbol positions carry a z that the robot's pose does not,
+    and a height difference should not decide which place a robot is standing on.
+    """
+    target = np.asarray(pos, dtype=float)[:2]
+    best_name, best_d = None, float("inf")
     for p in place_symbols:
-        d = float(np.linalg.norm(p.position - pos))
+        d = float(np.linalg.norm(np.asarray(p.position, dtype=float)[:2] - target))
         if d < best_d:
-            best_d = d
-            best_name = p.symbol
-    return best_name
+            best_d, best_name = d, p.symbol
+    return best_name, best_d
+
+
+# Beyond this the nearest place is probably not the one the robot is actually
+# standing on -- nearest is measured straight-line, so a robot beside a partition
+# can snap to a node on the other side of it. Worth a look in the log rather than
+# a hard failure: a bad snap still plans, it just plans from the wrong doorway.
+START_SNAP_WARN_M = 5.0
+
+
+def robot_start_places(symbols: List[PddlSymbol], robot_states: Dict[str, np.ndarray]):
+    """{robot id -> the place symbol it starts from}.
+
+    A robot is generally not standing on a node. This used to be modelled with a
+    synthetic `pstart<robot>` symbol at the exact pose, joined to every POI within
+    a threshold -- edges the traversability graph does not contain. Worse, that
+    threshold was compared against LayerPlanner distances, which count graph hops
+    rather than metres, so a POI ten metres away could be admitted as readily as
+    an adjacent one and priced the same. The planner then treated a distant goal
+    as though the robot were next to it.
+
+    Starting at the nearest real place removes all of that: the robot inherits
+    the node's genuine edges and their genuine costs, and nothing is synthesised.
+    The metre or two between the true pose and that node is handled downstream,
+    where the first leg is parameterised from the robot's actual pose.
+    """
+    places = [s for s in symbols if s.layer == "place"]
+    if not places:
+        logger.warning("DSG has no place symbols; robots cannot be given a start")
+        return {}
+
+    starts = {}
+    for robot_id, pose in robot_states.items():
+        if pose is None:
+            continue
+        name, d = nearest_place_for_position(places, pose)
+        starts[robot_id] = name
+        if d > START_SNAP_WARN_M:
+            logger.warning(
+                "Robot %s starts at %s, %.1f m from its actual pose; the nearest "
+                "place may be across an obstacle",
+                robot_id,
+                name,
+                d,
+            )
+        else:
+            logger.info("Robot %s starts at place %s (%.1f m away)", robot_id, name, d)
+    return starts
 
 
 # Multirobot init wrapper that reuses shared connectivity and containment helpers
@@ -153,14 +279,53 @@ def generate_dense_region_init_multirobot(
     initial_pddl += generate_object_containment(G)
     initial_pddl += generate_place_containment(G)
 
-    # Add each valid robot's starting place using the pstart{robot_id} symbols
-    for robot_id, pose in robot_states.items():
-        if pose is None:
-            continue
-        start_symbol_key = f"pstart{robot_id}"
-        initial_pddl.append(("at-poi", robot_id, start_symbol_key))
+    # Each robot starts at the real place nearest its pose.
+    for robot_id, place in robot_start_places(
+        symbols_of_interest, robot_states
+    ).items():
+        initial_pddl.append(("at-poi", robot_id, place))
 
     return initial_pddl
+
+
+def diagnose_unreachable_goal(goal_string, init_facts, symbols):
+    """Names the goal symbols nothing can reach, so a failure says what to fix.
+
+    fast-downward only reports that a problem is unsolvable, and the operator is
+    left with a 50k-line problem file. Almost always the cause is a constraint:
+    a forbidden-poi on or beside a goal strips every `connected` fact the goal
+    had, and no plan can reach it. That is cheap to detect here, where both the
+    goal and the surviving connectivity are in hand.
+
+    Returns the unreachable goal symbols, and logs them. Diagnostic only -- it
+    changes nothing about what is planned.
+    """
+    connected = set()
+    for fact in init_facts:
+        if fact and fact[0] == "connected" and len(fact) >= 3:
+            connected.add(fact[1])
+            connected.add(fact[2])
+
+    known = {sym.symbol for sym in symbols}
+    named = {tok for tok in re.findall(r"[a-z]+[0-9]+", (goal_string or "").lower())}
+    goal_symbols = named & known
+    unreachable = sorted(goal_symbols - connected)
+
+    if unreachable:
+        logger.error(
+            "Goal names %s, which %s no connectivity left in the problem: no plan "
+            "can reach %s. A forbidden-poi on or within the expansion radius of a "
+            "goal will do this -- check the constraints, or lower "
+            "%s (currently %.1f).",
+            ", ".join(unreachable),
+            "has" if len(unreachable) == 1 else "have",
+            "it" if len(unreachable) == 1 else "them",
+            FORBIDDEN_RADIUS_ENV,
+            _forbidden_radius_m(),
+        )
+    elif goal_symbols:
+        logger.debug("All goal symbols %s still connected", sorted(goal_symbols))
+    return unreachable
 
 
 def filter_goal_for_available_objects(
@@ -185,12 +350,48 @@ def filter_goal_for_available_objects(
     return f"(and {' '.join(safe_goals)})"
 
 
+def apply_world_state(init_facts, world_state, symbols, robot_ids):
+    """Start the problem from what the mission has already done.
+
+    Fast-downward plans from :init, so a replan only plans what is left once
+    :init is true: places visited stay visited, and an object a robot holds is
+    in its hand -- not lying where it was picked up, to be picked up again.
+    """
+    known = {s.symbol for s in symbols}
+    held = {}
+    for robot, objects in (world_state.holding or {}).items():
+        if robot not in robot_ids:
+            continue
+        for obj in objects:
+            if obj in known:
+                held[obj] = robot
+    facts = [
+        f
+        for f in init_facts
+        if not (f and f[0] == "object-in-place" and len(f) >= 2 and f[1] in held)
+    ]
+    for obj, robot in sorted(held.items()):
+        facts.append(("holding", robot, obj))
+    for robot in sorted(set(held.values())):
+        facts.append(("hand-full", robot))
+    facts += [("visited-poi", s) for s in sorted(world_state.visited & known)]
+    if held or world_state.visited or world_state.inspected:
+        logger.info(
+            "Planning from mission state: holding=%s, %d visited, %d inspected",
+            {o: r for o, r in held.items()},
+            len(world_state.visited & known),
+            len(world_state.inspected & known),
+        )
+    return facts
+
+
 def generate_multirobot_region_pddl(
     G: spark_dsg.DynamicSceneGraph,
     raw_pddl_goal_string: str,
     robot_states: np.ndarray,
     constraints=None,
-) -> Tuple[str, List[PddlSymbol]]:
+    world_state=None,
+) -> Tuple[str, List[PddlSymbol], str]:
     """Generate a multi-robot PDDL problem for domain region-object-rearrangement-domain-multirobot-fd.
 
     If ``constraints`` is non-empty, the corresponding ``(connected ...)`` facts
@@ -202,22 +403,11 @@ def generate_multirobot_region_pddl(
     normalize_symbols(symbols)
 
     symbols_of_interest = symbols
-    for robot in robot_states.keys():
-        initial_position = robot_states[robot]
+    for robot, initial_position in robot_states.items():
         if initial_position is None:
             logger.warning(
                 f"Skipping robot {robot} due to missing initial position (None)."
             )
-            continue
-        start_place_symbol = PddlSymbol(
-            "pstart" + str(robot),
-            "place",
-            ["at-poi"],
-            position=np.array(initial_position[:2]),
-        )
-        # print("start_place_symbol: ", start_place_symbol)
-        # print("initial_position: ", initial_position)
-        symbols_of_interest = [start_place_symbol] + symbols_of_interest
 
     add_symbol_positions(G, symbols_of_interest)
 
@@ -230,6 +420,15 @@ def generate_multirobot_region_pddl(
     init_facts_tuples: List[tuple] = generate_dense_region_init_multirobot(
         G, symbols_of_interest, robot_states, constraints=constraints
     )
+    unreachable = diagnose_unreachable_goal(
+        raw_pddl_goal_string, init_facts_tuples, symbols_of_interest
+    )
+    failure_hint = (
+        f"{', '.join(unreachable)} cannot be reached: the constraints cut off every "
+        f"path to it (a forbidden-poi on it or within {_forbidden_radius_m():.1f} m)"
+        if unreachable
+        else ""
+    )
 
     # Ensure robot symbols exist (with positions) for downstream planners
     for rid, pose in robot_states.items():
@@ -239,9 +438,16 @@ def generate_multirobot_region_pddl(
             PddlSymbol(rid, "robot", [], position=np.array(pose[:2]))
         )
 
-    # Add suspicious facts for all objects
+    # Every object starts suspicious, except those the mission already inspected.
     object_symbols = [s for s in symbols_of_interest if s.layer == "object"]
-    init_facts_tuples += [("suspicious", o.symbol) for o in object_symbols]
+    inspected = world_state.inspected if world_state is not None else set()
+    init_facts_tuples += [
+        ("suspicious", o.symbol) for o in object_symbols if o.symbol not in inspected
+    ]
+    if world_state is not None:
+        init_facts_tuples = apply_world_state(
+            init_facts_tuples, world_state, symbols_of_interest, robot_ids
+        )
 
     # Build objects dict using shared generator and adding robots
     pddl_objects = generate_objects(symbols_of_interest)
@@ -272,7 +478,7 @@ def generate_multirobot_region_pddl(
     except Exception as e:
         logger.warning(f"Failed to persist multi-robot region PDDL dump: {e}")
 
-    return problem_str, symbols_of_interest
+    return problem_str, symbols_of_interest, failure_hint
 
 
 @dispatch
@@ -293,11 +499,12 @@ def ground_problem(
         #     )
 
         case "region-object-rearrangement-domain-multirobot-fd":
-            pddl_problem, symbols = generate_multirobot_region_pddl(
+            pddl_problem, symbols, failure_hint = generate_multirobot_region_pddl(
                 dsg,
                 goal.pddl_goal,
                 pddl_compliant_robot_states,
                 constraints=goal.constraints,
+                world_state=getattr(goal, "world_state", None),
             )
             # logger.warning(f"!!!!!!!!!!!!!!pddl_problem: {pddl_problem}")
         case _:
@@ -316,7 +523,8 @@ def ground_problem(
         name for name, pose in robot_states.items() if pose is not None
     ]
     wrapper = MultiRobotWrapper(
-        valid_robot_names, GroundedPddlProblem(domain, pddl_problem, symbol_dict)
+        valid_robot_names,
+        GroundedPddlProblem(domain, pddl_problem, symbol_dict, failure_hint),
     )
     for outer_name in valid_robot_names:
         inner_name = outer_name.lower()

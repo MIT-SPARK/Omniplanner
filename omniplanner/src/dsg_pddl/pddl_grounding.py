@@ -99,6 +99,9 @@ class PddlGoal:
     pddl_goal: str
     robot_id: str
     constraints: list = field(default_factory=list)  # list[ConstraintFact]
+    # What the mission has already done (omniplanner.world_state.WorldState),
+    # so a replan only plans what is left. None plans from scratch.
+    world_state: object = None
 
 
 # TODO: need to reexamine this whole parsing framework as some point.
@@ -194,3 +197,6 @@ class GroundedPddlProblem:
     domain: PddlDomain
     problem_str: str
     symbols: Dict[str, PddlSymbol]
+    # Why the problem likely has no plan, found while grounding; "" if nothing
+    # stood out. Goes into the failure message the operator sees.
+    failure_hint: str = ""

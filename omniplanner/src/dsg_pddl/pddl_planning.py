@@ -16,6 +16,32 @@ DEFAULT_FD_SEARCH = (
 )
 
 
+# fast-downward exit codes (driver/returncodes.py).
+FD_UNSOLVABLE = (10, 11, 12)  # proved there is no plan, or searched it all
+FD_OUT_OF_TIME = (21, 23)
+FD_OUT_OF_MEMORY = (20, 22, 24)
+FD_BAD_INPUT = (30, 31)  # the translator rejected the problem
+
+
+def failure_reason(returncode: int, problem: GroundedPddlProblem) -> str:
+    """Says why fast-downward found no plan, in words the operator can act on."""
+    hint = getattr(problem, "failure_hint", "")
+    if hint:
+        return f"Cannot satisfy the goal and constraints: {hint}"
+    if returncode in FD_UNSOLVABLE:
+        return "Cannot satisfy the goal and constraints: no plan achieves the goal"
+    if returncode in FD_OUT_OF_TIME:
+        return "The planner ran out of time before finding a plan"
+    if returncode in FD_OUT_OF_MEMORY:
+        return "The planner ran out of memory before finding a plan"
+    if returncode in FD_BAD_INPUT:
+        return (
+            "The goal could not be read: check it names objects and places "
+            "in the scene graph"
+        )
+    return f"The planner failed (fast-downward exit code {returncode})"
+
+
 def solve_pddl(problem: GroundedPddlProblem):
     """Use fast-downward to solve the given pddl problem.
 
@@ -88,9 +114,7 @@ def solve_pddl(problem: GroundedPddlProblem):
             )
             with open(debug_fn, "w") as fo:
                 fo.write(problem.problem_str)
-            raise Exception(
-                f"Planning failed, please see {debug_fn} for failed problem file."
-            )
+            raise Exception(failure_reason(return_code.returncode, problem))
 
     plan = [lisp_string_to_ast(line) for line in lines[:-1]]
     return plan
