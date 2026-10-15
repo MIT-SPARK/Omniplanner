@@ -15,7 +15,11 @@ from omniplanner_msgs.msg import GotoPointsGoalMsg
 from plum import dispatch
 from rclpy.clock import Clock
 from robot_executor_interface.action_descriptions import ActionSequence, Follow
-from robot_executor_interface_ros.action_descriptions_ros import to_msg, to_viz_msg
+from robot_executor_interface_ros.action_descriptions_ros import (
+    to_color_rgba,
+    to_msg,
+    to_viz_msg,
+)
 from visualization_msgs.msg import Marker, MarkerArray
 
 from omniplanner_ros.omniplanner_node import PhoenixPlanningAdaptor
@@ -50,7 +54,7 @@ def _(action: Path):
 
 
 @to_viz_msg.register
-def path_to_marker(path: Path, marker_ns) -> MarkerArray:
+def path_to_marker(path: Path, marker_ns, color=None) -> MarkerArray:
     marker = Marker()
 
     marker.header.stamp = path.header.stamp
@@ -65,6 +69,8 @@ def path_to_marker(path: Path, marker_ns) -> MarkerArray:
     marker.color.g = 1.0
     marker.color.b = 0.0
     marker.color.a = 1.0
+    if color is not None:
+        marker.color = to_color_rgba(color, alpha=1.0)
 
     # Convert poses to points
     marker.points = [

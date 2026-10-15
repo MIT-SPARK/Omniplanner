@@ -15,6 +15,7 @@ from hydra_msgs.msg import DsgUpdate
 from nav_msgs.msg import Path
 from omniplanner.compile_plan import collect_plans, compile_plan
 from omniplanner.omniplanner import full_planning_pipeline
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.callback_groups import (
     MutuallyExclusiveCallbackGroup,
     ReentrantCallbackGroup,
@@ -37,6 +38,7 @@ from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 from visualization_msgs.msg import MarkerArray
 
+from omniplanner_ros.plan_viz import combine_plan_markers, parse_robot_colors
 from omniplanner_ros.ros_logging import setup_ros_log_forwarding
 
 logging.basicConfig(level=logging.INFO, force=True)
@@ -240,9 +242,26 @@ class OmniPlannerRos(Node):
             history=QoSHistoryPolicy.KEEP_ALL,
         )
 
-        self.compiled_plan_viz_pub = self.create_publisher(
-            MarkerArray, "~/compiled_plan_viz_out", qos_profile=latching_reliable_qos
+        # Plan markers are republished as ONE combined array per update (see
+        # combine_plan_markers), so only the latest message needs latching.
+        plan_viz_qos = QoSProfile(
+            depth=1,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            history=QoSHistoryPolicy.KEEP_LAST,
         )
+        self.compiled_plan_viz_pub = self.create_publisher(
+            MarkerArray, "~/compiled_plan_viz_out", qos_profile=plan_viz_qos
+        )
+        # robot name -> that robot's latest plan markers
+        self.plan_markers = {}
+        self.plan_markers_lock = threading.Lock()
+        # "name:#hex,..." (or a string array of name:#hex); unknown robots keep
+        # the default per-action colors.
+        self.declare_parameter(
+            "robot_colors", "", ParameterDescriptor(dynamic_typing=True)
+        )
+        self.robot_colors = parse_robot_colors(self.get_parameter("robot_colors").value)
 
         # Says why a plan request produced no plan. Whoever paused the executor
         # to wait for that plan (the goal manager) needs to hear it, or the
@@ -351,6 +370,14 @@ class OmniPlannerRos(Node):
         """
         return plan_dict
 
+    def publish_plan_markers(self, robot_name, marker_array):
+        """Replace ``robot_name``'s plan markers and republish every robot's."""
+        markers = getattr(marker_array, "markers", marker_array)
+        with self.plan_markers_lock:
+            self.plan_markers[robot_name] = list(markers)
+            combined = combine_plan_markers(self.plan_markers)
+            self.compiled_plan_viz_pub.publish(combined)
+
     def get_robot_poses(self, dsg_frame):
         pose_dict = {}
         for name, pose_adaptor in self.robot_adaptors.items():
@@ -436,10 +463,13 @@ class OmniPlannerRos(Node):
 
             for robot_name, compiled_plan in plan_dict.items():
                 self.robot_adaptors[robot_name].publish_plan(to_msg(compiled_plan))
-                # TODO: combine markers into single array so that latching works
-                # correctly for multi-robot plans?
-                self.compiled_plan_viz_pub.publish(
-                    to_viz_msg(compiled_plan, robot_name)
+                self.publish_plan_markers(
+                    robot_name,
+                    to_viz_msg(
+                        compiled_plan,
+                        robot_name,
+                        color=self.robot_colors.get(robot_name),
+                    ),
                 )
             self.plan_robots_pub.publish(String(data=json.dumps(sorted(plan_dict))))
 
