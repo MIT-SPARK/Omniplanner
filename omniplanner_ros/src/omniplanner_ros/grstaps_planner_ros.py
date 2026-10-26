@@ -344,10 +344,11 @@ class GrstapsRos:
             )
         else:
             logger.info(
-                "Goal: %d visit, %d inspect, %d manipulate target(s)",
+                "Goal: %d visit, %d inspect, %d manipulate target(s); pinned: %s",
                 len(found["visit"]),
                 len(found["inspect"]),
                 len(found["manipulate"]),
+                found["bound"] or "none",
             )
 
         # Constraints arrive from two places and both must be honoured: the
@@ -373,6 +374,7 @@ class GrstapsRos:
             # found it": the task ends where it started, so no carry is planned
             # and the Place goes down on the pick point.
             manipulate_destinations=found["destinations"],
+            robot_bound=found["bound"],
             robot_id=msg.goal.robot_id,
             constraints=persistent + per_msg,
             world_state=(

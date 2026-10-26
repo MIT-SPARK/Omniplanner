@@ -386,6 +386,10 @@ class GrstapsGoal:
     # What the mission has already done (omniplanner.world_state.WorldState):
     # grounding plans only the rest. None plans the whole goal.
     world_state: Any = None
+    # Tasks the goal pins to named robots: {"visit"|"inspect" -> {symbol ->
+    # [robots]}}, from the -by predicates. A pinned visit is one task per
+    # robot; a pinned inspection is one coalition task that includes them all.
+    robot_bound: Dict[str, Dict[str, List[str]]] = field(default_factory=dict)
 
 
 @dataclass
@@ -493,6 +497,17 @@ _GOAL_PREDS = {
     "object-in-place": ("manipulate", 1),  # (object-in-place ?o ?p) -- ?o
 }
 
+# Predicates that pin a task to one robot: (visited-object-by ?r ?o) etc., the
+# same ones the multirobot FD domain uses. The allocator cannot be told "this
+# task is hilbert's", so each pinned task demands a trait only that robot
+# carries; see _identity_dims.
+_BOUND_PREDS = {
+    "visited-object-by": "visit",
+    "visited-place-by": "visit",
+    "visited-poi-by": "visit",
+    "inspected-by": "inspect",
+}
+
 
 def parse_goal_targets(pddl_goal: str):
     """Split a PDDL goal into visit / inspect / manipulate targets.
@@ -514,7 +529,14 @@ def parse_goal_targets(pddl_goal: str):
         raise ValueError(f"Could not parse GRSTAPS-X goal {pddl_goal!r}") from exc
 
     # destinations: {object -> place to leave it}, from (object-in-place ?o ?p)
-    found = {"visit": [], "inspect": [], "manipulate": [], "destinations": {}}
+    # bound: {kind -> {symbol -> [robots]}}, from the -by predicates
+    found = {
+        "visit": [],
+        "inspect": [],
+        "manipulate": [],
+        "destinations": {},
+        "bound": {},
+    }
 
     def walk(node, negated=False):
         if isinstance(node, str) or not node:
@@ -538,12 +560,26 @@ def parse_goal_targets(pddl_goal: str):
             for sub in node[1:]:
                 walk(sub, not negated)
             return
+        if head in _BOUND_PREDS:
+            if negated:
+                raise ValueError(f"Unsupported negative GRSTAPS-X goal: {head}")
+            if len(node) != 3 or not all(isinstance(s, str) for s in node[1:]):
+                raise ValueError(f"Invalid arguments for GRSTAPS-X predicate {head!r}")
+            robots = (
+                found["bound"]
+                .setdefault(_BOUND_PREDS[head], {})
+                .setdefault(node[2], [])
+            )
+            if node[1] not in robots:
+                robots.append(node[1])
+            return
         entry = _GOAL_PREDS.get(head)
         if entry is None or head in ("at-place", "at-object", "holding"):
             raise ValueError(
                 f"Unsupported GRSTAPS-X goal predicate {head!r}; use visited-*, "
-                "safe, (not (suspicious ...)), or object-in-place. Robot-bound "
-                "final poses, pick-and-hold and disjunctions are not implemented."
+                "visited-*-by, safe, inspected-by, (not (suspicious ...)), or "
+                "object-in-place. Final poses, pick-and-hold and disjunctions "
+                "are not implemented."
             )
         arity = 3 if head == "object-in-place" else 2
         if len(node) != arity or not all(isinstance(s, str) for s in node[1:]):
@@ -579,14 +615,33 @@ def _visit_targets(pddl_goal: str):
     found = parse_goal_targets(pddl_goal)
     out = []
     for kind in ("visit", "inspect", "manipulate"):
-        for s in found[kind]:
+        for s in found[kind] + list(found["bound"].get(kind, {})):
             if s not in out:
                 out.append(s)
     return out
 
 
+def _identity_dims(fleet_names):
+    """{robot -> trait dimension only that robot carries}, after TRAIT_DIM.
+
+    ITAGS matches traits, not names, so pinning a task to a robot means giving
+    the robot a trait nobody else has and making the task demand it. Coalition
+    traits add up, so a task demanding several identities gets all of them.
+    """
+    return {r: TRAIT_DIM + i for i, r in enumerate(fleet_names)}
+
+
+def _pad(traits, width):
+    return list(traits) + [0] * (width - len(traits))
+
+
 def enumerate_tasks(
-    goal, durations, vertex_of, atomic_manipulation=True, inspect_traits=None
+    goal,
+    durations,
+    vertex_of,
+    atomic_manipulation=True,
+    inspect_traits=None,
+    identity=None,
 ):
     """Goal -> (tasks, {symbol -> [task indices]}, intrinsic precedence pairs).
 
@@ -599,28 +654,41 @@ def enumerate_tasks(
     before place, inspect before pick -- has to be emitted explicitly here.
     That is the one correctness burden this entry point takes on, so it is
     returned rather than left to the caller to remember.
+
+    `identity` ({robot -> trait dim}, see _identity_dims) is needed when the
+    goal pins tasks to robots; every vector is then widened to cover it.
     """
     tasks: List[dict] = []
     of_symbol: Dict[str, List[int]] = {}
     if inspect_traits is None:
         inspect_traits = requirement_traits(DEFAULT_INSPECT_REQUIREMENT)
     precedence: List[List[int]] = []
+    identity = identity or {}
+    width = TRAIT_DIM + len(identity)
+    bound = getattr(goal, "robot_bound", None) or {}
 
-    def add(name, traits, duration, sym, end=None):
+    def add(name, traits, duration, sym, end=None, robots=()):
         idx = len(tasks)
         end_v = vertex_of.get(end.lower()) if end else None
         if end and end_v is None:
             logger.warning("Destination %s is not in the graph; ignoring it.", end)
+        traits = _pad(traits, width)
+        for r in robots:
+            traits[identity[r]] = 1
         tasks.append(_task(name, traits, duration, vertex_of[sym.lower()], end_v))
         of_symbol.setdefault(sym.lower(), []).append(idx)
         return idx
 
     inspect_set = {s.lower() for s in (goal.inspect_points or [])}
+    inspect_set |= set(bound.get("inspect", {}))
     manipulate_set = {s.lower() for s in (goal.manipulate_points or [])}
+    bound_visits = bound.get("visit", {})
 
     for sym in goal.goal_points or []:
         if sym.lower() in inspect_set or sym.lower() in manipulate_set:
             continue  # a richer task for this symbol is added below
+        if sym.lower() in bound_visits:
+            continue  # a named robot already goes there
         add(
             f"visit-location {sym.lower()} :: visit",
             _traits(SENSOR),
@@ -628,12 +696,33 @@ def enumerate_tasks(
             sym,
         )
 
-    for sym in goal.inspect_points or []:
+    # One task per named robot: "both robots visit o6" is two visits.
+    for sym, robots in bound_visits.items():
+        for r in robots:
+            add(
+                f"visit-location {sym} :: visit by {r}",
+                _traits(SENSOR),
+                durations["visit-location"],
+                sym,
+                robots=[r],
+            )
+
+    # A pinned inspection is still one coalition task; its team must include
+    # every robot named for it, on top of the usual requirement.
+    bound_inspects = bound.get("inspect", {})
+    for sym in list(
+        dict.fromkeys(
+            [s.lower() for s in goal.inspect_points or []] + list(bound_inspects)
+        )
+    ):
+        robots = bound_inspects.get(sym, [])
         add(
-            f"inspect-object {sym.lower()} :: joint_observation",
+            f"inspect-object {sym} :: joint_observation"
+            + (f" by {', '.join(robots)}" if robots else ""),
             inspect_traits,
             durations["inspect-object"],
             sym,
+            robots=robots,
         )
 
     for sym in goal.manipulate_points or []:
@@ -1098,6 +1187,18 @@ def residual_goal(goal, dsg):
     inspects = [s for s in goal.inspect_points if s not in inspected]
     done += [f"visit {s}" for s in goal.goal_points if s in visited]
     done += [f"inspect {s}" for s in goal.inspect_points if s in inspected]
+    # A pinned task is done only when THAT robot did it.
+    by_robot = {
+        "visit": {r.lower(): s for r, s in (state.visited_by or {}).items()},
+        "inspect": {r.lower(): s for r, s in (state.inspected_by or {}).items()},
+    }
+    bound = {}
+    for kind, targets in (goal.robot_bound or {}).items():
+        for sym, robots in targets.items():
+            left = [r for r in robots if sym not in by_robot[kind].get(r, ())]
+            done += [f"{kind} {sym} by {r}" for r in robots if r not in left]
+            if left:
+                bound.setdefault(kind, {})[sym] = left
     dropped = done or held
     if dropped:
         logger.info(
@@ -1120,6 +1221,7 @@ def residual_goal(goal, dsg):
             manipulate_points=manipulate,
             manipulate_destinations=dests,
             extra_precedence=extra,
+            robot_bound=bound,
         ),
         held,
     )
@@ -1278,10 +1380,12 @@ def ground_problem(
     if domain.entry == "pddl" and (
         goal.manipulate_destinations
         or goal.extra_precedence
+        or goal.robot_bound
         or any(getattr(c, "predicate", None) == "before" for c in goal.constraints)
     ):
         raise ValueError(
-            "Relocation destinations and explicit ordering require entry='itags'"
+            "Relocation destinations, explicit ordering and robot-pinned tasks "
+            "require entry='itags'"
         )
     # Match PDDL's case-insensitive symbols and avoid duplicate scheduled tasks.
     goal = replace(
@@ -1293,6 +1397,13 @@ def ground_problem(
         ),
         manipulate_destinations={
             k.lower(): v.lower() for k, v in goal.manipulate_destinations.items()
+        },
+        robot_bound={
+            kind: {
+                sym.lower(): list(dict.fromkeys(r.lower() for r in robots))
+                for sym, robots in targets.items()
+            }
+            for kind, targets in (goal.robot_bound or {}).items()
         },
     )
     goal, held = residual_goal(goal, dsg)
@@ -1356,7 +1467,12 @@ def ground_problem(
             dsg, graph, vertices, robot_states[name], objects
         )
 
-    if not (goal.goal_points or goal.inspect_points or goal.manipulate_points):
+    if not (
+        goal.goal_points
+        or goal.inspect_points
+        or goal.manipulate_points
+        or goal.robot_bound
+    ):
         # Nothing left for the solver -- it rejects an empty task list -- so
         # the plan is just the carries, or nothing at all for an achieved goal.
         logger.info(
@@ -1400,6 +1516,7 @@ def ground_problem(
         + list(getattr(goal, "manipulate_points", None) or [])
         + list(getattr(goal, "inspect_points", None) or [])
         + list((getattr(goal, "manipulate_destinations", None) or {}).values())
+        + [sym for targets in goal.robot_bound.values() for sym in targets]
     ):
         if s.lower() not in _seen_lower:
             _seen_lower.add(s.lower())
@@ -1447,6 +1564,33 @@ def ground_problem(
 
     if not fleet:
         raise ValueError("No robot in robot_states has a pose; nothing to plan for.")
+
+    # A task pinned to a robot that is not planning cannot be given to anyone
+    # else, so say why rather than plan without it.
+    named = {
+        r
+        for targets in goal.robot_bound.values()
+        for rs in targets.values()
+        for r in rs
+    }
+    absent = sorted(named - {robot_id.lower() for robot_id, _ in fleet})
+    if absent:
+        known = {r.lower(): r for r in robot_states}
+        why = [
+            f"{r} has no pose (its map->base_link transform is missing)"
+            if r in known and robot_states[known[r]] is None
+            else f"{r} is not a robot this planner can use"
+            if r in known
+            else f"{r} is not a known robot (known: {', '.join(sorted(known))})"
+            for r in absent
+        ]
+        raise ValueError(
+            f"The goal assigns work to {', '.join(absent)}, but " + "; ".join(why)
+        )
+    identity = (
+        _identity_dims([robot_id.lower() for robot_id, _ in fleet]) if named else {}
+    )
+    width = TRAIT_DIM + len(identity)
 
     # Say so when a target is cut off, rather than letting the solver "succeed"
     # with an empty route. Seeding the search with the fleet's own vertices
@@ -1526,11 +1670,20 @@ def ground_problem(
         )
         for robot_id, _ in fleet
     }
-    used = sorted(set(robot_species.values()))
     logger.info(
         "Fleet: %s",
         ", ".join(f"{r}={s}" for r, s in sorted(robot_species.items())),
     )
+    # Species: what each robot supplies. With pinned tasks every robot gets
+    # its own, its platform's traits plus its identity trait.
+    species_traits = {}
+    for robot_id, kind in list(robot_species.items()):
+        traits = _pad(SPECIES[kind]["traits"], width)
+        if identity:
+            traits[identity[robot_id.lower()]] = 1
+            robot_species[robot_id] = f"{kind}@{robot_id}"
+        species_traits[robot_species[robot_id]] = (kind, traits)
+    used = sorted(species_traits)
 
     mp = json.loads(json.dumps(template["motion_planners"][0]))
     mp["environment_parameters"]["graph_filepath"] = (
@@ -1542,9 +1695,9 @@ def ground_problem(
         "species": [
             {
                 "name": name,
-                "traits": SPECIES[name]["traits"],
-                "bounding_radius": SPECIES[name]["bounding_radius"],
-                "speed": SPECIES[name]["speed"],
+                "traits": species_traits[name][1],
+                "bounding_radius": SPECIES[species_traits[name][0]]["bounding_radius"],
+                "speed": SPECIES[species_traits[name][0]]["speed"],
                 "mp_index": 0,
             }
             for name in used
@@ -1579,7 +1732,7 @@ def ground_problem(
                 "subtasks": [
                     {
                         "role": "visit",
-                        "base_traits": _traits(SENSOR),
+                        "base_traits": _pad(_traits(SENSOR), width),
                         "duration": durations["visit-location"],
                         "location": "arg0",
                     }
@@ -1598,7 +1751,9 @@ def ground_problem(
                 "subtasks": [
                     {
                         "role": "joint_observation",
-                        "base_traits": requirement_traits(domain.inspect_requirement),
+                        "base_traits": _pad(
+                            requirement_traits(domain.inspect_requirement), width
+                        ),
                         "duration": durations["inspect-object"],
                         "location": "arg0",
                     },
@@ -1608,7 +1763,7 @@ def ground_problem(
                 "subtasks": [
                     {
                         "role": "relocate",
-                        "base_traits": _traits(MANIP),
+                        "base_traits": _pad(_traits(MANIP), width),
                         "duration": durations["pick-object"]
                         + durations["place-object"],
                         "location": "arg0",
@@ -1619,7 +1774,7 @@ def ground_problem(
                 "subtasks": [
                     {
                         "role": "pick",
-                        "base_traits": _traits(MANIP),
+                        "base_traits": _pad(_traits(MANIP), width),
                         "duration": durations["pick-object"],
                         "location": "arg0",
                     }
@@ -1629,7 +1784,7 @@ def ground_problem(
                 "subtasks": [
                     {
                         "role": "place",
-                        "base_traits": _traits(MANIP),
+                        "base_traits": _pad(_traits(MANIP), width),
                         "duration": durations["place-object"],
                         "location": "arg0",
                     }
@@ -1651,6 +1806,7 @@ def ground_problem(
             vertex_of,
             domain.atomic_manipulation,
             inspect_traits=requirement_traits(domain.inspect_requirement),
+            identity=identity,
         )
         if not tasks:
             raise ValueError("No tasks to allocate; nothing to plan for.")
