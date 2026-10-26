@@ -726,6 +726,11 @@ def _max_object_snap_m():
 # so near-equal routes are not rounded into ties.
 DISTANCE_SCALE = 10.0
 
+# Added to every hop (decimetres): distances are shortest paths, so going via an
+# intermediate point of interest (e.g. an object's own place) costs the same as
+# going straight there, and the plan would stop at it; one decimetre breaks the tie.
+HOP_COST = 1
+
 # Search budget (whole seconds) for goal-relevant problems, which are small
 # enough for an anytime search to cut route length (see
 # pddl_planning.ANYTIME_FD_SEARCH); 0 keeps the single greedy search.
@@ -995,7 +1000,7 @@ def generate_goal_relevant_multirobot_pddl(
                 continue
             if tuple(sorted([s, t])) in forbidden_edges or not np.isfinite(D[i, j]):
                 continue
-            d = int(round(D[i, j] * DISTANCE_SCALE))
+            d = int(round(D[i, j] * DISTANCE_SCALE)) + HOP_COST
             init.append(("connected", s, t))
             init.append(("=", ("distance", s, t), d))
             init.append(("=", ("distance", t, s), d))

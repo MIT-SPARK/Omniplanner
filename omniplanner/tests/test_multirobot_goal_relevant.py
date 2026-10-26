@@ -160,7 +160,27 @@ def test_distances_are_shortest_paths_in_decimetres():
     problem = _grounded(G, "(visited-object o1)").problem_str
     # hamilton starts at t0 (0, 0); o1 sits 0.22 m from place (8, 4): 12 m along the grid
     o1 = math.hypot(0.1, 0.2)
-    assert f"(= (distance t0 o1) {round((12 + o1) * 10)})" in problem
+    assert f"(= (distance t0 o1) {round((12 + o1) * 10) + 1})" in problem  # + one hop
+
+
+def test_no_stops_on_the_way():
+    """Going straight to a target is strictly cheaper than via its own place.
+
+    Distances are shortest paths, so without a cost per hop the two tie and a
+    plan may stop at the place first (seen on the fused Penn map).
+    """
+    import re
+
+    G = grid_dsg()
+    problem = _grounded(G, "(visited-object o1)").problem_str
+    dist = {
+        (a, b): int(d)
+        for a, b, d in re.findall(r"\(= \(distance (\w+) (\w+)\) (\d+)\)", problem)
+    }
+    place = re.search(r"\(object-in-place o1 (\w+)\)", problem).group(1)
+    assert dist[("t0", "o1")] < dist[("t0", place)] + dist[(place, "o1")]
+    plan = _plan(G, "(visited-object o1)")
+    assert [a[3] for a in plan.symbolic_actions if a[0] == "goto-poi"] == ["o1"]
 
 
 def test_missing_symbol_is_reported():
