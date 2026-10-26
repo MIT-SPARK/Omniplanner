@@ -14,7 +14,11 @@ from dsg_pddl.pddl_grounding import (
     PddlProblem,
     PddlSymbol,
 )
-from dsg_pddl.pddl_utils import extract_facts, lisp_string_to_ast, pddl_char_to_dsg_char
+from dsg_pddl.pddl_utils import (
+    extract_facts,
+    lisp_string_to_ast,
+    pddl_symbol_to_node_symbol,
+)
 from omniplanner.omniplanner import RobotWrapper
 from omniplanner.tsp import LayerPlanner
 
@@ -406,12 +410,7 @@ def add_symbol_positions(G, symbols):
         if s.position is not None:
             continue
         else:
-            pddl_symbol_char = s.symbol[0]
-            dsg_symbol_char = pddl_char_to_dsg_char(pddl_symbol_char)
-            ns = spark_dsg.NodeSymbol(dsg_symbol_char, int(s.symbol[1:]))
-            if not G.has_node(ns):
-                # open-vocab regions use a lowercase r prefix
-                ns = spark_dsg.NodeSymbol(pddl_symbol_char, int(s.symbol[1:]))
+            ns = pddl_symbol_to_node_symbol(G, s.symbol)
             # A copy: the attribute array is a view into the graph's storage.
             position = np.array(G.get_node(ns).attributes.position[:2])
             if position is None:
@@ -555,10 +554,7 @@ def generate_goal_relevant_pddl(
     region_to_places = None
 
     def obj_position(obj_sym):
-        ns = spark_dsg.NodeSymbol(
-            pddl_char_to_dsg_char(obj_sym[0]), int(obj_sym[1:])
-        )
-        return G.get_node(ns).attributes.position[:2]
+        return G.get_node(pddl_symbol_to_node_symbol(G, obj_sym)).attributes.position[:2]
 
     for name in referenced:
         sym = by_name.get(name)
