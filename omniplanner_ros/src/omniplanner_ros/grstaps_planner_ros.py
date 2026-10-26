@@ -531,6 +531,14 @@ class GrstapsConfig(sc.Config):
     # {hilbert: spot_arm} when the sim spot stands in for one with an arm.
     # Species are spot, spot_arm, uav.
     robot_species: dict = None
+    # {robot_type: species} for the whole fleet, e.g. {spot: spot_arm} when
+    # every Spot has an arm. robot_species still wins for a named robot.
+    robot_type_species: dict = None
+    # Where the itags entry writes problem/solution files (default
+    # ADT4_GRSTAPS_WORK_DIR or ~/.cache/omniplanner/grstaps).
+    work_dir: str = None
+    # Longest a solve may take, in seconds, before it counts as a failure.
+    solver_timeout_s: float = None
     # {trait: magnitude} an inspection's coalition must cover together, e.g.
     # {ground: 2, sensor: 2} for two ground robots. Traits are ground, air,
     # sensor, manipulator. Unset keeps the default ground+air pair, which a

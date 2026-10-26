@@ -34,6 +34,5 @@ Before calling the whole live stack verified:
    manipulation (`atomic_manipulation=False`) does not ensure one carrier from
    pick through place; use the default atomic mode.
 
-Completed corrections and reproducible tests are recorded in the
-[integration audit](integration-audit.md). The [README](../README.md) is the
-concise description of supported operation.
+The [README](../README.md) is the concise description of supported operation;
+the tests under [`tests/`](../tests/) reproduce it.

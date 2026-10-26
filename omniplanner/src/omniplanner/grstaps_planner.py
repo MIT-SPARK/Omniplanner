@@ -120,7 +120,7 @@ UNPLANNABLE_ROBOT_TYPES = {
 }
 
 
-def species_for(robot_type, overrides=None, robot_name=None):
+def species_for(robot_type, overrides=None, robot_name=None, type_overrides=None):
     """Map a declared robot_type onto a species, defaulting rather than failing.
 
     An unknown platform still plans -- it just gets the plain ground profile.
@@ -147,6 +147,19 @@ def species_for(robot_type, overrides=None, robot_name=None):
     if not robot_type:
         return DEFAULT_SPECIES
     key = str(robot_type).strip().lower()
+    # A deployment's own reading of a robot_type, e.g. {spot: spot_arm} when
+    # every Spot in the fleet carries an arm.
+    chosen = {str(k).lower(): v for k, v in (type_overrides or {}).items()}.get(key)
+    if chosen in SPECIES:
+        return chosen
+    if chosen is not None:
+        logger.warning(
+            "robot_type_species maps %r to %r, which is not a known species %s; "
+            "ignoring it.",
+            key,
+            chosen,
+            sorted(SPECIES),
+        )
     if key in ROBOT_TYPE_SPECIES:
         return ROBOT_TYPE_SPECIES[key]
     logger.warning(
@@ -293,9 +306,9 @@ class GrstapsDomain(PlanningDomain):
         "ADT4_GUROBI_LICENSE", os.path.expanduser("~/gurobi.lic")
     )
     scenario_name: str = "omniplanner_run"
-    solver_params_from: str = (
-        "wpc_spread"  # scenario to copy itags/scheduler params from
-    )
+    # None -> SOLVER_PARAMS. A scenario name under the checkout's data dir
+    # copies the motion planner, search and scheduler parameters from it.
+    solver_params_from: str = None
     run_mode: str = "docker"  # "docker" (WLS licence) or "native" (Named-User)
     native_binary: str = os.environ.get(
         "ADT4_GRSTAPS_BINARY",
@@ -326,14 +339,25 @@ class GrstapsDomain(PlanningDomain):
     # pick and the drop as separate tasks, at the cost of that guarantee.
     atomic_manipulation: bool = True
     entry: str = "pddl"
-    itags_binary: str = os.environ.get(
-        "ADT4_ITAGS_BINARY",
-        os.path.expanduser("~/grstapsx/build-native/itags"),
-    )
+    # None -> ADT4_ITAGS_BINARY, else `itags` on PATH (what a colcon build
+    # of grstapsx installs), else ~/grstapsx/build-native/itags.
+    itags_binary: str = None
     # {robot_name -> species}, overriding what robot_type implies. Use when a
     # specific robot's capabilities differ from its declared platform, e.g.
     # {"hilbert": "spot_arm"} for a sim spot standing in for one with an arm.
     robot_species: Dict[str, str] = field(default_factory=dict)
+    # {robot_type -> species}, overriding ROBOT_TYPE_SPECIES for the whole
+    # fleet, e.g. {"spot": "spot_arm"} when every Spot has an arm.
+    robot_type_species: Dict[str, str] = field(default_factory=dict)
+    # Where the itags entry writes its problem and solution files. None ->
+    # ADT4_GRSTAPS_WORK_DIR, else ~/.cache/omniplanner/grstaps. Each robot's
+    # planner gets its own subdirectory, so two planners never share files.
+    work_dir: str = None
+    # Longest a solve may take, in seconds. The solver's own search and MILP
+    # timeouts are capped to it, and the process is killed past it (plus a
+    # margin), so a hung solve becomes a planning failure instead of blocking
+    # the node's planning lock.
+    solver_timeout_s: float = 120.0
     # {trait name -> magnitude} an inspection's coalition must cover together.
     # The default is a ground+air pair; a fleet with no UAV can never field it,
     # so such a deployment asks for e.g. {"ground": 2, "sensor": 2} instead.
@@ -1491,9 +1515,17 @@ def ground_problem(
             goal.robot_id,
         )
 
-    scenario_dir = os.path.join(
-        domain.repo_root, "data", "grstapsx", domain.scenario_name
-    )
+    if domain.entry == "itags":
+        # The itags entry reads everything from absolute paths, so it needs
+        # nothing from the grstapsx checkout and can write anywhere writable.
+        scenario_dir = os.path.join(
+            _work_dir(domain), f"{domain.scenario_name}_{goal.robot_id}"
+        )
+    else:
+        # grstapsx_example resolves the graph under the checkout's data dir.
+        scenario_dir = os.path.join(
+            domain.repo_root, "data", "grstapsx", domain.scenario_name
+        )
     os.makedirs(os.path.join(scenario_dir, "maps"), exist_ok=True)
     with open(os.path.join(scenario_dir, "maps", "ground_graph.json"), "w") as fo:
         json.dump(graph, fo)
@@ -1651,22 +1683,15 @@ def ground_problem(
             f"  (:metric minimize (total-time))\n)\n"
         )
 
-    template = json.load(
-        open(
-            os.path.join(
-                domain.repo_root,
-                "data",
-                "grstapsx",
-                domain.solver_params_from,
-                "action_trait_config.json",
-            )
-        )
-    )
+    template = _solver_params(domain)
     # Only emit species the fleet actually uses -- an unused species with a
     # manipulator would let the allocator believe a capability is available.
     robot_species = {
         robot_id: species_for(
-            (goal.robot_types or {}).get(robot_id), domain.robot_species, robot_id
+            (goal.robot_types or {}).get(robot_id),
+            domain.robot_species,
+            robot_id,
+            domain.robot_type_species,
         )
         for robot_id, _ in fleet
     }
@@ -1686,9 +1711,15 @@ def ground_problem(
     used = sorted(species_traits)
 
     mp = json.loads(json.dumps(template["motion_planners"][0]))
-    mp["environment_parameters"]["graph_filepath"] = (
-        f"/grstapsx/{domain.scenario_name}/maps/ground_graph.json"
-    )
+    if domain.entry == "itags":
+        mp["environment_parameters"]["use_data_dir"] = False
+        mp["environment_parameters"]["graph_filepath"] = os.path.join(
+            scenario_dir, "maps", "ground_graph.json"
+        )
+    else:
+        mp["environment_parameters"]["graph_filepath"] = (
+            f"/grstapsx/{domain.scenario_name}/maps/ground_graph.json"
+        )
     config = {
         "_comment": f"generated by omniplanner for robot {goal.robot_id}",
         "motion_planners": [mp],
@@ -1893,6 +1924,123 @@ def ground_problem(
     return _wrap([robot_id for robot_id, _ in fleet], grounded, goal.robot_id)
 
 
+# The solver parameters omniplanner runs with: GRSTAPS-X's wpc_spread scenario,
+# whose values were used in testing. Kept here so the itags entry needs no
+# file from the grstapsx checkout; the timeouts are capped per solve.
+SOLVER_PARAMS = {
+    "motion_planners": [
+        {
+            "config_type": "EuclideanGraphMotionPlanner",
+            "environment_parameters": {
+                "config_type": "EuclideanGraphEnvironment",
+                "configuration_type": "graph",
+                "graph_type": "euclidean",
+                "euclidean_graph_type": "singular",
+                "is_complete": False,
+                "use_data_dir": True,
+                "graph_filepath": "",
+            },
+            "algorithm_parameters": {
+                "config_type": "EuclideanGraphMotionPlannerParameters",
+                "configuration_type": "graph",
+                "graph_type": "euclidean",
+                "euclidean_graph_type": "singular",
+                "is_complete": False,
+                "timeout": 60.0,
+            },
+        }
+    ],
+    "itags_parameters": {
+        "config_type": "BestFirstSearchParameters",
+        "has_timeout": True,
+        "timeout": 1200.0,
+        "timer_name": "itags",
+        "prune_before_eval": True,
+        "save_closed_nodes": False,
+        "save_pruned_nodes": False,
+    },
+    "scheduler_parameters": {
+        "config_type": "DeterministicMilpSchedulerParameters",
+        "scheduler_type": "milp",
+        "milp_scheduler_type": "deterministic",
+        "timeout": 60.0,
+        "milp_timeout": 60.0,
+        "threads": 0,
+        "compute_transition_duration_heuristic": False,
+        "use_hierarchical_objective": True,
+    },
+}
+
+
+def _solver_params(d: GrstapsDomain):
+    """Motion planner, search and scheduler parameters, timeouts capped.
+
+    The built-in SOLVER_PARAMS unless solver_params_from names a scenario in
+    the grstapsx checkout to copy them from.
+    """
+    params = json.loads(json.dumps(SOLVER_PARAMS))
+    if d.solver_params_from:
+        path = os.path.join(
+            d.repo_root,
+            "data",
+            "grstapsx",
+            d.solver_params_from,
+            "action_trait_config.json",
+        )
+        with open(path) as f:
+            loaded = json.load(f)
+        params.update({k: loaded[k] for k in params if k in loaded})
+    cap = float(d.solver_timeout_s)
+    for key, sub in (
+        ("itags_parameters", "timeout"),
+        ("scheduler_parameters", "timeout"),
+        ("scheduler_parameters", "milp_timeout"),
+    ):
+        params[key][sub] = min(float(params[key].get(sub, cap)), cap)
+    return params
+
+
+def _work_dir(d: GrstapsDomain):
+    return os.path.expanduser(
+        d.work_dir
+        or os.environ.get("ADT4_GRSTAPS_WORK_DIR")
+        or "~/.cache/omniplanner/grstaps"
+    )
+
+
+def _itags_binary(d: GrstapsDomain):
+    """The configured itags binary, else the one a colcon build installed."""
+    return (
+        d.itags_binary
+        or os.environ.get("ADT4_ITAGS_BINARY")
+        or shutil.which("itags")
+        or os.path.expanduser("~/grstapsx/build-native/itags")
+    )
+
+
+def _run(cmd, d: GrstapsDomain, cwd):
+    """Run the solver, killing it if it outlives solver_timeout_s.
+
+    The solver caps its own search and MILP time at solver_timeout_s; the
+    margin covers start-up and writing the solution.
+    """
+    limit = float(d.solver_timeout_s) + 30.0
+    try:
+        return subprocess.run(
+            cmd,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            env=_solver_env(d),
+            timeout=limit,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"GRSTAPS-X did not finish within {limit:.0f} s and was stopped; "
+            "raise solver_timeout_s or simplify the goal."
+        ) from exc
+
+
 def _solver_command(d: GrstapsDomain, rel: str):
     """Build the solver invocation for whichever run mode is configured.
 
@@ -1940,14 +2088,22 @@ def _solver_env(d: GrstapsDomain):
     if d.run_mode != "native":
         return None
     env = dict(os.environ)
-    lib_dirs = [os.path.join(d.gurobi_home, "lib")]
-    if d.conda_prefix:
-        lib_dirs.append(os.path.join(d.conda_prefix, "lib"))
+    # A colcon-built itags carries its own rpath to Gurobi and needs neither
+    # of these; a hand-built one links them from here.
+    lib_dirs = [
+        os.path.join(p, "lib")
+        for p in (d.gurobi_home, d.conda_prefix)
+        if p and os.path.isdir(os.path.join(p, "lib"))
+    ]
     if env.get("LD_LIBRARY_PATH"):
         lib_dirs.append(env["LD_LIBRARY_PATH"])
-    env["GUROBI_HOME"] = d.gurobi_home
-    env["LD_LIBRARY_PATH"] = ":".join(lib_dirs)
-    env["GRB_LICENSE_FILE"] = d.license_path
+    if lib_dirs:
+        env["LD_LIBRARY_PATH"] = ":".join(lib_dirs)
+    if d.gurobi_home and os.path.isdir(d.gurobi_home):
+        env["GUROBI_HOME"] = d.gurobi_home
+    # Otherwise Gurobi looks in its default places (~/gurobi.lic and others).
+    if d.license_path and os.path.exists(d.license_path):
+        env["GRB_LICENSE_FILE"] = d.license_path
     return env
 
 
@@ -1964,9 +2120,7 @@ def _run_solver(problem: GroundedGrstapsProblem):
     last = None
     for attempt in range(1, d.license_retries + 1):
         logger.warning("Calling (attempt %d): %s", attempt, " ".join(cmd))
-        last = subprocess.run(
-            cmd, cwd=d.repo_root, capture_output=True, text=True, env=_solver_env(d)
-        )
+        last = _run(cmd, d, d.repo_root)
         logger.warning("Return code: %s", last.returncode)
         if last.returncode == 0:
             return last
@@ -2010,16 +2164,15 @@ def _run_itags(problem: GroundedGrstapsProblem):
     # read back as this run's answer.
     if os.path.exists(out_path):
         os.remove(out_path)
-    if not os.path.exists(d.itags_binary):
+    binary = _itags_binary(d)
+    if not os.path.exists(binary):
         raise FileNotFoundError(
-            f"itags binary not found at {d.itags_binary}. Build it "
-            "(cmake target `itags`) or set ADT4_ITAGS_BINARY."
+            f"itags binary not found (looked for {binary}). Build the grstapsx "
+            "package in this workspace, or set ADT4_ITAGS_BINARY."
         )
-    cmd = [d.itags_binary, in_path, out_path]
+    cmd = [binary, in_path, out_path]
     logger.warning("Calling: %s", " ".join(cmd))
-    result = subprocess.run(
-        cmd, cwd=d.repo_root, capture_output=True, text=True, env=_solver_env(d)
-    )
+    result = _run(cmd, d, problem.scenario_dir)
     logger.warning("Return code: %s", result.returncode)
     return result, out_path
 
