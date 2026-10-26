@@ -375,6 +375,11 @@ def apply_world_state(init_facts, world_state, symbols, robot_ids):
     for robot in sorted(set(held.values())):
         facts.append(("hand-full", robot))
     facts += [("visited-poi", s) for s in sorted(world_state.visited & known)]
+    for robot in robot_ids:
+        done = getattr(world_state, "visited_by", {}).get(robot, set())
+        facts += [("visited-poi-by", robot, s) for s in sorted(done & known)]
+        done = getattr(world_state, "inspected_by", {}).get(robot, set())
+        facts += [("inspected-by", robot, s) for s in sorted(done & known)]
     if held or world_state.visited or world_state.inspected:
         logger.info(
             "Planning from mission state: holding=%s, %d visited, %d inspected",
@@ -429,6 +434,22 @@ def generate_multirobot_region_pddl(
         if unreachable
         else ""
     )
+    # A goal that assigns a task to a robot we have no pose for cannot be
+    # planned: that robot is not in the problem at all.
+    goal_tokens = set(re.findall(r"[a-z0-9_]+", raw_pddl_goal_string.lower()))
+    posless = sorted(r for r, pose in robot_states.items() if pose is None)
+    missing = [r for r in posless if r in goal_tokens]
+    if missing:
+        failure_hint = "; ".join(
+            filter(
+                None,
+                [
+                    failure_hint,
+                    f"the goal assigns work to {', '.join(missing)}, but there is "
+                    "no pose for it (its map->base_link transform is missing)",
+                ],
+            )
+        )
 
     # Ensure robot symbols exist (with positions) for downstream planners
     for rid, pose in robot_states.items():

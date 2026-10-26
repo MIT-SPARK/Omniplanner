@@ -1,5 +1,5 @@
 """The goal manager pauses every robot of the running plan, by name, and
-releases them when planning fails."""
+stops them when planning fails."""
 
 import json
 from types import SimpleNamespace as NS
@@ -87,14 +87,37 @@ def _goal(*forbidden):
     return msg
 
 
-def test_failed_goal_under_the_same_constraints_resumes_the_plan():
+def test_failed_goal_stops_the_plan_and_waits():
     gm, sent = _manager()
+    _plan(gm, "hamilton", "gauss")
+    gm._pause_executor()
+    sent.clear()
+    gm._pending_goal = _goal()
+    gm._planner_failed_cb(String(data="multi_robot_pddl_constrained: no plan"))
+    assert sorted(sent) == [("gauss", "stop"), ("hamilton", "stop")]
+    assert not gm._cache_valid
+
+
+def test_failed_goal_resumes_when_configured_to():
+    gm, sent = _manager()
+    gm._resume_on_failure = True
     _plan(gm, "hamilton")
     gm._pause_executor()
     sent.clear()
     gm._pending_goal = _goal()
     gm._planner_failed_cb(String(data="multi_robot_pddl_constrained: no plan"))
     assert sent == [("hamilton", "resume")]
+
+
+def test_failed_goal_with_new_constraints_stops_even_when_resuming():
+    gm, sent = _manager()
+    gm._resume_on_failure = True
+    _plan(gm, "hamilton")
+    gm._pause_executor()
+    sent.clear()
+    gm._pending_goal = _goal("o14")
+    gm._planner_failed_cb(String(data="multi_robot_pddl_constrained: no plan"))
+    assert sent == [("hamilton", "stop")]
 
 
 def test_failed_goal_with_new_constraints_stops_the_plan():

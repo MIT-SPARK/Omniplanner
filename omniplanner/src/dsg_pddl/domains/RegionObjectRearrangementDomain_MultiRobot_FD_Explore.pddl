@@ -24,6 +24,11 @@
         (visited-object ?o - dsg_object)
         (visited-region ?reg - region)
 
+        (visited-poi-by ?r - robot ?p - point-of-interest)
+        (visited-place-by ?r - robot ?p - place)
+        (visited-object-by ?r - robot ?o - dsg_object)
+        (inspected-by ?r - robot ?o - dsg_object)
+
         (safe ?o - dsg_object)
         (explored-region ?reg - region)
     )
@@ -44,6 +49,12 @@
 
     (:derived (visited-object ?o - dsg_object)
         (visited-poi ?o))
+
+    (:derived (visited-place-by ?r - robot ?p - place)
+        (visited-poi-by ?r ?p))
+
+    (:derived (visited-object-by ?r - robot ?o - dsg_object)
+        (visited-poi-by ?r ?o))
 
     (:derived (safe ?o - dsg_object)
         (not (suspicious ?o)))
@@ -66,6 +77,7 @@
         :effect (and (not (at-poi ?r ?s))
                      (at-poi ?r ?t)
                      (visited-poi ?t)
+                     (visited-poi-by ?r ?t)
                      (increase (total-cost) (distance ?s ?t))
         )
     )
@@ -74,6 +86,7 @@
      :parameters (?r - robot ?o - dsg_object)
      :precondition (at-object ?r ?o)
      :effect (and (not (suspicious ?o))
+                  (inspected-by ?r ?o)
                   (increase (total-cost) 1)
             )
      )

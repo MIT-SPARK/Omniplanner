@@ -40,6 +40,10 @@ class WorldState:
     inspected: Set[str] = field(default_factory=set)
     # {robot -> objects it holds}
     holding: Dict[str, List[str]] = field(default_factory=dict)
+    # {robot -> what that robot itself visited / inspected}, for goals that
+    # name the robot: (visited-object-by r o), (inspected-by r o).
+    visited_by: Dict[str, Set[str]] = field(default_factory=dict)
+    inspected_by: Dict[str, Set[str]] = field(default_factory=dict)
 
     def held_by(self, robot: str) -> List[str]:
         return list(self.holding.get(robot.lower(), []))
@@ -151,7 +155,13 @@ def split_held(
         if drop:
             release[robot] = drop
     return (
-        WorldState(set(state.visited), set(state.inspected), holding),
+        WorldState(
+            set(state.visited),
+            set(state.inspected),
+            holding,
+            {r: set(s) for r, s in state.visited_by.items()},
+            {r: set(s) for r, s in state.inspected_by.items()},
+        ),
         release,
     )
 
@@ -163,6 +173,8 @@ class WorldStateTracker:
         self.visited_radius_m = visited_radius_m
         self.visited: Set[str] = set()
         self.inspected: Set[str] = set()
+        self.visited_by: Dict[str, Set[str]] = {}
+        self.inspected_by: Dict[str, Set[str]] = {}
         # Holding as the action reports tell it; used only when the map has none.
         self._reported_holding: Dict[str, Set[str]] = {}
 
@@ -171,6 +183,8 @@ class WorldStateTracker:
         state and survives: a new mission does not empty anybody's gripper."""
         self.visited.clear()
         self.inspected.clear()
+        self.visited_by.clear()
+        self.inspected_by.clear()
 
     def record(
         self,
@@ -187,11 +201,16 @@ class WorldStateTracker:
         robot, obj = (robot or "").lower(), (object_id or "").lower()
         new: Set[str] = set()
         if action_type == "FOLLOW" and dsg is not None:
-            new = symbols_near(dsg, points, self.visited_radius_m) - self.visited
+            near = symbols_near(dsg, points, self.visited_radius_m)
+            new = near - self.visited
             self.visited |= new
+            if robot:
+                self.visited_by.setdefault(robot, set()).update(near)
         elif action_type == "GAZE" and obj:
             new = {obj} - self.inspected
             self.inspected.add(obj)
+            if robot:
+                self.inspected_by.setdefault(robot, set()).add(obj)
         elif action_type == "PICK" and obj:
             self._reported_holding.setdefault(robot, set()).add(obj)
             new = {obj}
@@ -206,4 +225,10 @@ class WorldStateTracker:
             holding = {
                 r: sorted(objs) for r, objs in self._reported_holding.items() if objs
             }
-        return WorldState(set(self.visited), set(self.inspected), holding)
+        return WorldState(
+            set(self.visited),
+            set(self.inspected),
+            holding,
+            {r: set(s) for r, s in self.visited_by.items()},
+            {r: set(s) for r, s in self.inspected_by.items()},
+        )

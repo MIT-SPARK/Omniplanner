@@ -137,6 +137,14 @@ class GoalManager(Node):
         self._running_constraints: frozenset = frozenset()
         # The goal being planned, so a planning failure can say which one.
         self._pending_goal = None
+        # What a goal that cannot be planned does to the running plan: by
+        # default the robots stop and wait for the next goal. The operator
+        # asked for something else, so carrying on with the superseded plan
+        # is rarely what they want.
+        self.declare_parameter("resume_on_plan_failure", False)
+        self._resume_on_failure = bool(
+            self.get_parameter("resume_on_plan_failure").value
+        )
 
         # Subscriptions (private; remap at launch time).
         self._goal_sub = self.create_subscription(
@@ -206,9 +214,11 @@ class GoalManager(Node):
         have released it, so without this the robot waits for ever -- possibly
         holding an object. The goal is dropped; the operator has to restate it.
 
-        Carry on with the current plan only if it was made under the same
-        constraints. If the failed goal changed them (e.g. "avoid o14"), the
-        current plan may break them, so stop the robots instead.
+        The robots stop and wait for the next goal: the operator replaced the
+        goal, so the running plan is no longer what they want. With
+        resume_on_plan_failure they carry on with the current plan instead,
+        but only if it was made under the same constraints -- if the failed
+        goal changed them (e.g. "avoid o14"), the current plan may break them.
         """
         why = msg.data.split(": ", 1)[-1]  # drop the plugin name
         goal = self._pending_goal
@@ -217,16 +227,21 @@ class GoalManager(Node):
             constraint_signature(goal.constraints) == self._running_constraints
         )
         self._plan_constraints = self._running_constraints
-        if same_constraints:
+        if same_constraints and getattr(self, "_resume_on_failure", False):
             self._resume_executor()
             self._notify_operator(
                 f"Could not plan {target} ({why}). Continuing the current plan."
             )
+            return
+        self._stop_executor()
+        if same_constraints:
+            self._notify_operator(
+                f"Could not plan {target} ({why}). Stopped; waiting for a new goal."
+            )
         else:
-            self._stop_executor()
             self._notify_operator(
                 f"Could not plan {target} ({why}). Stopped: the current plan "
-                "was made without these constraints."
+                "was made without these constraints. Waiting for a new goal."
             )
 
     def _notify_operator(self, text: str) -> None:

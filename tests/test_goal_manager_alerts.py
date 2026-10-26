@@ -9,7 +9,7 @@ from omniplanner_ros.goal_manager_node import GoalManager
 
 
 def _manager():
-    sent = {"pause": 0, "resume": 0, "goals": [], "display": [], "alert": []}
+    sent = {"pause": 0, "resume": 0, "stop": 0, "goals": [], "display": [], "alert": []}
     gm = NS(
         _plan_constraints=frozenset(),
         _running_constraints=frozenset(),
@@ -29,6 +29,7 @@ def _manager():
         "_notify_operator",
         "_pause_executor",
         "_resume_executor",
+        "_stop_executor",
     ):
         setattr(gm, name, getattr(GoalManager, name).__get__(gm))
     goal = ConstrainedPddlGoalMsg()
@@ -37,7 +38,7 @@ def _manager():
     return gm, sent
 
 
-def test_failed_operator_goal_resumes_and_says_why():
+def test_failed_operator_goal_stops_and_says_why():
     gm, sent = _manager()
     gm._planner_failed_cb(
         String(
@@ -45,9 +46,9 @@ def test_failed_operator_goal_resumes_and_says_why():
             "constraints: o20 cannot be reached"
         )
     )
-    assert sent["resume"] == 1
+    assert sent["stop"] == 1 and sent["resume"] == 0
     (text,) = sent["display"]
     assert sent["alert"] == [text]
     assert "(visited-object o20)" in text and "o20 cannot be reached" in text
-    assert "Continuing the current plan" in text
+    assert "Stopped; waiting for a new goal" in text
     assert "multi_robot_pddl_constrained" not in text
