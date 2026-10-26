@@ -201,3 +201,10 @@ class GroundedPddlProblem:
     # Why the problem likely has no plan, found while grounding; "" if nothing
     # stood out. Goes into the failure message the operator sees.
     failure_hint: str = ""
+    # The places-graph planner the grounding measured distances on (metres,
+    # runtime constraints applied), when it used one. make_plan expands the
+    # plan's goto hops on it, so paths keep to the graph the plan was costed on.
+    layer_planner: object = None
+    # Search budget (s) for an anytime, cost-improving search; 0 = the single
+    # greedy search. Worth it only on small problems (see solve_pddl).
+    anytime_search_s: float = 0.0

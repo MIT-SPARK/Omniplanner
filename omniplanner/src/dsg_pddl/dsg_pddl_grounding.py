@@ -486,6 +486,17 @@ def collect_goal_symbol_names(ast):
     return names
 
 
+def could_name_a_scene_symbol(token):
+    """Whether a token collected from a goal could name a scene-graph symbol.
+
+    Goal symbol collection keeps every leaf that isn't a known operator, type or
+    predicate name, so it also hands back numeric literals and arithmetic or
+    comparison operators. PDDL names must start with a letter, so anything else
+    is not a symbol.
+    """
+    return bool(token) and token[0].isalpha()
+
+
 def get_places_layer(G):
     try:
         return G.get_layer(spark_dsg.DsgLayers.MESH_PLACES)

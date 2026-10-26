@@ -1,4 +1,6 @@
+import glob
 import logging
+import math
 import os
 import subprocess
 import tempfile
@@ -20,6 +22,33 @@ FD_TRANSLATE_TIME_LIMIT = os.getenv("OMNIPLANNER_FD_TRANSLATE_TIME_LIMIT", "60")
 DEFAULT_FD_SEARCH = (
     "let(hff, ff(), let(hcea, cea(), lazy_greedy([hff, hcea], preferred=[hff, hcea])))"
 )
+
+# Anytime search for problems that ask for it (GroundedPddlProblem.anytime_search_s,
+# the small goal-relevant ones): the greedy plan above first, then weighted A*
+# with falling weights, each pass bounded by the best cost so far, until the
+# search space is exhausted or the budget runs out. The greedy plan alone ignores
+# cost: on 10-30 targets it drives 20-45% further than what this finds in 1-2 s.
+# (A cost-optimal A* would need an admissible heuristic that supports the
+# domains' derived predicates; LM-cut does not.)
+ANYTIME_FD_SEARCH = (
+    "let(hff, ff(), let(hcea, cea(), iterated(["
+    "lazy_greedy([hff, hcea], preferred=[hff, hcea]), "
+    "lazy_wastar([hff, hcea], preferred=[hff, hcea], w=5), "
+    "lazy_wastar([hff, hcea], preferred=[hff, hcea], w=3), "
+    "lazy_wastar([hff, hcea], preferred=[hff, hcea], w=2), "
+    "lazy_wastar([hff, hcea], preferred=[hff, hcea], w=1)"
+    "], repeat_last=true, continue_on_fail=true)))"
+)
+
+
+def _best_plan_file(plan_fn):
+    """The last (cheapest) plan an anytime search wrote: plan, or plan.1, plan.2, ..."""
+    numbered = sorted(
+        glob.glob(plan_fn + ".*"), key=lambda f: int(f.rsplit(".", 1)[1])
+    )
+    if numbered:
+        return numbered[-1]
+    return plan_fn if os.path.exists(plan_fn) else None
 
 
 # fast-downward exit codes (driver/returncodes.py).
@@ -109,21 +138,32 @@ def solve_pddl(problem: GroundedPddlProblem):
         fd_alias = os.getenv("ADT4_FD_ALIAS", "").strip()
         fd_search = os.getenv("ADT4_FD_SEARCH", "").strip()
         fd_time_limit = os.getenv("ADT4_FD_OVERALL_TIME_LIMIT", "").strip()
+        # an explicit alias / search from the environment wins over anytime search
+        anytime_s = getattr(problem, "anytime_search_s", 0.0) or 0.0
+        anytime = anytime_s > 0 and not fd_alias and not fd_search
 
-        command = ["fast-downward"]
-        if FD_TRANSLATE_TIME_LIMIT not in (None, "", "0"):
-            command += ["--translate-time-limit", str(FD_TRANSLATE_TIME_LIMIT)]
-        if FD_SEARCH_TIME_LIMIT not in (None, "", "0"):
-            command += ["--search-time-limit", str(FD_SEARCH_TIME_LIMIT)]
-        command += ["--plan-file", plan_fn]
-        if fd_time_limit:
-            command += ["--overall-time-limit", fd_time_limit]
-        if fd_alias:
-            command += ["--alias", fd_alias]
-        command += [domain_fn]
-        command += [problem_fn]
-        if not fd_alias:
-            command += ["--search", fd_search or DEFAULT_FD_SEARCH]
+        def fd_command(search, search_time_limit):
+            command = ["fast-downward"]
+            if FD_TRANSLATE_TIME_LIMIT not in (None, "", "0"):
+                command += ["--translate-time-limit", str(FD_TRANSLATE_TIME_LIMIT)]
+            if search_time_limit not in (None, "", "0"):
+                command += ["--search-time-limit", str(search_time_limit)]
+            command += ["--plan-file", plan_fn]
+            if fd_time_limit:
+                command += ["--overall-time-limit", fd_time_limit]
+            if fd_alias:
+                command += ["--alias", fd_alias]
+            command += [domain_fn]
+            command += [problem_fn]
+            if not fd_alias:
+                command += ["--search", search]
+            return command
+
+        if anytime:
+            # fast-downward takes whole seconds ("1.0" is a usage error)
+            command = fd_command(ANYTIME_FD_SEARCH, max(1, math.ceil(anytime_s)))
+        else:
+            command = fd_command(fd_search or DEFAULT_FD_SEARCH, FD_SEARCH_TIME_LIMIT)
 
         logger.info(f"Calling: {command}")
         fd_start = time.perf_counter()
@@ -153,8 +193,30 @@ def solve_pddl(problem: GroundedPddlProblem):
         if proc.stderr:
             logger.debug("fast-downward stderr:\n%s", proc.stderr)
 
-        if os.path.exists(plan_fn):
-            with open(plan_fn, "r") as fo:
+        # An anytime search that ran out of its budget before a first plan (or
+        # failed for a reason other than proving the problem unsolvable) gets
+        # the plain greedy search with the usual limits.
+        if (
+            anytime
+            and _best_plan_file(plan_fn) is None
+            and proc.returncode not in FD_UNSOLVABLE + FD_BAD_INPUT
+        ):
+            logger.warning(
+                "Anytime search found no plan within %.1f s (return code %d); "
+                "retrying with the greedy search",
+                anytime_s,
+                proc.returncode,
+            )
+            proc = subprocess.run(
+                fd_command(DEFAULT_FD_SEARCH, FD_SEARCH_TIME_LIMIT),
+                capture_output=True,
+                text=True,
+                cwd=tmpdirname,
+            )
+
+        best_plan_fn = _best_plan_file(plan_fn)
+        if best_plan_fn is not None:
+            with open(best_plan_fn, "r") as fo:
                 lines = fo.readlines()
             with open(debug_plan_fn, "w") as fo:
                 fo.writelines(lines)
