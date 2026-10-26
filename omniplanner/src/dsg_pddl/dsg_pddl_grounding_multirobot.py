@@ -440,7 +440,9 @@ def diagnose_unreachable_goal(goal_string, init_facts, symbols):
             connected.add(fact[1])
             connected.add(fact[2])
 
-    known = {sym.symbol for sym in symbols}
+    # robots have no connectivity of their own (they stand on a place); a robot
+    # id like spot1 is not an unreachable goal symbol
+    known = {sym.symbol for sym in symbols if sym.layer != "robot"}
     named = {tok for tok in re.findall(r"[a-z]+[0-9]+", (goal_string or "").lower())}
     goal_symbols = named & known
     unreachable = sorted(goal_symbols - connected)

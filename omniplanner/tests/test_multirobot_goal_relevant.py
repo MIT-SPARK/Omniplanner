@@ -300,6 +300,19 @@ def test_forbidden_edge_is_not_driven():
             assert not any({u, v} == cut for u, v in zip(steps, steps[1:]))
 
 
+def test_hint_names_the_target_not_the_robot():
+    """Robot ids with digits (spot1) are not goal symbols the constraints cut off."""
+    G, idx = corridors_dsg()
+    grounded = _grounded(
+        G,
+        "(visited-object-by spot1 o0)",
+        robots={"spot1": np.array([0.0, 0.0])},
+        constraints=[ConstraintFact(predicate="forbidden-poi", symbols=["o0"])],
+    )
+    assert "o0 cannot be reached" in grounded.failure_hint
+    assert "spot1" not in grounded.failure_hint
+
+
 def test_robot_starting_on_a_forbidden_place_can_leave():
     G, idx = corridors_dsg()
     robots = {"hamilton": np.array([0.0, 0.0])}
