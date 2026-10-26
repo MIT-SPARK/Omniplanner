@@ -71,6 +71,13 @@ def fd_digest(output: str) -> str:
             parts.append(text)
     if _FD_SIGNALS[0][1] in parts:  # proved unreachable: the search lines say the same
         parts = [p for p in parts if p not in (_FD_SIGNALS[1][1], _FD_SIGNALS[2][1])]
+    if _FD_SIGNALS[5][1] in parts:
+        # an anytime search that found a plan and then ran out of states found
+        # nothing better: the last plan is the best it can find
+        exhausted = _FD_SIGNALS[1][1] in parts
+        parts = [p for p in parts if p not in (_FD_SIGNALS[1][1], _FD_SIGNALS[2][1])]
+        if exhausted:
+            parts[parts.index(_FD_SIGNALS[5][1])] = "solution found (no better plan in the search space)"
     for line in output.splitlines():  # the translator's own errors
         if re.match(r"\s*(Error|error:|Undefined|.*Exception)", line):
             parts.append(line.strip()[:160])

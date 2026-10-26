@@ -496,6 +496,8 @@ def test_fast_downward_digest():
         "search time limit reached; 14190 operators, 300 facts; 6091 states expanded; peak 29 MB"
     )
     assert fd_digest("") == ""
+    anytime = "Solution found!\nPlan cost: 9\nCompletely explored state space -- no solution!\nSearch stopped without finding a solution."
+    assert fd_digest(anytime) == "solution found (no better plan in the search space)"
 
 
 def test_a_held_object_is_put_down_before_the_next_pick():
