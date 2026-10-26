@@ -645,15 +645,32 @@ def generate_multirobot_region_pddl(
     return problem_str, symbols_of_interest, failure_hint
 
 
-def _failure_hint(raw_pddl_goal_string, init_facts, symbols, robot_states):
-    """Why the problem likely has no plan ("" if nothing stands out)."""
+def _failure_hint(
+    raw_pddl_goal_string, init_facts, symbols, robot_states, too_far=None
+):
+    """Why the problem likely has no plan ("" if nothing stands out).
+
+    ``too_far``: {object: metres to the nearest place the robots can reach}.
+    """
+    too_far = too_far or {}
     unreachable = diagnose_unreachable_goal(raw_pddl_goal_string, init_facts, symbols)
-    failure_hint = (
-        f"{', '.join(unreachable)} cannot be reached: the constraints cut off every "
-        f"path to it (a forbidden-poi on it or within {_forbidden_radius_m():.1f} m)"
-        if unreachable
-        else ""
-    )
+    far = [s for s in unreachable if s in too_far]
+    cut = [s for s in unreachable if s not in too_far]
+    hints = []
+    if cut:
+        hints.append(
+            f"{', '.join(cut)} cannot be reached: the constraints cut off every "
+            f"path to it (a forbidden-poi on it or within {_forbidden_radius_m():.1f} m)"
+        )
+    if far:
+        hints.append(
+            "; ".join(
+                f"{s} cannot be reached: it is {too_far[s]:.1f} m from the nearest place "
+                "the robots can get to (no path to it, or a forbidden area in the way)"
+                for s in far
+            )
+        )
+    failure_hint = "; ".join(hints)
     # A goal that assigns a task to a robot we have no pose for cannot be
     # planned: that robot is not in the problem at all.
     goal_tokens = set(re.findall(r"[a-z0-9_]+", raw_pddl_goal_string.lower()))
@@ -689,6 +706,18 @@ def _dump_problem(problem_str):
         logger.info(f"Saved multi-robot region PDDL to {persistent_problem}")
     except Exception as e:
         logger.warning(f"Failed to persist multi-robot region PDDL dump: {e}")
+
+
+# An object farther than this from every place the robots can reach is not
+# reachable (env override for maps whose objects sit far from the ground graph).
+MAX_OBJECT_SNAP_M = 5.0
+
+
+def _max_object_snap_m():
+    try:
+        return float(os.getenv("OMNIPLANNER_MAX_OBJECT_SNAP_M", MAX_OBJECT_SNAP_M))
+    except ValueError:
+        return MAX_OBJECT_SNAP_M
 
 
 # Fast Downward costs are integers: goal-relevant distances go in as decimetres,
@@ -871,7 +900,7 @@ def generate_goal_relevant_multirobot_pddl(
     }
     robot_names = {r.lower() for r in robot_states}
     region_places = None
-    object_place, region_membership, missing = {}, [], []
+    object_place, region_membership, missing, too_far = {}, [], [], {}
     for name in sorted(referenced | held):
         sym = by_name.get(name)
         if sym is None:
@@ -890,8 +919,15 @@ def generate_goal_relevant_multirobot_pddl(
         if sym.layer == "object":
             select(name)
             node = G.get_node(pddl_symbol_to_node_symbol(G, name))
-            object_place[name] = nearest_place(node.attributes.position)
+            xy = np.asarray(node.attributes.position)[:2]
+            object_place[name] = nearest_place(xy)
             select(object_place[name])
+            # nearest of the places the robots can reach: far off means the
+            # object is somewhere they cannot get to (another component, or
+            # behind a closed area), not next to their ground
+            off = float(np.linalg.norm(planner.get_closest_point(xy) - xy))
+            if off > _max_object_snap_m():
+                too_far[name] = off
         elif sym.layer == "place":
             select(name)
         elif sym.layer == "region":
@@ -953,7 +989,7 @@ def generate_goal_relevant_multirobot_pddl(
     for i in range(len(pois)):
         for j in range(i + 1, len(pois)):
             s, t = pois[i].symbol, pois[j].symbol
-            if s in forbidden_symbols or t in forbidden_symbols:
+            if {s, t} & (forbidden_symbols | set(too_far)):
                 continue
             if tuple(sorted([s, t])) in forbidden_edges or not np.isfinite(D[i, j]):
                 continue
@@ -996,7 +1032,9 @@ def generate_goal_relevant_multirobot_pddl(
         len(robot_ids),
     )
     _dump_problem(problem_str)
-    failure_hint = _failure_hint(raw_pddl_goal_string, init, symbols, robot_states)
+    failure_hint = _failure_hint(
+        raw_pddl_goal_string, init, symbols, robot_states, too_far
+    )
     return problem_str, symbols, failure_hint, planner
 
 

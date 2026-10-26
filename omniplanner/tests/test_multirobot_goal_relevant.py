@@ -376,6 +376,20 @@ def test_robots_in_separate_components():
         _plan(G, "(visited-object-by hamilton o9)", robots=robots)
 
 
+def test_object_the_robots_cannot_reach_is_not_snapped_to_their_side():
+    """An object in another component must not count as visited from the nearest
+    place the robots can reach (here 29 m away)."""
+    G = grid_dsg()
+    _add_place(G, 100, (40.0, 0.0))
+    _add_object(G, 9, (40.1, 0.0))
+    grounded = _grounded(
+        G, "(visited-object o9)", robots={"hamilton": np.array([0.0, 0.0])}
+    )
+    assert "o9 cannot be reached: it is" in grounded.failure_hint
+    with pytest.raises(Exception, match="o9 cannot be reached"):
+        make_plan(grounded, G)
+
+
 def test_a_held_object_is_put_down_before_the_next_pick():
     G = grid_dsg()
     held = WorldState(holding={"hamilton": ["o3"]})
