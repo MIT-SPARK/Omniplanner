@@ -143,13 +143,15 @@ solver, its data formats and its other build options (Docker, conda). In this
 workspace it is built like any other package:
 
 1. `vcs import src < src/awesome_dcist_t4/install/packages.yaml` clones it to
-   `src/grstapsx` (branch `feature/colcon`).
+   `src/grstapsx` (branch `feature/colcon`). The repository is private, so
+   the machine needs an SSH key with access to it.
 2. `rosdep install --from-paths src --ignore-src -r -y` installs its apt
    dependencies (Eigen, Boost, fmt, spdlog, yaml-cpp, nlohmann-json, range-v3,
-   `ros-jazzy-ompl`).
-3. `colcon build` builds it. Gurobi and cppcoro are downloaded during the build
-   when they are not installed, and `itags` is installed on `PATH` with Gurobi
-   next to it, so nothing else needs to be set.
+   `ros-jazzy-ompl`). Without sudo, skip it: step 3 fetches what is missing.
+3. `colcon build` builds it. Gurobi, cppcoro, range-v3, nlohmann-json and
+   OMPL are downloaded during the build when they are not installed, and
+   `itags` is installed on `PATH` with Gurobi and OMPL next to it, so nothing
+   else needs to be set.
 4. **Gurobi license (once per machine, by hand).** The solver needs a license
    that the build cannot fetch for you. Academic licenses are free: create one
    at [gurobi.com](https://www.gurobi.com/academia/academic-program-and-licenses/)
@@ -168,11 +170,12 @@ workspace it is built like any other package:
 Check the setup before a run:
 
 ```bash
-which itags        # installed by colcon on PATH
+which itags                                       # installed by colcon on PATH
+grep -E "^(HOSTNAME|EXPIRATION)=" ~/gurobi.lic    # this machine, not expired
 ```
 
 A failed solve is reported on the planner's alert topic and the robots stop;
-"No Gurobi license" in that message means step 4.
+"No Gurobi license" or "License expired" in that message means step 4.
 
 ## Configuration
 
