@@ -142,9 +142,10 @@ def solve_pddl(problem: GroundedPddlProblem):
         anytime_s = getattr(problem, "anytime_search_s", 0.0) or 0.0
         anytime = anytime_s > 0 and not fd_alias and not fd_search
 
-        def fd_command(search, search_time_limit):
+        def fd_command(search, search_time_limit, inputs=None):
+            """``inputs``: a translated task ([output.sas]) runs the search alone."""
             command = ["fast-downward"]
-            if FD_TRANSLATE_TIME_LIMIT not in (None, "", "0"):
+            if inputs is None and FD_TRANSLATE_TIME_LIMIT not in (None, "", "0"):
                 command += ["--translate-time-limit", str(FD_TRANSLATE_TIME_LIMIT)]
             if search_time_limit not in (None, "", "0"):
                 command += ["--search-time-limit", str(search_time_limit)]
@@ -153,8 +154,7 @@ def solve_pddl(problem: GroundedPddlProblem):
                 command += ["--overall-time-limit", fd_time_limit]
             if fd_alias:
                 command += ["--alias", fd_alias]
-            command += [domain_fn]
-            command += [problem_fn]
+            command += inputs or [domain_fn, problem_fn]
             if not fd_alias:
                 command += ["--search", search]
             return command
@@ -162,6 +162,8 @@ def solve_pddl(problem: GroundedPddlProblem):
         if anytime:
             # fast-downward takes whole seconds ("1.0" is a usage error)
             command = fd_command(ANYTIME_FD_SEARCH, max(1, math.ceil(anytime_s)))
+            # FD deletes output.sas after a run; keep it for the greedy retry below
+            command.insert(1, "--keep-sas-file")
         else:
             command = fd_command(fd_search or DEFAULT_FD_SEARCH, FD_SEARCH_TIME_LIMIT)
 
@@ -201,18 +203,28 @@ def solve_pddl(problem: GroundedPddlProblem):
             and _best_plan_file(plan_fn) is None
             and proc.returncode not in FD_UNSOLVABLE + FD_BAD_INPUT
         ):
+            # the first run's translation (output.sas in the cwd) is reused: on
+            # big problems translating is most of the time (Penn, 98 goals: 12 s)
+            sas_fn = os.path.join(tmpdirname, "output.sas")
+            translated = "translate exit code: 0" in (proc.stdout or "")
+            inputs = [sas_fn] if translated and os.path.isfile(sas_fn) else None
             logger.warning(
                 "Anytime search found no plan within %.1f s (return code %d); "
-                "retrying with the greedy search",
+                "retrying with the greedy search%s",
                 anytime_s,
                 proc.returncode,
+                " on the translated task" if inputs else "",
             )
+            # the translator's part only: the failed search's lines would read as this run's
+            translate_out = (proc.stdout or "").split("translate exit code: 0", 1)[0]
             proc = subprocess.run(
-                fd_command(DEFAULT_FD_SEARCH, FD_SEARCH_TIME_LIMIT),
+                fd_command(DEFAULT_FD_SEARCH, FD_SEARCH_TIME_LIMIT, inputs),
                 capture_output=True,
                 text=True,
                 cwd=tmpdirname,
             )
+            if inputs:  # the translator's stats (operators, facts) are in the first run
+                proc.stdout = translate_out + (proc.stdout or "")
 
         best_plan_fn = _best_plan_file(plan_fn)
         if best_plan_fn is not None:
