@@ -34,6 +34,40 @@ from omniplanner.tsp import LayerPlanner
 logger = logging.getLogger(__name__)
 
 
+def assigned_robots(constraints):
+    """Robots a ``use-robots`` constraint limits the plan to, or None for any.
+
+    Visit goals name no robot, so "robot hilbert should go to t5" needs this to
+    stop the planner giving the job to whichever robot is nearer.
+    """
+    names = [
+        s.lower()
+        for c in constraints or []
+        if c.predicate == "use-robots"
+        for s in c.symbols
+    ]
+    return set(names) or None
+
+
+def planning_robot_states(robot_states, constraints):
+    """The robots that may act on this goal: all with a pose, or those named."""
+    assigned = assigned_robots(constraints)
+    if assigned is None:
+        return robot_states
+    usable = {
+        r: pose
+        for r, pose in robot_states.items()
+        if r in assigned and pose is not None
+    }
+    if not usable:
+        known = sorted(r for r, pose in robot_states.items() if pose is not None)
+        raise ValueError(
+            f"use-robots names {sorted(assigned)}, but none of them has a pose; "
+            f"robots with a pose: {known}"
+        )
+    return usable
+
+
 def _extract_forbidden_sets(constraints):
     """Pull forbidden POIs and forbidden edges out of a list of ConstraintFact-like objects.
 
@@ -520,10 +554,11 @@ def ground_problem(
         #     )
 
         case "region-object-rearrangement-domain-multirobot-fd":
+            # Robots left out by use-robots get no actions: an empty plan.
             pddl_problem, symbols, failure_hint = generate_multirobot_region_pddl(
                 dsg,
                 goal.pddl_goal,
-                pddl_compliant_robot_states,
+                planning_robot_states(pddl_compliant_robot_states, goal.constraints),
                 constraints=goal.constraints,
                 world_state=getattr(goal, "world_state", None),
             )
