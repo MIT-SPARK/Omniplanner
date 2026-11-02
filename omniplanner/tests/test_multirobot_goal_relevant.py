@@ -516,6 +516,30 @@ def test_explored_region_includes_every_place():
     assert region <= _visits(plan)
 
 
+R0 = {place(x, y) for x in range(7, NX) for y in range(NY)}
+
+
+def test_region_visit_by_a_named_robot():
+    """(visited-region-by r reg): the named robot goes, even when another is closer.
+
+    euclid starts inside r0; unnamed, the visit costs it nothing and hamilton stays put.
+    """
+    G = grid_dsg()
+    assert not _visits(_plan(G, "(visited-region r0)"), "hamilton")
+    plan = _plan(G, "(visited-region-by hamilton r0)")
+    assert _visits(plan, "hamilton") & R0
+    assert not _visits(plan, "euclid")
+
+
+def test_explored_region_by_a_named_robot():
+    G = grid_dsg()
+    rel = _grounded(G, "(explored-region-by hamilton r0)")
+    assert rel.problem_str.count("(place-in-region") == 3 * NY
+    plan = make_plan(rel, G)
+    assert R0 <= _visits(plan, "hamilton")
+    assert not _visits(plan, "euclid")
+
+
 def _extract_visited_pois():
     """multirobot_ros._extract_visited_pois_from_pipeline from this checkout's source.
 

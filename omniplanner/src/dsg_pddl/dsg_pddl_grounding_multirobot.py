@@ -915,9 +915,10 @@ def generate_goal_relevant_multirobot_pddl(
 
     # predicate names (v4's visited-object-by, inspected-by, ...) are not symbols
     referenced = collect_goal_symbol_names(parsed_goal) - _predicate_heads(parsed_goal)
+    # explored regions need every member place; (explored-region-by r reg) names the robot first
     explored = {
         f[1] for f in extract_facts(parsed_goal, "explored-region") if len(f) > 1
-    }
+    } | {f[2] for f in extract_facts(parsed_goal, "explored-region-by") if len(f) > 2}
     robot_names = {r.lower() for r in robot_states}
     region_places = None
     object_place, region_membership, missing, too_far = {}, [], [], {}
