@@ -736,6 +736,30 @@ def _max_object_snap_m():
         return MAX_OBJECT_SNAP_M
 
 
+# A region visit must reach its core: the members this close to the region's
+# centre, as a fraction of members (0.5 = the inner half). Grown regions on
+# fused maps sprawl (Penn's "loading dock" r6 reaches 83 m from its centre, up
+# to a robot's start), so "the member nearest the robot" alone can make a visit
+# a 2 m step that never goes near the place. 1.0 = any member counts.
+REGION_CORE_FRACTION = 0.5
+
+
+def _region_core_fraction():
+    try:
+        f = float(os.getenv("OMNIPLANNER_REGION_CORE_FRACTION", REGION_CORE_FRACTION))
+    except ValueError:
+        return REGION_CORE_FRACTION
+    return min(max(f, 0.0), 1.0)
+
+
+def region_core(members, xy, centre, fraction=None):
+    """The members of a region a visit may end at: the ``fraction`` nearest its
+    centre (at least one)."""
+    fraction = _region_core_fraction() if fraction is None else fraction
+    ranked = sorted(members, key=lambda p: float(np.linalg.norm(xy[p] - centre)))
+    return ranked[: max(1, int(np.ceil(fraction * len(ranked))))]
+
+
 # Fast Downward costs are integers: goal-relevant distances go in as decimetres,
 # so near-equal routes are not rounded into ties.
 DISTANCE_SCALE = 10.0
@@ -874,9 +898,10 @@ def generate_goal_relevant_multirobot_pddl(
     * every object, place and region the goal names (any and/or branch),
     * each named object's current place, so it can be picked up,
     * every object a robot holds (else the planner thinks the hand is free),
-    * for each named region a few representative places (the ones nearest its
-      centre, plus the one nearest each robot), or all of its places when the
-      goal says ``explored-region``,
+    * for each named region a few representative places from its core (the
+      inner half of its members, see ``region_core``): the ones nearest its
+      centre, plus the core place nearest each robot; or all of its places when
+      the goal says ``explored-region``,
 
     joined pairwise with shortest-path distances in metres over the places graph
     with the runtime constraints applied. One ``goto-poi`` is then a whole
@@ -975,12 +1000,13 @@ def generate_goal_relevant_multirobot_pddl(
                     G.get_node(pddl_symbol_to_node_symbol(G, name)).attributes.position
                 )[:2]
                 # central places (an object put down there lands inside the region) ...
-                chosen = sorted(
-                    reachable, key=lambda p: float(np.linalg.norm(xy[p] - centre))
-                )[:max_region_places]
-                # ... and, so a visit does not drive to the middle, the member nearest each robot
+                core = region_core(reachable, xy, centre)
+                chosen = core[:max_region_places]
+                # ... and, so a visit does not drive to the middle, the core member
+                # nearest each robot (not the nearest member: a sprawling region's
+                # edge can be a step from a robot's start, far from the place itself)
                 for r in robot_ids:
-                    others = [p for p in reachable if p != start_place[r]]
+                    others = [p for p in core if p != start_place[r]]
                     if others:
                         pose = np.asarray(robot_states[r])[:2]
                         chosen.append(

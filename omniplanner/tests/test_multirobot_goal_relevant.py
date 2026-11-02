@@ -245,6 +245,12 @@ def test_same_missions_as_full_encoding(name):
     rel, full = _plan(G, GOALS[name]), _plan(G, GOALS[name], scope="full")
     _check(name, rel)
     _check(name, full)
+    if name == "region":
+        # the full encoding counts any member, so euclid, on r0's corner, is already
+        # there; goal-relevant visits must reach the core (region_core): a short drive
+        core = {place(x, y) for x in range(7, NX) for y in range(1, 5)}
+        assert _visits(rel) & core and _travel(rel) <= 2.5
+        return
     # never a longer drive than the full encoding's plan (small slack: both searches are greedy)
     assert _travel(rel) <= _travel(full) * 1.05 + 1e-6
 
@@ -496,15 +502,47 @@ def test_each_robot_acts_from_where_it_is():
 
 
 def test_region_visit_uses_a_few_representative_places():
-    """Three central places, plus the member nearest each robot (so a visit stays short)."""
+    """Three central places, plus the core member nearest each robot (so a visit stays short)."""
     rel = _grounded(grid_dsg(), "(visited-region r0)")
     members = [f for f in rel.problem_str.splitlines() if "(place-in-region" in f]
     assert 0 < len(members) <= 3 + len(ROBOTS)
-    # euclid starts on the region's corner (9, 5): its nearest other member is next to it
+    # every candidate is in r0's inner half (centre (8, 2.5)): within 1.8 m of it
+    core = {place(x, y) for x in range(7, NX) for y in range(1, 5)}
+    assert {f.split()[1] for f in members} <= core
+    # euclid starts on the region's corner (9, 5), outside the core: its nearest
+    # core member is one of the core's corner-side places
     assert {
-        f"(place-in-region {place(8, 5)} r0)",
+        f"(place-in-region {place(8, 4)} r0)",
         f"(place-in-region {place(9, 4)} r0)",
     } & set(members)
+
+
+def sprawl_dsg():
+    """A 30 m corridor, a robot at x = 0 and region r1 = {x = 1} + {x = 20..29}:
+    a grown region whose stray edge reaches the robot's start."""
+    G = _new_dsg()
+    for x in range(30):
+        _add_place(G, x, (x, 0))
+        if x:
+            _edge(G, x - 1, x)
+    room = spark_dsg.RoomNodeAttributes()
+    room.position = np.array([24.5, 0.0, 0.0])
+    G.add_node(spark_dsg.DsgLayers.ROOMS, spark_dsg.NodeSymbol("r", 1).value, room)
+    for x in [1, *range(20, 30)]:
+        G.insert_edge(
+            spark_dsg.NodeSymbol("r", 1).value, spark_dsg.NodeSymbol("t", x).value
+        )
+    return G
+
+
+def test_region_visit_reaches_the_core_not_a_stray_edge():
+    """Penn's loading dock r6 reaches 2 m from gauss's start; a visit was that 2 m step."""
+    G = sprawl_dsg()
+    for goal in ("(visited-region r1)", "(visited-region-by solo r1)"):
+        plan = _plan(G, goal, robots={"solo": np.array([0.0, 0.0])})
+        (stop,) = _visits(plan)
+        x = int(stop[1:])
+        assert 20 <= x < 30, (goal, stop)
 
 
 def test_explored_region_includes_every_place():
