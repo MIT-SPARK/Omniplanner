@@ -1194,6 +1194,18 @@ def _nearest_place(dsg, symbol):
 #                        Penn region has 100-740 mesh places.
 #
 # Each region also maps to all its tasks, so before(r, x) orders them as one.
+# ITAGS allocates one task per search step and re-solves the schedule MILP at
+# each, so its time grows quickly with the task count: 13-14 tasks take 5-25 s
+# on Penn, but 172 inspections had 6 allocated when the 60 s timeout hit. A goal
+# above this many tasks is refused before solving, saying to split it.
+MAX_TASKS_ENV = "OMNIPLANNER_GRSTAPS_MAX_TASKS"
+DEFAULT_MAX_TASKS = 40
+
+
+def max_tasks():
+    return _env_number(MAX_TASKS_ENV, DEFAULT_MAX_TASKS, int, 1)
+
+
 EXPLORE_SPACING_ENV = "OMNIPLANNER_GRSTAPS_EXPLORE_SPACING_M"
 EXPLORE_MAX_ENV = "OMNIPLANNER_GRSTAPS_EXPLORE_MAX"
 DEFAULT_EXPLORE_SPACING_M = 8.0
@@ -2225,6 +2237,13 @@ def ground_problem(
         )
         if not tasks:
             raise ValueError("No tasks to allocate; nothing to plan for.")
+        if len(tasks) > max_tasks():
+            raise ValueError(
+                f"The goal makes {len(tasks)} GRSTAPS-X tasks, more than it can allocate "
+                f"in time (limit {max_tasks()}, set by {MAX_TASKS_ENV}): ITAGS assigns "
+                "one task per search step and re-solves the schedule at each. Split "
+                "the goal into batches of a few dozen targets."
+            )
         for region, places in places_of.items():
             of_symbol[region] = sorted(
                 {i for p in places for i in of_symbol.get(p, [])}
@@ -2566,6 +2585,34 @@ def _run_itags(problem: GroundedGrstapsProblem):
     return result, out_path
 
 
+def _itags_progress(problem: GroundedGrstapsProblem):
+    """(allocated, total) tasks when an ITAGS search stopped, from its newest log.
+
+    ITAGS logs "APR: <fraction of tasks not yet allocated>" as its search moves
+    on; the last one says how far it got. None when there is no such log.
+    """
+    import glob
+    import re
+
+    try:
+        with open(os.path.join(problem.scenario_dir, "itags_input.json")) as fo:
+            total = len(json.load(fo).get("tasks") or [])
+        logs = sorted(
+            glob.glob(os.path.join(problem.scenario_dir, "logs", "*.txt")),
+            key=os.path.getmtime,
+        )
+        if not total or not logs:
+            return None
+        with open(logs[-1], errors="replace") as fo:
+            fo.seek(max(0, os.path.getsize(logs[-1]) - 65536))
+            found = re.findall(r"APR: ([0-9.]+)", fo.read())
+        if not found:
+            return None
+        return round((1.0 - float(found[-1])) * total), total
+    except (OSError, ValueError):
+        return None
+
+
 @dispatch
 def make_plan(problem: GroundedGrstapsProblem, map_context: Any) -> GrstapsPlan:
     if problem.nothing_to_solve:
@@ -2593,6 +2640,25 @@ def make_plan(problem: GroundedGrstapsProblem, map_context: Any) -> GrstapsPlan:
             or "couldn't find a solution" in ln
         ]
         detail = reasons[-1] if reasons else (result.stderr or combined)[-300:]
+        timed_out = "timed out" in detail or (
+            # an itags without the failed-search check aborts writing the
+            # missing solution (std::bad_optional_access) -- its timeout, in
+            # practice
+            "bad_optional_access" in combined
+        )
+        if timed_out:
+            progress = _itags_progress(problem)
+            raise Exception(
+                "GRSTAPS-X ran out of time: the search stopped after "
+                f"{problem.domain.solver_timeout_s:.0f} s"
+                + (
+                    f" with {progress[0]} of {progress[1]} task(s) allocated"
+                    if progress
+                    else ""
+                )
+                + " and found no complete plan. Plan fewer targets (split the goal "
+                "into batches), or raise the solver timeout."
+            )
         raise Exception(
             f"GRSTAPS-X produced no solution (exit {result.returncode}): {detail}"
         )
