@@ -619,7 +619,11 @@ def generate_multirobot_region_pddl(
         G, symbols_of_interest, robot_states, constraints=constraints
     )
     failure_hint = _failure_hint(
-        raw_pddl_goal_string, init_facts_tuples, symbols_of_interest, robot_states
+        raw_pddl_goal_string,
+        init_facts_tuples,
+        symbols_of_interest,
+        robot_states,
+        constraints=constraints,
     )
 
     # Ensure robot symbols exist (with positions) for downstream planners
@@ -662,21 +666,34 @@ def generate_multirobot_region_pddl(
 
 
 def _failure_hint(
-    raw_pddl_goal_string, init_facts, symbols, robot_states, too_far=None
+    raw_pddl_goal_string,
+    init_facts,
+    symbols,
+    robot_states,
+    too_far=None,
+    constraints=None,
 ):
     """Why the problem likely has no plan ("" if nothing stands out).
 
     ``too_far``: {object: metres to the nearest place the robots can reach}.
+    ``constraints``: the goal's; with no forbidden ones an unreachable target is
+    cut off by the map itself (a disconnected place graph), not by them.
     """
     too_far = too_far or {}
     unreachable = diagnose_unreachable_goal(raw_pddl_goal_string, init_facts, symbols)
     far = [s for s in unreachable if s in too_far]
     cut = [s for s in unreachable if s not in too_far]
     hints = []
-    if cut:
+    forbidden_pois, forbidden_edges = _extract_forbidden_sets(constraints or [])
+    if cut and (forbidden_pois or forbidden_edges):
         hints.append(
             f"{', '.join(cut)} cannot be reached: the constraints cut off every "
             f"path to it (a forbidden-poi on it or within {_forbidden_radius_m():.1f} m)"
+        )
+    elif cut:
+        hints.append(
+            f"{', '.join(cut)} cannot be reached: no path from any robot's start "
+            "leads there (the map's place graph is disconnected between them)"
         )
     if far:
         hints.append(
@@ -1054,7 +1071,7 @@ def generate_goal_relevant_multirobot_pddl(
     )
     _dump_problem(problem_str)
     failure_hint = _failure_hint(
-        raw_pddl_goal_string, init, symbols, robot_states, too_far
+        raw_pddl_goal_string, init, symbols, robot_states, too_far, constraints
     )
     return problem_str, symbols, failure_hint, planner
 
