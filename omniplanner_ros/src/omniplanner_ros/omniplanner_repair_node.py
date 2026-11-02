@@ -28,6 +28,10 @@ adds:
   stopped and the goal manager tells the operator.
 * the map version this node plans on, latched on ``~/map_version``, so the
   goal manager replans a goal the running plan covers once the map changed.
+* routes under map edits: each new map is checked against the part of every
+  robot's route still ahead. A place on it that is gone, or two places it
+  drives between that are no longer connected (e.g. an SGET edit), pauses the
+  robots and replans, so they go around instead of following the old path.
 
 This module does **not** override ``register_plugin`` or duplicate the
 plan-handling logic in ``OmniPlannerRos``; the plugin-side ``pddl_callback``
@@ -40,9 +44,15 @@ import threading
 
 import numpy as np
 import rclpy
+import spark_dsg
 from dsg_pddl.pddl_grounding import ConstraintFact
 from heracles_ros_interfaces.msg import SceneChangeMsg
-from omniplanner.plan_validity import affecting_changes, plan_dependencies
+from omniplanner.plan_validity import (
+    affecting_changes,
+    broken_route,
+    plan_dependencies,
+    route_places,
+)
 from omniplanner.world_state import (
     MAP_METADATA_KEY,
     WorldStateTracker,
@@ -86,6 +96,13 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         self._pending_changes: list = []
         self._pending_version = 0
         self._pick_failures: dict = {}
+        # Routes still ahead: the places each Follow passes, the plan each
+        # robot runs, how many of its actions are done, and the map version
+        # the route was last checked on.
+        self._route: dict = {}
+        self._plan_ids: dict = {}
+        self._actions_done: dict = {}
+        self._route_version = None
         self._published_version = None
         self._version_pub = None
 
@@ -156,6 +173,10 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             return self.dsg_last
 
     def _action_done_callback(self, msg: ActionDoneMsg) -> None:
+        with self._plan_lock:
+            if msg.plan_id and msg.plan_id == self._plan_ids.get(msg.robot_name):
+                done = self._actions_done.get(msg.robot_name, 0) + 1
+                self._actions_done[msg.robot_name] = done
         points = [(p.x, p.y) for p in msg.points]
         with self._world_lock:
             new = self.world_tracker.record(
@@ -259,6 +280,58 @@ class OmniPlannerRepairRos(OmniPlannerRos):
     def dsg_callback(self, header, dsg):
         super().dsg_callback(header, dsg)
         self._publish_map_version()
+        self._check_routes()
+
+    @staticmethod
+    def _mesh_places(dsg) -> dict:
+        """{symbol -> node id} of the places in a map."""
+        if dsg is None:
+            return {}
+        layer = dsg.get_layer(spark_dsg.DsgLayers.MESH_PLACES)
+        return {n.id.str(True).lower(): n.id.value for n in layer.nodes}
+
+    def _place_finder(self, dsg):
+        """place_at((x, y)): the place a plan's path point is on, or None."""
+        if dsg is None:
+            return lambda xy: None
+        layer = dsg.get_layer(spark_dsg.DsgLayers.MESH_PLACES)
+        nodes = list(layer.nodes)
+        if not nodes:
+            return lambda xy: None
+        xy = np.array([n.attributes.position[:2] for n in nodes])
+        names = [n.id.str(True).lower() for n in nodes]
+
+        def place_at(p):
+            d = np.hypot(xy[:, 0] - p[0], xy[:, 1] - p[1])
+            i = int(np.argmin(d))
+            return names[i] if d[i] < 0.05 else None
+
+        return place_at
+
+    def _check_routes(self) -> None:
+        """Replan if the new map cuts the route still ahead of a robot."""
+        version = self._map_version()
+        with self._plan_lock:
+            if not self._route or version == self._route_version:
+                return
+            self._route_version = version
+            route, done = dict(self._route), dict(self._actions_done)
+            robots = list(self._plan_robots)
+        dsg = self._current_dsg()
+        places = self._mesh_places(dsg)
+        broken = broken_route(
+            route,
+            done,
+            has_place=lambda s: s in places,
+            connected=lambda a, b: dsg.has_edge(places[a], places[b]),
+        )
+        if not broken:
+            return
+        with self._plan_lock:
+            self._route = {}  # judged; the new plan brings its own route
+        reason = "map changed: " + "; ".join(why for _, why in broken)
+        self._pause_robots(robots, reason)
+        self._request_replan(reason)
 
     def _publish_map_version(self) -> None:
         if self._version_pub is None:  # a map before __init__ finished
@@ -333,8 +406,19 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             self._plan_deps = plan_dependencies(plan_dict.values())
             self._plan_robots = sorted(plan_dict)
             self._active_goal = self._planning_goal
+            self._route = route_places(
+                plan_dict, self._place_finder(self._current_dsg())
+            )
+            self._plan_ids = {r: p.plan_id for r, p in plan_dict.items()}
+            self._actions_done = {}
+            self._route_version = self._map_version()
         for robot in self._plan_robots:
             self._pause_pub_for(robot)
+        watched = {
+            r: len({p for _, places in legs for p in places if p})
+            for r, legs in self._route.items()
+        }
+        self.get_logger().info(f"watching route places for map edits: {watched}")
         return plan_dict
 
     def _put_down_first(self, plan_dict, robot_poses):

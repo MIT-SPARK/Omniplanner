@@ -138,3 +138,62 @@ def affecting_changes(
         elif sym in goal["inspect"] and sym not in inspected:
             out.append((sym, f"{sym} {what} before the inspection the goal asks for"))
     return out
+
+
+# {robot -> [(action index, [place symbols the Follow passes, in order])]}
+Route = Dict[str, List[Tuple[int, List[str]]]]
+
+
+def route_places(plans: Dict[str, object], place_at) -> Route:
+    """The places each robot's Follow actions drive through.
+
+    place_at((x, y)) names the place at a path point, or None for a point that
+    is not one (the robot's start, an object it walks up to).
+    """
+    route: Route = {}
+    for robot, seq in plans.items():
+        legs = []
+        for i, a in enumerate(getattr(seq, "actions", [])):
+            if type(a).__name__ != "Follow":
+                continue
+            places = [place_at((float(p[0]), float(p[1]))) for p in a.path2d]
+            legs.append((i, places))
+        route[robot] = legs
+    return route
+
+
+def broken_route(
+    route: Route, done: Dict[str, int], has_place, connected
+) -> List[Tuple[str, str]]:
+    """[(robot, why)] for routes still ahead that the map no longer allows.
+
+    A place on a Follow not yet finished is gone, or two places the robot
+    drives between in a row are no longer connected. done[robot] is how many
+    of its plan's actions have finished.
+    """
+    broken = []
+    for robot, legs in route.items():
+        for i, places in legs:
+            if i < done.get(robot, 0):
+                continue
+            why = None
+            for a, b in zip(places, places[1:]):
+                if a and not has_place(a):
+                    why = f"place {a} on {robot}'s route was removed"
+                elif b and not has_place(b):
+                    why = f"place {b} on {robot}'s route was removed"
+                elif a and b and a != b and not connected(a, b):
+                    why = f"{robot}'s route from {a} to {b} is no longer connected"
+                if why:
+                    break
+            if (
+                why is None
+                and len(places) == 1
+                and places[0]
+                and not has_place(places[0])
+            ):
+                why = f"place {places[0]} on {robot}'s route was removed"
+            if why:
+                broken.append((robot, why))
+                break
+    return broken

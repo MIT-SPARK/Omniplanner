@@ -229,6 +229,8 @@ def _repair_node_stub(holding, dsg=None):
     )
     node._put_down_first = N._put_down_first.__get__(node)
     node._pause_pub_for = lambda robot: None
+    node._place_finder = lambda dsg: lambda xy: None
+    node._map_version = lambda: 0
     return node
 
 

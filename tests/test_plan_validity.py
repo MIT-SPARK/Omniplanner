@@ -17,8 +17,10 @@ from omniplanner.plan_validity import (
     MOVED,
     REMOVED,
     affecting_changes,
+    broken_route,
     goal_objects,
     plan_dependencies,
+    route_places,
 )
 from omniplanner.world_state import WorldState, WorldStateTracker
 
@@ -119,6 +121,11 @@ def _node(map_version=99):
         _move_threshold_m=0.5,
         _pick_failures={},
         _max_pick_retries=2,
+        _route={},
+        _plan_ids={},
+        _actions_done={},
+        _route_version=None,
+        _place_finder=lambda dsg: lambda xy: None,
         _replan_pub=NS(publish=published.append),
         _current_dsg=lambda: None,
         _map_version=lambda: map_version,
@@ -191,6 +198,7 @@ def test_a_finished_pick_no_longer_depends_on_where_the_object_was():
             robot_name="hilbert",
             object_id="O4",
             points=[],
+            plan_id="p1",
         )
     )
     assert "o4" not in node._plan_deps
@@ -204,6 +212,7 @@ def test_failed_picks_replan_up_to_the_cap():
         robot_name="hilbert",
         object_id="O4",
         points=[],
+        plan_id="p1",
     )
     for _ in range(3):
         node._action_done_callback(fail)
@@ -258,3 +267,77 @@ def test_the_map_version_is_published_when_it_changes():
     version["v"] = 5  # e.g. after "SGET: delete t444"
     publish()
     assert sent == [4, 5]
+
+
+# Places t1..t4 in a row along x; the robot starts off the graph at (0, 1).
+_PLACES = {(1.0, 0.0): "t1", (2.0, 0.0): "t2", (3.0, 0.0): "t3", (4.0, 0.0): "t4"}
+_EDGES = {("t1", "t2"), ("t2", "t3"), ("t3", "t4")}
+
+
+def _route_plan():
+    def follow(*pts):
+        return Follow(frame="map", path2d=np.array(pts))
+
+    seq = ActionSequence(
+        plan_id="p1",
+        robot_name="hilbert",
+        actions=[follow((0, 1), (1, 0), (2, 0)), follow((2, 0), (3, 0), (4, 0))],
+    )
+    return route_places({"hilbert": seq}, lambda xy: _PLACES.get(xy))
+
+
+def _check(route, done=0, places=("t1", "t2", "t3", "t4"), edges=_EDGES):
+    return broken_route(
+        route,
+        {"hilbert": done},
+        has_place=lambda s: s in places,
+        connected=lambda a, b: (a, b) in edges or (b, a) in edges,
+    )
+
+
+def test_a_route_is_the_places_its_follows_pass():
+    assert _route_plan() == {
+        "hilbert": [(0, [None, "t1", "t2"]), (1, ["t2", "t3", "t4"])]
+    }
+
+
+def test_an_intact_map_leaves_the_route_alone():
+    assert _check(_route_plan()) == []
+
+
+def test_a_removed_place_ahead_breaks_the_route():
+    ((robot, why),) = _check(_route_plan(), places=("t1", "t2", "t4"))
+    assert robot == "hilbert" and "t3" in why and "removed" in why
+
+
+def test_a_removed_edge_ahead_breaks_the_route():
+    ((_, why),) = _check(_route_plan(), edges={("t1", "t2"), ("t2", "t3")})
+    assert "t3 to t4" in why
+
+
+def test_a_place_already_driven_past_does_not_matter():
+    # The first Follow (through t1) is done; t1 going away changes nothing.
+    assert _check(_route_plan(), done=1, places=("t2", "t3", "t4")) == []
+
+
+def test_a_cut_route_pauses_the_robots_and_replans():
+    from omniplanner_ros.omniplanner_repair_node import OmniPlannerRepairRos as N
+
+    paused, replans = [], []
+    node = NS(
+        _plan_lock=threading.Lock(),
+        _route=_route_plan(),
+        _actions_done={},
+        _route_version=3,
+        _plan_robots=["euclid", "hilbert"],
+        _map_version=lambda: 4,
+        _current_dsg=lambda: NS(has_edge=lambda a, b: True),
+        _mesh_places=lambda dsg: {"t1": 1, "t2": 2, "t4": 4},  # t3 deleted
+        _pause_robots=lambda robots, why: paused.append(robots),
+        _request_replan=replans.append,
+    )
+    N._check_routes(node)
+    assert paused == [["euclid", "hilbert"]] and "t3" in replans[0]
+    assert node._route == {}  # judged once
+    N._check_routes(node)
+    assert len(replans) == 1
