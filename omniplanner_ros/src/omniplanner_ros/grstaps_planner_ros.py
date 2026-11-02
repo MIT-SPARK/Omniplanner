@@ -337,18 +337,24 @@ class GrstapsRos:
     def constrained_pddl_callback(self, msg, robot_poses):
         """Plan-repair entry point: PDDL goal string + runtime constraints."""
         found = parse_goal_targets(msg.goal.pddl_goal)
-        if not any(found.values()):
+        regions = found["regions"]
+        if not (
+            any(v for k, v in found.items() if k != "regions") or any(regions.values())
+        ):
             logger.warning(
                 "No recognised targets in goal %r; nothing for GRSTAPS-X to do.",
                 msg.goal.pddl_goal,
             )
         else:
             logger.info(
-                "Goal: %d visit, %d inspect, %d manipulate target(s); pinned: %s",
+                "Goal: %d visit, %d inspect, %d manipulate target(s), "
+                "regions visit %s explore %s; pinned: %s",
                 len(found["visit"]),
                 len(found["inspect"]),
                 len(found["manipulate"]),
-                found["bound"] or "none",
+                regions["visit"] or "-",
+                regions["explore"] or "-",
+                {**found["bound"], **found["region_bound"]} or "none",
             )
 
         # Constraints arrive from two places and both must be honoured: the
@@ -375,6 +381,11 @@ class GrstapsRos:
             # and the Place goes down on the pick point.
             manipulate_destinations=found["destinations"],
             robot_bound=found["bound"],
+            # Room nodes only: the robots have no operator-drawn areas (the
+            # console rewrites those into place goals before sending).
+            region_visits=regions["visit"],
+            region_explores=regions["explore"],
+            region_bound=found["region_bound"],
             robot_id=msg.goal.robot_id,
             constraints=persistent + per_msg,
             world_state=(

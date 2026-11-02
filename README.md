@@ -98,6 +98,8 @@ an aerial navigation or execution stack.
 | `(visited-object-by hamilton o8)` / `(visited-place-by hamilton t299)` | A visit only that robot may do; requires `entry: itags` |
 | `(inspected-by hamilton o4)` | A coalition inspection whose team includes that robot; requires `entry: itags` |
 | `(object-in-place o4 t598)` | Atomic relocation by a manipulator; requires `entry: itags` |
+| `(visited-region r3)` / `(visited-region-by hamilton r3)` | One visit at a place in the region's core (its inner half, as on the fast-downward path), the core place nearest the robots that may take it; requires `entry: itags` |
+| `(explored-region r3)` / `(explored-region-by hamilton r3)` | Visits at coverage waypoints over the region, split between robots by the allocator (or all pinned to that robot); requires `entry: itags` |
 | `[["before", "o4", "o8"]]` | Every task for `o4` must finish before any task for `o8`; ITAGS only |
 | `[["forbidden-poi", "o5"]]` | Isolate graph vertices within the configured path-distance radius |
 | `[["forbidden-edge", "t3", "t4"]]` | Remove the undirected edge between the snapped endpoints |
@@ -128,6 +130,22 @@ it carries, and the pinned task demands it, so the allocator must hand the task
 to that robot (or include it in the inspection team). Unpinned tasks are left
 to the allocator. A goal that pins work to a robot with no pose fails and says
 so; the robots then stop, as for any goal that cannot be planned.
+
+**Region goals.** An ITAGS task stands at one graph vertex, so a region (a ROOMS
+node, whose places come from the same `place-in-region` facts fast-downward
+uses) is expanded into place visits before tasks are enumerated
+(`expand_regions`). An explore does not visit every place -- a fused Penn region
+has 100-740 -- but waypoints kept greedily from the region's centre outwards, no
+two closer than `OMNIPLANNER_GRSTAPS_EXPLORE_SPACING_M` (default 8 m); over
+`OMNIPLANNER_GRSTAPS_EXPLORE_MAX` (default 15) waypoints the spacing grows until
+they fit. Only places a robot can reach (after forbidden areas) are chosen. A
+`before` naming a region orders all of its tasks. On replanning, a region visit
+is done once a visited place is in its core, and an explore waypoint once a
+visited place is within half the spacing of it (per robot for the `-by` forms).
+`GrstapsGoal.region_polygons` adds areas that are not graph nodes (the web
+console's drawn areas): their places are the mesh places inside the polygon.
+The goal manager cannot judge region goals (it has no membership), so it always
+replans them.
 
 **Goal-language limits:** this is a restricted PDDL adapter. Disjunctions (`or`),
 robot-specific final poses (`at-*`), pick-and-hold (`holding`), unknown predicates,

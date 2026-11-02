@@ -414,6 +414,16 @@ class GrstapsGoal:
     # [robots]}}, from the -by predicates. A pinned visit is one task per
     # robot; a pinned inspection is one coalition task that includes them all.
     robot_bound: Dict[str, Dict[str, List[str]]] = field(default_factory=dict)
+    # Region goals (visited-region / explored-region): region symbols, which
+    # grounding expands into place visits (expand_regions). region_bound is
+    # the -by form, {"visit"|"explore" -> {region -> [robots]}}.
+    region_visits: List[str] = field(default_factory=list)
+    region_explores: List[str] = field(default_factory=list)
+    region_bound: Dict[str, Dict[str, List[str]]] = field(default_factory=dict)
+    # Areas that are not graph nodes, {symbol -> [[x, y], ...]}: a polygon's
+    # places are the mesh places inside it. The console's operator-drawn
+    # mission areas (area1, area2, ...) arrive this way.
+    region_polygons: Dict[str, List[List[float]]] = field(default_factory=dict)
 
 
 @dataclass
@@ -434,6 +444,10 @@ class GroundedGrstapsProblem:
     prefix: Dict[str, List[dict]] = field(default_factory=dict)
     # Everything the goal asks for is done: no solver run, only the prefix.
     nothing_to_solve: bool = False
+    # {place pddl name -> {"region", "kind", "index", "total"}}: which region
+    # goal a place visit stands for (expand_regions), so a plan can say
+    # "explore r6 (3/9)" rather than name a bare mesh place.
+    region_of: Dict[str, dict] = field(default_factory=dict)
 
 
 @dataclass
@@ -457,6 +471,8 @@ class GrstapsPlan:
     precedence: List[List[int]] = field(default_factory=list)
     # See GroundedGrstapsProblem.prefix.
     prefix: Dict[str, List[dict]] = field(default_factory=dict)
+    # See GroundedGrstapsProblem.region_of.
+    region_of: Dict[str, dict] = field(default_factory=dict)
 
 
 def _graph_config(vertex):
@@ -532,6 +548,15 @@ _BOUND_PREDS = {
     "inspected-by": "inspect",
 }
 
+# Region goals, the multirobot FD domain's vocabulary again. A region is a set
+# of places, which no single ITAGS task can stand for (a task is one vertex),
+# so grounding expands each into place visits -- see expand_regions:
+#   visited-region  -> one visit at a place in the region's core
+#   explored-region -> visits at coverage waypoints spread over the region
+# The -by forms (robot first) pin those visits to the named robot.
+_REGION_PREDS = {"visited-region": "visit", "explored-region": "explore"}
+_REGION_BOUND_PREDS = {"visited-region-by": "visit", "explored-region-by": "explore"}
+
 
 def parse_goal_targets(pddl_goal: str):
     """Split a PDDL goal into visit / inspect / manipulate targets.
@@ -560,6 +585,10 @@ def parse_goal_targets(pddl_goal: str):
         "manipulate": [],
         "destinations": {},
         "bound": {},
+        # {"visit"|"explore" -> [region]} and, from the -by forms,
+        # {"visit"|"explore" -> {region -> [robots]}}
+        "regions": {"visit": [], "explore": []},
+        "region_bound": {},
     }
 
     def walk(node, negated=False):
@@ -597,13 +626,32 @@ def parse_goal_targets(pddl_goal: str):
             if node[1] not in robots:
                 robots.append(node[1])
             return
+        if head in _REGION_PREDS or head in _REGION_BOUND_PREDS:
+            if negated:
+                raise ValueError(f"Unsupported negative GRSTAPS-X goal: {head}")
+            arity = 3 if head in _REGION_BOUND_PREDS else 2
+            if len(node) != arity or not all(isinstance(s, str) for s in node[1:]):
+                raise ValueError(f"Invalid arguments for GRSTAPS-X predicate {head!r}")
+            if head in _REGION_PREDS:
+                regions = found["regions"][_REGION_PREDS[head]]
+                if node[1] not in regions:
+                    regions.append(node[1])
+            else:
+                robots = (
+                    found["region_bound"]
+                    .setdefault(_REGION_BOUND_PREDS[head], {})
+                    .setdefault(node[2], [])
+                )
+                if node[1] not in robots:
+                    robots.append(node[1])
+            return
         entry = _GOAL_PREDS.get(head)
         if entry is None or head in ("at-place", "at-object", "holding"):
             raise ValueError(
                 f"Unsupported GRSTAPS-X goal predicate {head!r}; use visited-*, "
-                "visited-*-by, safe, inspected-by, (not (suspicious ...)), or "
-                "object-in-place. Final poses, pick-and-hold and disjunctions "
-                "are not implemented."
+                "visited-*-by, visited-region(-by), explored-region(-by), safe, "
+                "inspected-by, (not (suspicious ...)), or object-in-place. Final "
+                "poses, pick-and-hold and disjunctions are not implemented."
             )
         arity = 3 if head == "object-in-place" else 2
         if len(node) != arity or not all(isinstance(s, str) for s in node[1:]):
@@ -1132,6 +1180,306 @@ def _nearest_place(dsg, symbol):
     return best
 
 
+# --- Region goals -----------------------------------------------------------
+#
+# An ITAGS task stands at one graph vertex, and a region is a set of places, so
+# region goals are expanded into place visits before tasks are enumerated:
+#
+#   visited-region r  -> ONE visit at a place in r's core (the members nearest
+#                        its centre, region_core), the one
+#                        nearest the robots that may take it;
+#   explored-region r -> visits at coverage waypoints: members kept greedily
+#                        from the centre outwards, no two closer than the
+#                        spacing. "Every place" is not plannable -- a fused
+#                        Penn region has 100-740 mesh places.
+#
+# Each region also maps to all its tasks, so before(r, x) orders them as one.
+EXPLORE_SPACING_ENV = "OMNIPLANNER_GRSTAPS_EXPLORE_SPACING_M"
+EXPLORE_MAX_ENV = "OMNIPLANNER_GRSTAPS_EXPLORE_MAX"
+DEFAULT_EXPLORE_SPACING_M = 8.0
+DEFAULT_EXPLORE_MAX = 15
+
+# A region visit must reach its core: the members this close to the region's
+# centre, as a fraction of members (0.5 = the inner half). Grown regions on
+# fused maps sprawl (Penn's "loading dock" r6 reaches 83 m from its centre, up
+# to a robot's start), so "the member nearest the robot" alone can make a visit
+# a 2 m step that never goes near the place. 1.0 = any member counts.
+REGION_CORE_FRACTION = 0.5
+
+
+def _region_core_fraction():
+    try:
+        f = float(os.getenv("OMNIPLANNER_REGION_CORE_FRACTION", REGION_CORE_FRACTION))
+    except ValueError:
+        return REGION_CORE_FRACTION
+    return min(max(f, 0.0), 1.0)
+
+
+def region_core(members, xy, centre, fraction=None):
+    """The members of a region a visit may end at: the ``fraction`` nearest its
+    centre (at least one)."""
+    fraction = _region_core_fraction() if fraction is None else fraction
+    ranked = sorted(members, key=lambda p: float(np.linalg.norm(xy[p] - centre)))
+    return ranked[: max(1, int(np.ceil(fraction * len(ranked))))]
+
+
+
+def _env_number(name, default, cast=float, minimum=None):
+    try:
+        value = cast(os.getenv(name, default))
+    except (TypeError, ValueError):
+        logger.warning(
+            "%s=%r is not a number; using %s", name, os.getenv(name), default
+        )
+        return default
+    if minimum is not None and value < minimum:
+        return default
+    return value
+
+
+def explore_spacing_m():
+    return _env_number(EXPLORE_SPACING_ENV, DEFAULT_EXPLORE_SPACING_M, float, 0.5)
+
+
+def explore_max():
+    return _env_number(EXPLORE_MAX_ENV, DEFAULT_EXPLORE_MAX, int, 1)
+
+
+def _in_polygon(points, polygon):
+    """Even-odd rule: which of `points` (N x 2) lie inside `polygon`."""
+    poly = np.asarray(polygon, dtype=float).reshape(-1, 2)
+    pts = np.asarray(points, dtype=float).reshape(-1, 2)
+    inside = np.zeros(len(pts), dtype=bool)
+    if len(poly) < 3:
+        return inside
+    x, y = pts[:, 0], pts[:, 1]
+    for (x1, y1), (x2, y2) in zip(poly, np.roll(poly, -1, axis=0)):
+        crosses = (y1 > y) != (y2 > y)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            x_at = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+        inside ^= crosses & (x < x_at)
+    return inside
+
+
+def region_places(dsg, symbol, place_xy, polygons=None, containment=None):
+    """(member mesh places, centre xy) of a region symbol.
+
+    A symbol in `polygons` is an area drawn by an operator: its places are the
+    mesh places inside the polygon. Anything else must be a ROOMS node, whose
+    places come from the same place-in-region facts the FD path uses. Raises
+    ValueError for a symbol that is neither.
+    """
+    sym = symbol.lower()
+    poly = {k.lower(): v for k, v in (polygons or {}).items()}.get(sym)
+    names = sorted(place_xy)
+    if poly is not None:
+        if not names:
+            return [], None
+        inside = _in_polygon([place_xy[n] for n in names], poly)
+        members = [n for n, ok in zip(names, inside) if ok]
+        centre = np.asarray(poly, dtype=float).reshape(-1, 2).mean(axis=0)
+        return members, centre
+    node = None
+    try:
+        rooms = dsg.get_layer(spark_dsg.DsgLayers.ROOMS)
+        node = next((n for n in rooms.nodes if n.id.str(True).lower() == sym), None)
+    except Exception:
+        pass
+    if node is None:
+        raise ValueError(
+            f"Region {symbol} is not in the scene graph (no Room node, no drawn area)"
+        )
+    if containment is None:
+        from dsg_pddl.dsg_pddl_grounding import generate_place_containment
+
+        containment = generate_place_containment(dsg)
+    members = sorted(
+        p.lower()
+        for _, p, r in containment
+        if r.lower() == sym and p.lower() in place_xy
+    )
+    centre = np.asarray(node.attributes.position, dtype=float)[:2]
+    return members, centre
+
+
+def coverage_waypoints(members, place_xy, centre, spacing, cap=None):
+    """(waypoints, spacing used): members no two closer than `spacing`.
+
+    Greedy from the centre outwards, so a small region gets its middle first.
+    Over `cap`, the spacing grows by a quarter until the waypoints fit.
+    """
+    centre = np.asarray(centre, dtype=float)
+    ranked = sorted(
+        members,
+        key=lambda p: (float(np.linalg.norm(np.asarray(place_xy[p]) - centre)), p),
+    )
+    pts = {p: np.asarray(place_xy[p], dtype=float) for p in ranked}
+    while True:
+        kept = []
+        for p in ranked:
+            if all(np.linalg.norm(pts[p] - pts[q]) >= spacing for q in kept):
+                kept.append(p)
+        if cap is None or len(kept) <= cap:
+            return kept, spacing
+        spacing *= 1.25
+
+
+def expand_regions(goal, dsg, graph, symbol_of_vertex, starts, fleet=None):
+    """Region goals -> place visits: (goal, {place -> region info}, {region -> [places]}).
+
+    `starts` is {robot -> start vertex}; `fleet` the robots that may take an
+    unpinned visit (default: all of `starts`). Members a robot cannot reach
+    (forbidden areas, a disconnected graph) are never chosen. What the mission
+    already did (goal.world_state) is dropped: a region visit once a visited
+    place is in its core, an explore waypoint once a visited place lies within
+    half the spacing of it -- per robot for the -by forms.
+    """
+    wanted = [(r.lower(), "visit", ()) for r in goal.region_visits or []]
+    wanted += [(r.lower(), "explore", ()) for r in goal.region_explores or []]
+    for kind, targets in (goal.region_bound or {}).items():
+        for r, robots in targets.items():
+            wanted.append((r.lower(), kind, tuple(x.lower() for x in robots)))
+    if not wanted:
+        return goal, {}, {}
+
+    from dsg_pddl.dsg_pddl_grounding import generate_place_containment
+
+    vertex_by_id = {v["id"]: v for v in graph["vertices"]}
+    place_vertex = {s.lower(): i for i, s in symbol_of_vertex.items()}
+    place_xy = {
+        s: (vertex_by_id[i]["x"], vertex_by_id[i]["y"])
+        for s, i in place_vertex.items()
+        if i in vertex_by_id
+    }
+    starts = {r.lower(): v for r, v in starts.items()}
+    reachable = reachable_vertices(graph, [v["id"] for v in starts.values()])
+    containment = (
+        generate_place_containment(dsg)
+        if any(
+            r not in {k.lower() for k in goal.region_polygons or {}}
+            for r, _, _ in wanted
+        )
+        else set()
+    )
+    state = getattr(goal, "world_state", None)
+    visited_all = {s.lower() for s in (getattr(state, "visited", None) or ())}
+    visited_by = {
+        r.lower(): {s.lower() for s in syms}
+        for r, syms in (getattr(state, "visited_by", None) or {}).items()
+    }
+    spacing0, cap = explore_spacing_m(), explore_max()
+    pool = [r.lower() for r in (fleet if fleet is not None else starts)]
+
+    goal_points = list(goal.goal_points)
+    bound = {
+        k: {s: list(rs) for s, rs in t.items()} for k, t in goal.robot_bound.items()
+    }
+    region_of, places_of, done = {}, {}, []
+
+    def visited_near(visited, xy, radius):
+        return any(
+            s in place_xy and math.dist(place_xy[s], xy) <= radius for s in visited
+        )
+
+    for region, kind, robots in wanted:
+        members, centre = region_places(
+            dsg, region, place_xy, goal.region_polygons, containment
+        )
+        if not members:
+            raise ValueError(
+                f"Region {region} has no mesh places; nothing to {kind} there"
+            )
+        if centre is None:
+            centre = np.mean([place_xy[m] for m in members], axis=0)
+        reach = [m for m in members if place_vertex[m] in reachable]
+        if not reach:
+            raise ValueError(
+                f"No robot can reach region {region}: none of its {len(members)} "
+                "place(s) is connected to a robot (a forbidden area or a "
+                "disconnected graph cuts it off)"
+            )
+        # Each pinned robot gets its own copy of the goal: "spot1 explores r3"
+        # and "spot2 explores r3" are two explorations.
+        for who in robots or (None,):
+            visited = visited_by.get(who, set()) if who else visited_all
+            if kind == "visit":
+                core = region_core(
+                    members, {m: np.asarray(place_xy[m]) for m in members}, centre
+                )
+                if any(m in visited for m in core):
+                    done.append(f"visit {region}" + (f" by {who}" if who else ""))
+                    places_of.setdefault(region, [])
+                    continue
+                candidates = [m for m in core if m in set(reach)] or reach
+                eligible = [who] if who else pool
+                origins = [
+                    (starts[r]["x"], starts[r]["y"]) for r in eligible if r in starts
+                ] or [tuple(centre)]
+                pick = min(
+                    candidates,
+                    key=lambda m: (min(math.dist(place_xy[m], o) for o in origins), m),
+                )
+                chosen, spacing = [pick], None
+            else:
+                chosen, spacing = coverage_waypoints(
+                    reach, place_xy, centre, spacing0, cap
+                )
+                total = len(chosen)
+                left = [
+                    p
+                    for p in chosen
+                    if p not in visited
+                    and not visited_near(visited, place_xy[p], spacing / 2)
+                ]
+                if len(left) < total:
+                    done.append(
+                        f"{total - len(left)}/{total} waypoint(s) of {region}"
+                        + (f" by {who}" if who else "")
+                    )
+                logger.info(
+                    "Exploring %s%s: %d of %d waypoint(s) left, %.1f m apart (%d reachable place(s))",
+                    region,
+                    f" by {who}" if who else "",
+                    len(left),
+                    total,
+                    spacing,
+                    len(reach),
+                )
+            for i, p in enumerate(chosen):
+                if kind == "explore" and p not in left:
+                    continue
+                region_of[p] = {
+                    "region": region,
+                    "kind": kind,
+                    "index": i + 1,
+                    "total": len(chosen),
+                }
+                if spacing is not None:
+                    region_of[p]["spacing_m"] = round(spacing, 2)
+                places_of.setdefault(region, []).append(p)
+                if who:
+                    rs = bound.setdefault("visit", {}).setdefault(p, [])
+                    if who not in rs:
+                        rs.append(who)
+                elif p not in goal_points:
+                    goal_points.append(p)
+            places_of.setdefault(region, [])
+    if done:
+        logger.info("Region goals already done: %s", ", ".join(done))
+    return (
+        replace(
+            goal,
+            goal_points=goal_points,
+            robot_bound=bound,
+            region_visits=[],
+            region_explores=[],
+            region_bound={},
+        ),
+        region_of,
+        places_of,
+    )
+
+
 def _fleet_names(robot_states, goal, domain, quiet=False):
     """Robots that can take part: a pose, and an executor that runs these plans."""
     names = []
@@ -1302,7 +1650,9 @@ def _carry_prefix(dsg, graph, vertices, pose, held):
     return entries, here
 
 
-def _parameterize_tasks(dsg, tasks, location_of, destination_of, motion_graph=None):
+def _parameterize_tasks(
+    dsg, tasks, location_of, destination_of, motion_graph=None, region_of=None
+):
     """Geometry each scheduled task needs before it can become a robot action.
 
     The solver returns symbols and timings; every coordinate an executor acts on
@@ -1341,6 +1691,9 @@ def _parameterize_tasks(dsg, tasks, location_of, destination_of, motion_graph=No
             continue
 
         entry = {"action": kind, "target": target, "object_point": position}
+        if kind == "visit" and target in (region_of or {}):
+            # The region goal this visit stands for (expand_regions).
+            entry["region"] = dict(region_of[target])
         if kind != "visit":
             entry["object_class"] = _semantic_label(
                 dsg, location_of.get(target, target)
@@ -1405,11 +1758,14 @@ def ground_problem(
         goal.manipulate_destinations
         or goal.extra_precedence
         or goal.robot_bound
+        or goal.region_visits
+        or goal.region_explores
+        or goal.region_bound
         or any(getattr(c, "predicate", None) == "before" for c in goal.constraints)
     ):
         raise ValueError(
-            "Relocation destinations, explicit ordering and robot-pinned tasks "
-            "require entry='itags'"
+            "Relocation destinations, explicit ordering, robot-pinned tasks and "
+            "region goals require entry='itags'"
         )
     # Match PDDL's case-insensitive symbols and avoid duplicate scheduled tasks.
     goal = replace(
@@ -1429,8 +1785,16 @@ def ground_problem(
             }
             for kind, targets in (goal.robot_bound or {}).items()
         },
+        region_visits=list(dict.fromkeys(s.lower() for s in goal.region_visits)),
+        region_explores=list(dict.fromkeys(s.lower() for s in goal.region_explores)),
+        region_bound={
+            kind: {
+                sym.lower(): list(dict.fromkeys(r.lower() for r in robots))
+                for sym, robots in targets.items()
+            }
+            for kind, targets in (goal.region_bound or {}).items()
+        },
     )
-    goal, held = residual_goal(goal, dsg)
 
     pose = robot_states.get(goal.robot_id)
     if pose is None:
@@ -1482,6 +1846,25 @@ def ground_problem(
         path_distance,
     )
 
+    # Region goals become place visits before anything counts tasks; this also
+    # drops what the mission already did of them, so it needs the pruned graph
+    # (reachability) and runs ahead of residual_goal.
+    fleet_names = _fleet_names(robot_states, goal, domain, quiet=True)
+    goal, region_of, places_of = expand_regions(
+        goal,
+        dsg,
+        graph,
+        symbol_of_vertex,
+        {
+            r: _nearest_vertex(
+                vertices, float(robot_states[r][0]), float(robot_states[r][1])
+            )
+            for r in fleet_names
+        },
+        fleet_names,
+    )
+    goal, held = residual_goal(goal, dsg)
+
     prefix, start_after_prefix = {}, {}
     for robot, objects in held.items():
         name = next((r for r in robot_states if r.lower() == robot), None)
@@ -1511,6 +1894,7 @@ def ground_problem(
                 motion_graph=graph,
                 prefix=prefix,
                 nothing_to_solve=True,
+                region_of=region_of,
             ),
             goal.robot_id,
         )
@@ -1841,6 +2225,10 @@ def ground_problem(
         )
         if not tasks:
             raise ValueError("No tasks to allocate; nothing to plan for.")
+        for region, places in places_of.items():
+            of_symbol[region] = sorted(
+                {i for p in places for i in of_symbol.get(p, [])}
+            )
         user_pairs = ordering_precedence(getattr(goal, "constraints", None), of_symbol)
         raw_pairs = []
         for pair in getattr(goal, "extra_precedence", None) or []:
@@ -1920,6 +2308,7 @@ def ground_problem(
         },
         motion_graph=graph,
         prefix=prefix,
+        region_of=region_of,
     )
     return _wrap([robot_id for robot_id, _ in fleet], grounded, goal.robot_id)
 
@@ -2180,7 +2569,9 @@ def _run_itags(problem: GroundedGrstapsProblem):
 @dispatch
 def make_plan(problem: GroundedGrstapsProblem, map_context: Any) -> GrstapsPlan:
     if problem.nothing_to_solve:
-        return GrstapsPlan(makespan=0.0, tasks=[], prefix=problem.prefix)
+        return GrstapsPlan(
+            makespan=0.0, tasks=[], prefix=problem.prefix, region_of=problem.region_of
+        )
     if problem.domain.entry == "itags":
         result, solution_file = _run_itags(problem)
     else:
@@ -2288,9 +2679,11 @@ def make_plan(problem: GroundedGrstapsProblem, map_context: Any) -> GrstapsPlan:
             problem.location_of,
             problem.destination_of,
             problem.motion_graph,
+            problem.region_of,
         ),
         precedence=[
             list(pair) for pair in solution.get("precedence_constraints") or []
         ],
         prefix=problem.prefix,
+        region_of=problem.region_of,
     )

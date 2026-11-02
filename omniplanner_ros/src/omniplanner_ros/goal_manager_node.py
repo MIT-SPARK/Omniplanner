@@ -35,6 +35,11 @@ from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 from std_msgs.msg import Bool, Int64, String
 
 # Goal-side predicates we treat as "must visit".
+# Region goals (visited-region, explored-region and their -by forms) are
+# deliberately NOT here: whether a region is done depends on which of its places
+# were reached, and this node has no region membership. They evaluate to
+# "unknown", which means replan -- and the planner's own residual (GRSTAPS-X:
+# expand_regions) then plans only the part of the region still to do.
 _VISIT_PREDS = {"visited-place", "visited-object", "visited-poi"}
 
 
