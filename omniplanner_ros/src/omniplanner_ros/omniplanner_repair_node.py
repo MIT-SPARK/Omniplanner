@@ -26,6 +26,8 @@ adds:
   on ``executor_pause_topic``, so none drives on while the map catches up.
   The replanned sequence releases each robot; if no plan is found they stay
   stopped and the goal manager tells the operator.
+* the map version this node plans on, latched on ``~/map_version``, so the
+  goal manager replans a goal the running plan covers once the map changed.
 
 This module does **not** override ``register_plugin`` or duplicate the
 plan-handling logic in ``OmniPlannerRos``; the plugin-side ``pddl_callback``
@@ -49,9 +51,10 @@ from omniplanner.world_state import (
 )
 from omniplanner_msgs.msg import ConstraintList
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.qos import DurabilityPolicy, QoSProfile
 from robot_executor_interface.action_descriptions import ActionSequence, Place
 from robot_executor_msgs.msg import ActionDoneMsg
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Int64, String
 from std_srvs.srv import Trigger
 
 from omniplanner_ros.omniplanner_node import OmniPlannerRos
@@ -83,6 +86,8 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         self._pending_changes: list = []
         self._pending_version = 0
         self._pick_failures: dict = {}
+        self._published_version = None
+        self._version_pub = None
 
         super().__init__()
 
@@ -125,6 +130,9 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             SceneChangeMsg, "~/scene_changes", self._scene_changes_callback, 10
         )
         self._settle_timer = None
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self._version_pub = self.create_publisher(Int64, "~/map_version", latched)
+        self._publish_map_version()
         self.get_logger().info(
             "OmniPlannerRepairRos listening for persistent constraints on "
             "~/constraints and mission progress on /action_done"
@@ -247,6 +255,18 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             pub = self.create_publisher(Bool, topic, 10)
             self._pause_pubs[robot] = pub
         return pub
+
+    def dsg_callback(self, header, dsg):
+        super().dsg_callback(header, dsg)
+        self._publish_map_version()
+
+    def _publish_map_version(self) -> None:
+        if self._version_pub is None:  # a map before __init__ finished
+            return
+        version = self._map_version()
+        if version != self._published_version:
+            self._published_version = version
+            self._version_pub.publish(Int64(data=version))
 
     def _map_version(self) -> int:
         dsg = self._current_dsg()

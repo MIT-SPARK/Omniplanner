@@ -241,3 +241,20 @@ def test_the_pause_publishers_are_made_with_the_plan():
         "/hilbert/spot_executor_node/pause",
     ]
     assert node.paused == []  # made, not used
+
+
+def test_the_map_version_is_published_when_it_changes():
+    from omniplanner_ros.omniplanner_repair_node import OmniPlannerRepairRos
+
+    sent, version = [], {"v": 4}
+    node = NS(
+        _version_pub=NS(publish=lambda m: sent.append(m.data)),
+        _published_version=None,
+        _map_version=lambda: version["v"],
+    )
+    publish = OmniPlannerRepairRos._publish_map_version.__get__(node)
+    publish()
+    publish()  # a map with the same version: nothing new
+    version["v"] = 5  # e.g. after "SGET: delete t444"
+    publish()
+    assert sent == [4, 5]

@@ -12,6 +12,7 @@ paths via roslaunch ``remap``::
     - {from: ~/planner_goal,      to: /<robot>/omniplanner_node/multi_robot_pddl_constrained/pddl_goal}
     - {from: ~/plan_visited_pois, to: /<robot>/omniplanner_node/plan_visited_pois_all}
     - {from: ~/plan_robots,       to: /<robot>/omniplanner_node/plan_robots}
+    - {from: ~/map_version,       to: /<robot>/omniplanner_node/map_version}
 
 Executors are addressed directly, as ``/<name>/spot_executor_node/{pause,resume,stop}``
 for every robot in the running plan, so a base station needs no robot names.
@@ -31,7 +32,7 @@ from dsg_pddl.pddl_utils import lisp_string_to_ast
 from omniplanner_msgs.msg import ConstrainedPddlGoalMsg
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Int64, String
 
 # Goal-side predicates we treat as "must visit".
 _VISIT_PREDS = {"visited-place", "visited-object", "visited-poi"}
@@ -152,6 +153,12 @@ class GoalManager(Node):
         # failed), while that replan is outstanding. If it cannot be planned,
         # the running plan is no longer valid either: stop and tell the operator.
         self._replan_reason = None
+        # The planner's map version now, and the one the cached plan was made
+        # on. Once the map has changed (a scene change, an SGET edit) the plan
+        # may use what is gone, so a goal it covers is planned again.
+        self._map_version: int = 0
+        self._plan_map_version: int = 0
+        self._pending_map_version: int = 0
 
         # Subscriptions (private; remap at launch time).
         self._goal_sub = self.create_subscription(
@@ -172,6 +179,10 @@ class GoalManager(Node):
         )
         self._replan_sub = self.create_subscription(
             String, "~/replan_request", self._replan_request_cb, 10
+        )
+        latched = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
+        self._map_version_sub = self.create_subscription(
+            Int64, "~/map_version", self._map_version_cb, latched
         )
 
         # Publishers (private; remap at launch time).
@@ -197,6 +208,7 @@ class GoalManager(Node):
         self._cache_valid = True
         self._running_constraints = self._plan_constraints
         self._running_goal = self._pending_goal
+        self._plan_map_version = self._pending_map_version
         self._replan_reason = None  # the replan succeeded
         self.get_logger().info(f"Updated plan cache: {len(pois)} visited POIs")
 
@@ -218,6 +230,9 @@ class GoalManager(Node):
             self._executor_cmd(robot, "stop")
         self._paused = set()
         self._plan_robots = robots
+
+    def _map_version_cb(self, msg: Int64) -> None:
+        self._map_version = int(msg.data)
 
     def _planner_failed_cb(self, msg: String) -> None:
         """The forwarded goal produced no plan.
@@ -282,6 +297,7 @@ class GoalManager(Node):
             return
         self._pause_executor()
         self._replan_reason = msg.data
+        self._pending_map_version = self._map_version
         self._goal_pub.publish(goal)
         self.get_logger().info(
             f"replanning: {msg.data}. goal={goal.goal.pddl_goal!r}; forwarded to planner"
@@ -315,6 +331,8 @@ class GoalManager(Node):
         """
         if not self._cache_valid:
             return False
+        if self._map_version != self._plan_map_version:
+            return False  # the map changed since the plan was made
         if constraint_signature(msg.constraints) != self._plan_constraints:
             return False  # constraints changed; the cached plan predates them
         forbidden = extract_forbidden_pois(msg.constraints)
@@ -353,6 +371,9 @@ class GoalManager(Node):
         # can tell whether the constraints have since changed.
         self._plan_constraints = constraint_signature(msg.constraints)
         self._pending_goal = msg
+        # The planner plans on this map or a newer one, so a plan never looks
+        # newer than it is.
+        self._pending_map_version = self._map_version
         self._goal_pub.publish(msg)
 
     # ------------- logging -------------
@@ -368,6 +389,11 @@ class GoalManager(Node):
         sat = goal_satisfied_by(msg.goal.pddl_goal, self._plan_visited_pois)
         if not self._cache_valid:
             reason = "no cached plan yet"
+        elif self._map_version != self._plan_map_version:
+            reason = (
+                f"map changed since the plan was made (map_version "
+                f"{self._plan_map_version} -> {self._map_version})"
+            )
         elif forbidden & self._plan_visited_pois:
             reason = f"plan visits forbidden POIs {forbidden & self._plan_visited_pois}"
         elif sat is False:
