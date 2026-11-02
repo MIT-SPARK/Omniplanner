@@ -228,6 +228,7 @@ def _repair_node_stub(holding, dsg=None):
         get_logger=lambda: NS(info=lambda *_: None, error=lambda *_: None),
     )
     node._put_down_first = N._put_down_first.__get__(node)
+    node._pause_pub_for = lambda robot: None
     return node
 
 

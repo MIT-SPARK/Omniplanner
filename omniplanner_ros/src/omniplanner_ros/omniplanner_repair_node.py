@@ -22,6 +22,10 @@ adds:
   plans still act on and what the goal asks for. A change that invalidates the
   plan -- or a failed pick, up to ``max_pick_retries`` -- is sent to the goal
   manager on ``~/replan_request`` once this node holds a map that contains it.
+  A scene change that invalidates the plan pauses every robot in it at once,
+  on ``executor_pause_topic``, so none drives on while the map catches up.
+  The replanned sequence releases each robot; if no plan is found they stay
+  stopped and the goal manager tells the operator.
 
 This module does **not** override ``register_plugin`` or duplicate the
 plan-handling logic in ``OmniPlannerRos``; the plugin-side ``pddl_callback``
@@ -47,7 +51,7 @@ from omniplanner_msgs.msg import ConstraintList
 from rclpy.executors import MultiThreadedExecutor
 from robot_executor_interface.action_descriptions import ActionSequence, Place
 from robot_executor_msgs.msg import ActionDoneMsg
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 
 from omniplanner_ros.omniplanner_node import OmniPlannerRos
@@ -72,6 +76,8 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         # were made for, scene changes waiting to be judged, and pick failures.
         self._plan_lock = threading.Lock()
         self._plan_deps: dict = {}
+        self._plan_robots: list = []
+        self._pause_pubs: dict = {}
         self._planning_goal = ""
         self._active_goal = ""
         self._pending_changes: list = []
@@ -105,9 +111,15 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         self.declare_parameter("move_threshold_m", 0.5)
         self.declare_parameter("change_settle_s", 1.0)
         self.declare_parameter("max_pick_retries", 2)
+        self.declare_parameter(
+            "executor_pause_topic", "/{robot}/spot_executor_node/pause"
+        )
         self._move_threshold_m = float(self.get_parameter("move_threshold_m").value)
         self._change_settle_s = float(self.get_parameter("change_settle_s").value)
         self._max_pick_retries = int(self.get_parameter("max_pick_retries").value)
+        self._executor_pause_topic = str(
+            self.get_parameter("executor_pause_topic").value
+        )
         self._replan_pub = self.create_publisher(String, "~/replan_request", 10)
         self.create_subscription(
             SceneChangeMsg, "~/scene_changes", self._scene_changes_callback, 10
@@ -203,6 +215,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             changes, self._pending_changes = self._pending_changes, []
             version, self._pending_version = self._pending_version, 0
             deps, goal = dict(self._plan_deps), self._active_goal
+            robots = list(self._plan_robots)
         with self._world_lock:
             state = self.world_tracker.snapshot(self._current_dsg())
         affected = affecting_changes(
@@ -215,7 +228,25 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             )
             return
         reason = "scene changed: " + "; ".join(r for _, r in affected)
+        self._pause_robots(robots, reason)
         self._wait_for_map_then_replan(version, reason)
+
+    def _pause_robots(self, robots, reason: str) -> None:
+        """Stop the robots in the plan now, before waiting for the map."""
+        for robot in robots:
+            self._pause_pub_for(robot).publish(Bool(data=True))
+        if robots:
+            self.get_logger().warning(f"pausing {', '.join(robots)}: {reason}")
+
+    def _pause_pub_for(self, robot: str):
+        # Made with the plan, not at pause time: a brand-new publisher's first
+        # message can go out before the executor is matched, and be lost.
+        pub = self._pause_pubs.get(robot)
+        if pub is None:
+            topic = self._executor_pause_topic.format(robot=robot)
+            pub = self.create_publisher(Bool, topic, 10)
+            self._pause_pubs[robot] = pub
+        return pub
 
     def _map_version(self) -> int:
         dsg = self._current_dsg()
@@ -280,7 +311,10 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         # What these plans act on, for judging later scene changes.
         with self._plan_lock:
             self._plan_deps = plan_dependencies(plan_dict.values())
+            self._plan_robots = sorted(plan_dict)
             self._active_goal = self._planning_goal
+        for robot in self._plan_robots:
+            self._pause_pub_for(robot)
         return plan_dict
 
     def _put_down_first(self, plan_dict, robot_poses):

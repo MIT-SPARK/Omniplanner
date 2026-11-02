@@ -97,15 +97,20 @@ def test_added_goal_object_invalidates():
 # ---------- the repair node's reaction ----------
 
 
-def _node():
+def _node(map_version=99):
     from omniplanner_ros.omniplanner_repair_node import OmniPlannerRepairRos as N
 
-    published, timers = [], []
+    published, timers, paused = [], [], []
     node = NS(
         _plan_lock=threading.Lock(),
         _world_lock=threading.Lock(),
         world_tracker=WorldStateTracker(),
         _plan_deps=plan_dependencies([_plan()]),
+        _plan_robots=["hilbert", "lewis"],
+        _pause_pubs={},
+        _executor_pause_topic="/{robot}/spot_executor_node/pause",
+        _pending_release={},
+        _planning_goal="",
         _active_goal="(and (object-in-place o4 t598) (visited-object o5))",
         _pending_changes=[],
         _pending_version=0,
@@ -116,7 +121,10 @@ def _node():
         _max_pick_retries=2,
         _replan_pub=NS(publish=published.append),
         _current_dsg=lambda: None,
-        _map_version=lambda: 99,
+        _map_version=lambda: map_version,
+        create_publisher=lambda _type, topic, _qos: NS(
+            topic=topic, publish=lambda m, t=topic: paused.append((t, m.data))
+        ),
         create_timer=lambda period, cb: timers.append(cb) or NS(cancel=lambda: None),
         destroy_timer=lambda t: None,
         get_logger=lambda: NS(
@@ -129,8 +137,13 @@ def _node():
         "_request_replan",
         "_scene_changes_callback",
         "_action_done_callback",
+        "_pause_robots",
+        "_pause_pub_for",
+        "finalize_plans",
+        "_put_down_first",
     ):
         setattr(node, name, getattr(N, name).__get__(node))
+    node.paused = paused
     return node, published, timers
 
 
@@ -195,3 +208,36 @@ def test_failed_picks_replan_up_to_the_cap():
     for _ in range(3):
         node._action_done_callback(fail)
     assert len(published) == 2  # attempts 1 and 2; the third gives up
+
+
+def test_a_change_that_matters_pauses_every_robot_before_the_map_arrives():
+    node, published, timers = _node(map_version=0)  # the map is not there yet
+    node._scene_changes_callback(
+        _change_msg("change_detection", "O4", (26, -5.4), (30, -2))
+    )
+    assert node.paused == []  # nothing judged while the burst settles
+    timers[0]()
+    assert node.paused == [
+        ("/hilbert/spot_executor_node/pause", True),
+        ("/lewis/spot_executor_node/pause", True),
+    ]
+    assert published == []  # the replan still waits for the map
+
+
+def test_a_change_that_does_not_matter_pauses_nobody():
+    node, published, timers = _node()
+    node._scene_changes_callback(_change_msg("change_detection", "O13", (0, 0), (9, 9)))
+    timers[0]()
+    assert node.paused == [] and published == []
+
+
+def test_the_pause_publishers_are_made_with_the_plan():
+    node, _, _ = _node()
+    node._plan_robots, node._pause_pubs = [], {}
+    node.finalize_plans({"hilbert": _plan(), "euclid": _plan()}, {})
+    assert node._plan_robots == ["euclid", "hilbert"]
+    assert sorted(p.topic for p in node._pause_pubs.values()) == [
+        "/euclid/spot_executor_node/pause",
+        "/hilbert/spot_executor_node/pause",
+    ]
+    assert node.paused == []  # made, not used
