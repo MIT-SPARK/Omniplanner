@@ -277,8 +277,8 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             self._pause_pubs[robot] = pub
         return pub
 
-    def dsg_callback(self, header, dsg):
-        super().dsg_callback(header, dsg)
+    def dsg_callback(self, msg):
+        super().dsg_callback(msg)
         self._publish_map_version()
         self._check_routes()
 
