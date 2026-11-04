@@ -93,6 +93,11 @@ class PlannerConfig(Config):
 
 
 class RobotPlanningAdaptor:
+    # The compiled plan's message type. One publisher per topic: a subclass that
+    # sent another type used to add a second publisher of a different type on the
+    # same topic, which zenoh tolerates and Fast DDS refuses (the node died).
+    PLAN_MSG = ActionSequenceMsg
+
     def __init__(self, config, node=None, tf_buffer=None, qos_profile=None):
         self.tf_buffer = tf_buffer
         self.name = config.robot_name
@@ -101,7 +106,7 @@ class RobotPlanningAdaptor:
         self.ros_logger = node.get_logger()
 
         self.plan_pub = node.create_publisher(
-            ActionSequenceMsg,
+            self.PLAN_MSG,
             f"/{self.name}/omniplanner_node/compiled_plan_out",
             qos_profile or 1,
         )
@@ -131,11 +136,12 @@ class RobotConfig(Config):
 
 
 class PhoenixPlanningAdaptor(RobotPlanningAdaptor):
+    PLAN_MSG = Path
+
     def __init__(self, config, **data):
+        # a Path plan is latest-only, as before (depth 1, whatever qos_profile says)
+        data["qos_profile"] = 1
         super().__init__(config, **data)
-        self.plan_pub = data["node"].create_publisher(
-            Path, f"/{self.name}/omniplanner_node/compiled_plan_out", 1
-        )
 
 
 @register_config("robot_adaptor", name="phoenix", constructor=PhoenixPlanningAdaptor)
