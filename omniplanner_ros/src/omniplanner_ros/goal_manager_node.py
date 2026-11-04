@@ -261,12 +261,19 @@ class GoalManager(Node):
             self.get_logger().warning(f"Bad plan_visited_pois payload: {exc}")
             return
         self._plan_visited_pois = pois
+        self._commit_plan()
+        self.get_logger().info(f"Updated plan cache: {len(pois)} visited POIs")
+
+    def _commit_plan(self) -> None:
+        """A plan for the pending goal arrived (this robot's POIs, or the fleet's
+        coverage -- GRSTAPS-X may leave this robot out of the allocation, so only
+        the coverage comes): it is now the running plan, made on the map version
+        the goal was forwarded at."""
         self._cache_valid = True
         self._running_constraints = self._plan_constraints
         self._running_goal = self._pending_goal
         self._plan_map_version = self._pending_map_version
         self._replan_reason = None  # the replan succeeded
-        self.get_logger().info(f"Updated plan cache: {len(pois)} visited POIs")
 
     def _plan_robots_cb(self, msg: String) -> None:
         """A new plan went out: it now decides who is executing.
@@ -372,8 +379,7 @@ class GoalManager(Node):
             self.get_logger().warning(f"Bad plan_coverage payload: {exc}")
             return
         self._plan_covered_pois = pois
-        self._cache_valid = True
-        self._running_constraints = self._plan_constraints
+        self._commit_plan()
         self.get_logger().info(f"Updated fleet coverage: {len(pois)} POIs")
 
     @property
