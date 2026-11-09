@@ -1,0 +1,2296 @@
+"""GRSTAPS-X fleet planning: DSG grounding, allocation and scheduling.
+
+The PDDL entry searches for tasks; the ITAGS entry enumerates tasks and explicit
+precedence directly. Both use a separate motion graph and produce GrstapsPlan.
+See the repository README for supported goals and execution limitations.
+"""
+
+import json
+import logging
+import math
+import os
+import shutil
+import subprocess
+import time
+from dataclasses import dataclass, field, replace
+from typing import Any, Dict, List
+
+import networkx as nx
+import numpy as np
+import spark_dsg
+from dsg_pddl.dsg_pddl_grounding_multirobot import (
+    FORBIDDEN_RADIUS_ENV,
+    _forbidden_radius_m,
+)
+from dsg_pddl.pddl_utils import lisp_string_to_ast
+from plum import dispatch
+
+from omniplanner.omniplanner import (
+    MultiRobotWrapper,
+    PlanningDomain,
+    RobotWrapper,
+)
+
+logger = logging.getLogger(__name__)
+
+TRAIT_DIM = 8
+DEFAULT_DURATION = 5.0
+
+# Trait dimensions. Species supply capability, action subtasks demand it, and
+# ITAGS matches the two. Only the first four are used; the rest are reserved so
+# adding a capability later does not renumber existing vectors.
+#   0 ground-mobile   1 air-mobile   2 sensor   3 manipulator
+GROUND, AIR, SENSOR, MANIP = 0, 1, 2, 3
+# The same dimensions by name, for requirements stated in a config file.
+TRAIT_INDEX = {"ground": GROUND, "air": AIR, "sensor": SENSOR, "manipulator": MANIP}
+
+
+def _traits(*dims):
+    v = [0] * TRAIT_DIM
+    for d in dims:
+        v[d] = 1
+    return v
+
+
+def _coalition_traits(requirements):
+    """A requirement vector with explicit magnitudes, e.g. {GROUND: 1, AIR: 1}.
+
+    Requirements are met by the SUM of the assigned robots' trait vectors, so a
+    magnitude above what any one species carries is what forces a coalition.
+    """
+    v = [0] * TRAIT_DIM
+    for dim, magnitude in requirements.items():
+        v[dim] = magnitude
+    return v
+
+
+# What an inspection demands of its coalition by default: a ground robot and an
+# air robot together, which no single species covers. A fleet without a UAV can
+# never meet it, so GrstapsDomain.inspect_requirement lets a deployment ask for
+# a team its robots can actually field -- two ground robots, say.
+DEFAULT_INSPECT_REQUIREMENT = {"ground": 1, "air": 1, "sensor": 2}
+
+
+def requirement_traits(requirement):
+    """{trait name -> magnitude} as a trait vector, e.g. {"ground": 2, "sensor": 2}."""
+    unknown = sorted(set(requirement) - set(TRAIT_INDEX))
+    if unknown:
+        raise ValueError(
+            f"Unknown trait(s) {unknown} in a task requirement; known traits are "
+            f"{sorted(TRAIT_INDEX)}."
+        )
+    return _coalition_traits(
+        {TRAIT_INDEX[name]: magnitude for name, magnitude in requirement.items()}
+    )
+
+
+# Speed is what lets the makespan objective discriminate between platforms that
+# are otherwise equally capable: a UAV covers the same distance in half the
+# travel time, so an allocator minimising makespan has a reason to send it.
+SPECIES = {
+    "spot": {"traits": _traits(GROUND, SENSOR), "speed": 1.0, "bounding_radius": 1.0},
+    "spot_arm": {
+        "traits": _traits(GROUND, SENSOR, MANIP),
+        "speed": 1.0,
+        "bounding_radius": 1.0,
+    },
+    "uav": {"traits": _traits(AIR, SENSOR), "speed": 2.0, "bounding_radius": 0.5},
+}
+DEFAULT_SPECIES = "spot"
+
+# robot_type as declared in omniplanner_plugins.yaml -> species above.
+ROBOT_TYPE_SPECIES = {
+    "spot": "spot",
+    "simulated-spot": "spot",
+    "spot-with-manipulator": "spot_arm",
+    "simulated-spot-with-manipulator": "spot_arm",
+    "uav": "uav",
+    "drone": "uav",
+    "quadrotor": "uav",
+}
+
+# robot_types whose executor cannot carry out a GRSTAPS-X plan, and why. A plan's
+# actions wait on the tasks they follow and on coalition partners; a robot whose
+# executor ignores those gates breaks the plan for everyone else. It runs its
+# own tasks out of order, and a Spot waiting on one of them -- or on it arriving
+# for a joint task -- waits forever. Such robots are left out of the fleet; a
+# robot_species override for a specific robot puts it back in.
+UNPLANNABLE_ROBOT_TYPES = {
+    "husky": "its phoenix executor does not wait on plan ordering or coalition partners",
+}
+
+
+def species_for(robot_type, overrides=None, robot_name=None, type_overrides=None):
+    """Map a declared robot_type onto a species, defaulting rather than failing.
+
+    An unknown platform still plans -- it just gets the plain ground profile.
+    Refusing to plan because a robot_type is unrecognised would make adding a
+    platform a planning outage rather than a missed optimisation.
+    """
+    # A per-deployment override, keyed by robot name, wins over the declared
+    # type. The shared robot registry says what a platform generally is; a
+    # particular rig may differ (a sim spot standing in for one with an arm),
+    # and that belongs in the planner's config rather than in a registry every
+    # other experiment reads.
+    if overrides and robot_name and robot_name in overrides:
+        chosen = overrides[robot_name]
+        if chosen not in SPECIES:
+            logger.warning(
+                "robot_species override %r for %s is not a known species %s; "
+                "falling back to the declared type.",
+                chosen,
+                robot_name,
+                sorted(SPECIES),
+            )
+        else:
+            return chosen
+    if not robot_type:
+        return DEFAULT_SPECIES
+    key = str(robot_type).strip().lower()
+    # A deployment's own reading of a robot_type, e.g. {spot: spot_arm} when
+    # every Spot in the fleet carries an arm.
+    chosen = {str(k).lower(): v for k, v in (type_overrides or {}).items()}.get(key)
+    if chosen in SPECIES:
+        return chosen
+    if chosen is not None:
+        logger.warning(
+            "robot_type_species maps %r to %r, which is not a known species %s; "
+            "ignoring it.",
+            key,
+            chosen,
+            sorted(SPECIES),
+        )
+    if key in ROBOT_TYPE_SPECIES:
+        return ROBOT_TYPE_SPECIES[key]
+    logger.warning(
+        "Unknown robot_type %r; treating it as %r. Add it to ROBOT_TYPE_SPECIES "
+        "if it has different capabilities.",
+        robot_type,
+        DEFAULT_SPECIES,
+    )
+    return DEFAULT_SPECIES
+
+
+VISIT_DURATION = 5.0
+INSPECT_DURATION = 6.0
+PICK_DURATION = 8.0
+PLACE_DURATION = 8.0
+
+# Robot-agnostic by construction, like every GRSTAPS-X domain: no robot objects,
+# no robot parameters, no trait predicates. Who performs a task is decided
+# downstream by ITAGS from the trait vectors in action_trait_config.json.
+#
+# Two idioms here are load-bearing, not style:
+#   * `is-location` is a static marker giving each action a POSITIVE
+#     precondition. Without one the grounder's reachability analysis prunes the
+#     action and the whole chain collapses.
+#   * Only latching positives are ever written. Negating a predicate absent from
+#     :init breaks the SAS translator's binary-variable assumption.
+#
+# Precedence is not declared anywhere -- it falls out of the chain
+# picked -> placed, because a task whose precondition is another's effect can
+# only be scheduled after it. That is what gives the MILP scheduler an ordering
+# to respect.
+DOMAIN_PDDL_TEMPLATE = """(define (domain dsg-visit)
+  (:requirements :typing :durative-actions :negative-preconditions)
+  (:types location - object)
+  (:predicates
+    (is-location ?l - location)
+    (visited ?l - location)
+    (inspected ?l - location)
+    (picked ?l - location)
+    (placed ?l - location))
+  (:durative-action visit-location
+    :parameters (?l - location)
+    :duration (= ?duration %(visit)s)
+    :condition (and
+      (at start (is-location ?l))
+      (at start (not (visited ?l))))
+    :effect (and
+      (at end (visited ?l))))
+  (:durative-action inspect-object
+    :parameters (?l - location)
+    :duration (= ?duration %(inspect)s)
+    :condition (and
+      (at start (is-location ?l))
+      (at start (not (inspected ?l))))
+    :effect (and
+      (at end (inspected ?l))))
+%(manipulation)s)
+"""
+
+# Pick and place as one indivisible task. Nothing else can be scheduled between
+# them, so a robot physically cannot be holding two objects at once -- the
+# scheduler already serialises one robot's tasks, and an atomic relocation
+# makes that serialisation mean "one object at a time".
+RELOCATE_ACTION = """  (:durative-action relocate-object
+    :parameters (?l - location)
+    :duration (= ?duration %(relocate)s)
+    :condition (and
+      (at start (inspected ?l))
+      (at start (not (placed ?l))))
+    :effect (and
+      (at end (picked ?l))
+      (at end (placed ?l))))"""
+
+# Split, so a schedule shows the pick and the drop separately. Only sound when
+# a robot handles one object at a time by some other means -- with several
+# relocations it can interleave them and hold two at once.
+PICK_PLACE_ACTIONS = """  (:durative-action pick-object
+    :parameters (?l - location)
+    :duration (= ?duration %(pick)s)
+    :condition (and
+      (at start (inspected ?l))
+      (at start (not (picked ?l))))
+    :effect (and
+      (at end (picked ?l))))
+  (:durative-action place-object
+    :parameters (?l - location)
+    :duration (= ?duration %(place)s)
+    :condition (and
+      (at start (picked ?l))
+      (at start (not (placed ?l))))
+    :effect (and
+      (at end (placed ?l))))"""
+
+
+def _pddl_duration(seconds):
+    """Render a duration for PDDL.
+
+    Durations must be CONSTANTS, not fluents: `(= ?duration (cost ...))` trips a
+    preprocessing out-of-bounds bug in the solver, which is why task duration is
+    per action type rather than per instance.
+    """
+    return f"{float(seconds):g}"
+
+
+def render_domain_pddl(durations, atomic_manipulation=True):
+    """The mission domain with this run's durations substituted in.
+
+    Generated rather than a module constant so the PDDL and the action-trait
+    config are filled from the same numbers. They are read by different parts of
+    the solver -- the task planner takes the PDDL duration, the scheduler takes
+    the subtask duration -- and if they disagree the schedule silently stops
+    matching the plan.
+    """
+    fill = {
+        "visit": _pddl_duration(durations["visit-location"]),
+        "inspect": _pddl_duration(durations["inspect-object"]),
+        "pick": _pddl_duration(durations["pick-object"]),
+        "place": _pddl_duration(durations["place-object"]),
+        "relocate": _pddl_duration(
+            durations["pick-object"] + durations["place-object"]
+        ),
+    }
+    fill["manipulation"] = (
+        RELOCATE_ACTION if atomic_manipulation else PICK_PLACE_ACTIONS
+    ) % fill
+    return DOMAIN_PDDL_TEMPLATE % fill
+
+
+@dataclass
+class GrstapsDomain(PlanningDomain):
+    """Where GRSTAPS-X lives and how to run it.
+
+    `data_root` must be the repo's data dir: the solver resolves
+    graph_filepath as /grstapsx/<scenario>/... relative to it.
+    """
+
+    # Paths default from the environment so nothing machine-specific has to be
+    # written into a tracked config; override per-deployment via ADT4_GRSTAPS_*.
+    repo_root: str = os.environ.get(
+        "ADT4_GRSTAPS_ROOT", os.path.expanduser("~/grstapsx")
+    )
+    docker_image: str = "grstapsx:amd64"
+    license_path: str = os.environ.get(
+        "ADT4_GUROBI_LICENSE", os.path.expanduser("~/gurobi.lic")
+    )
+    scenario_name: str = "omniplanner_run"
+    # None -> SOLVER_PARAMS. A scenario name under the checkout's data dir
+    # copies the motion planner, search and scheduler parameters from it.
+    solver_params_from: str = None
+    run_mode: str = "docker"  # "docker" (WLS licence) or "native" (Named-User)
+    native_binary: str = os.environ.get(
+        "ADT4_GRSTAPS_BINARY",
+        os.path.expanduser("~/grstapsx/build-native/grstapsx_example"),
+    )
+    gurobi_home: str = os.environ.get(
+        "ADT4_GUROBI_HOME", os.path.expanduser("~/opt/gurobi1103/linux64")
+    )
+    conda_prefix: str = os.environ.get(
+        "ADT4_GRSTAPS_CONDA_PREFIX", os.path.expanduser("~/miniconda3/envs/grstapsx")
+    )
+    # How long each task type takes, in seconds. The scheduler places tasks in
+    # time from these plus travel, so they are what makes a makespan mean
+    # anything. Constants per action type, not per instance -- see
+    # _pddl_duration for why.
+    visit_duration_s: float = VISIT_DURATION
+    inspect_duration_s: float = INSPECT_DURATION
+    pick_duration_s: float = PICK_DURATION
+    place_duration_s: float = PLACE_DURATION
+    # "pddl"  -> domain/problem.pddl through grstapsx_example (task planner runs)
+    # "itags" -> itags_input.json straight into the itags binary, which skips
+    #            task planning and takes precedence_constraints directly, so an
+    #            instruction-level ordering ("visit o2 before picking o42") is
+    #            expressible. Both end at the same itags_solution.json.
+    # One robot, one object. A relocation is emitted as a single task rather
+    # than a pick and a place, so nothing can be scheduled between them and a
+    # robot cannot end up holding two objects at once. Set False to see the
+    # pick and the drop as separate tasks, at the cost of that guarantee.
+    atomic_manipulation: bool = True
+    entry: str = "pddl"
+    # None -> ADT4_ITAGS_BINARY, else `itags` on PATH (what a colcon build
+    # of grstapsx installs), else ~/grstapsx/build-native/itags.
+    itags_binary: str = None
+    # {robot_name -> species}, overriding what robot_type implies. Use when a
+    # specific robot's capabilities differ from its declared platform, e.g.
+    # {"hilbert": "spot_arm"} for a sim spot standing in for one with an arm.
+    robot_species: Dict[str, str] = field(default_factory=dict)
+    # {robot_type -> species}, overriding ROBOT_TYPE_SPECIES for the whole
+    # fleet, e.g. {"spot": "spot_arm"} when every Spot has an arm.
+    robot_type_species: Dict[str, str] = field(default_factory=dict)
+    # Where the itags entry writes its problem and solution files. None ->
+    # ADT4_GRSTAPS_WORK_DIR, else ~/.cache/omniplanner/grstaps. Each robot's
+    # planner gets its own subdirectory, so two planners never share files.
+    work_dir: str = None
+    # Longest a solve may take, in seconds. The solver's own search and MILP
+    # timeouts are capped to it, and the process is killed past it (plus a
+    # margin), so a hung solve becomes a planning failure instead of blocking
+    # the node's planning lock.
+    solver_timeout_s: float = 120.0
+    # {trait name -> magnitude} an inspection's coalition must cover together.
+    # The default is a ground+air pair; a fleet with no UAV can never field it,
+    # so such a deployment asks for e.g. {"ground": 2, "sensor": 2} instead.
+    inspect_requirement: Dict[str, float] = field(
+        default_factory=lambda: dict(DEFAULT_INSPECT_REQUIREMENT)
+    )
+    # None -> the fast-downward grounder's radius (1 m, or ADT4_FORBIDDEN_RADIUS_M),
+    # read at each grounding, so one "avoid X" means the same to both planners.
+    forbidden_radius_m: float = None
+    license_retries: int = 4  # WLS token checkout is flaky; see _run_solver
+    license_retry_delay_s: float = 3.0
+
+
+@dataclass
+class GrstapsGoal:
+    """Symbols the robot must visit, e.g. ["O15", "O18"].
+
+    `constraints` mirrors ConstrainedPddlGoalMsg's ConstraintFact list, so the
+    plan-repair flow can drive this planner: forbidden POIs are removed from the
+    motion graph outright, which is stronger than the PDDL path's edge dropping
+    -- A* cannot route through a vertex that no longer exists.
+    """
+
+    goal_points: List[str]
+    robot_id: str
+    constraints: List[Any] = field(default_factory=list)
+    # Symbols to pick up and put down rather than merely visit. These are what
+    # make traits bite: pick/place demand a manipulator, so only a spot_arm can
+    # be allocated to them however close a plain spot happens to be.
+    manipulate_points: List[str] = field(default_factory=list)
+    # Symbols needing a COALITION inspection: the inspect-object template has a
+    # ground-observer and an aerial-observer subtask, so ITAGS must field two
+    # robots of different species at once. Also lengthens the precedence chain
+    # to inspect -> pick -> place when a symbol is in both lists.
+    inspect_points: List[str] = field(default_factory=list)
+    # {object symbol -> destination symbol}. A manipulation with a destination
+    # is a relocation: picked where it lies, put down somewhere else. Without
+    # one the object is set back down where it was found.
+    manipulate_destinations: Dict[str, str] = field(default_factory=dict)
+    # Precedence in GRSTAPS-X's own form: [[i, j], ...] meaning task i finishes
+    # before task j starts. Indices are into the task list this goal generates
+    # -- run once and read the enumeration to find them. `before` constraints
+    # are a convenience that compiles down to these same pairs; both end up in
+    # the one precedence_constraints array the solver reads.
+    extra_precedence: List[List[int]] = field(default_factory=list)
+    # {robot_name -> robot_type} as declared in omniplanner_plugins.yaml. Left
+    # empty every robot falls back to the default species, which is the old
+    # homogeneous behaviour.
+    robot_types: Dict[str, str] = field(default_factory=dict)
+    # What the mission has already done (omniplanner.world_state.WorldState):
+    # grounding plans only the rest. None plans the whole goal.
+    world_state: Any = None
+    # Tasks the goal pins to named robots: {"visit"|"inspect" -> {symbol ->
+    # [robots]}}, from the -by predicates. A pinned visit is one task per
+    # robot; a pinned inspection is one coalition task that includes them all.
+    robot_bound: Dict[str, Dict[str, List[str]]] = field(default_factory=dict)
+
+
+@dataclass
+class GroundedGrstapsProblem:
+    scenario_dir: str
+    domain: GrstapsDomain
+    location_of: Dict[str, str] = field(default_factory=dict)  # pddl name -> dsg symbol
+    symbol_of_vertex: Dict[int, str] = field(
+        default_factory=dict
+    )  # graph id -> dsg symbol
+    # {object pddl name -> destination pddl name}. Needed after solving, when
+    # the goal is out of scope but a relocation still has to be told where the
+    # object goes -- the solver's task name only ever carries the object.
+    destination_of: Dict[str, str] = field(default_factory=dict)
+    motion_graph: dict = field(default_factory=dict)
+    # {robot -> [{object, object_class, carry_path, dest_point}]}: objects a
+    # robot already holds, carried and put down before its scheduled tasks.
+    prefix: Dict[str, List[dict]] = field(default_factory=dict)
+    # Everything the goal asks for is done: no solver run, only the prefix.
+    nothing_to_solve: bool = False
+
+
+@dataclass
+class GrstapsPlan:
+    """Per-robot ordered tasks plus the schedule GRSTAPS-X computed."""
+
+    makespan: float
+    tasks: List[dict]
+    agents: List[dict] = field(default_factory=list)
+    raw: Any = None
+    location_of: Dict[str, str] = field(default_factory=dict)
+    symbol_of_vertex: Dict[int, str] = field(default_factory=dict)
+    # {task id -> geometry}, see _parameterize_tasks. Empty for a plan built
+    # without a DSG, which compiles to navigation only.
+    task_geometry: Dict[int, dict] = field(default_factory=dict)
+    # [[i, j], ...]: task i finishes before task j starts. The solver's own
+    # array, which already merges the intrinsic chains with whatever `before`
+    # constraints compiled down to. This is what the executor gates on --
+    # timepoints assume the durations the solver was given and stop being true
+    # the moment a real action overruns, whereas an ordering does not decay.
+    precedence: List[List[int]] = field(default_factory=list)
+    # See GroundedGrstapsProblem.prefix.
+    prefix: Dict[str, List[dict]] = field(default_factory=dict)
+
+
+def _graph_config(vertex):
+    """A task/robot position in the form ITAGS expects."""
+    return {
+        "configuration_type": "graph",
+        "graph_type": "euclidean",
+        "id": vertex["id"],
+        "x": vertex["x"],
+        "y": vertex["y"],
+    }
+
+
+def _task(name, traits, duration, vertex, end_vertex=None):
+    """One ITAGS task, optionally ending somewhere other than it starts.
+
+    Most tasks are stationary, so terminal == initial. A relocation is not: the
+    robot picks an object up where it lies and puts it down elsewhere, and the
+    scheduler needs the terminal configuration to charge that carry to the task
+    and to know where the robot ends up.
+
+    The name follows the solver's own "<action> <target> :: <role>" convention
+    so everything downstream -- task_location, the visited-POI cache, the
+    schedule topic -- keeps working unchanged.
+    """
+    cfg = _graph_config(vertex)
+    return {
+        "name": name,
+        "desired_traits": [float(t) for t in traits],
+        "duration": float(duration),
+        "mp_index": 0,
+        "initial_configuration": cfg,
+        "terminal_configuration": _graph_config(end_vertex or vertex),
+    }
+
+
+_VISIT_PREDS = {
+    "visited-place",
+    "visited-object",
+    "visited-poi",
+    "at-place",
+    "at-object",
+}
+
+
+# Which kind of task a goal predicate asks for, and which argument names the
+# symbol. The vocabulary is the multirobot FD domain's, unchanged, so the agent
+# prompt needs no new predicates -- only the freedom to use the ones it already
+# documents. Index -1 skips the leading robot argument that at-*/holding carry.
+_GOAL_PREDS = {
+    # predicate            kind          arg index
+    "visited-object": ("visit", -1),
+    "visited-place": ("visit", -1),
+    "visited-poi": ("visit", -1),
+    "at-object": ("visit", -1),
+    "at-place": ("visit", -1),
+    # inspect removes suspicion; `safe` is the same idea stated positively
+    "safe": ("inspect", -1),
+    "suspicious": ("inspect", -1),  # only meaningful under (not ...)
+    # pick leaves the robot holding; place puts the object somewhere
+    "holding": ("manipulate", -1),
+    "object-in-place": ("manipulate", 1),  # (object-in-place ?o ?p) -- ?o
+}
+
+# Predicates that pin a task to one robot: (visited-object-by ?r ?o) etc., the
+# same ones the multirobot FD domain uses. The allocator cannot be told "this
+# task is hilbert's", so each pinned task demands a trait only that robot
+# carries; see _identity_dims.
+_BOUND_PREDS = {
+    "visited-object-by": "visit",
+    "visited-place-by": "visit",
+    "visited-poi-by": "visit",
+    "inspected-by": "inspect",
+}
+
+
+def parse_goal_targets(pddl_goal: str):
+    """Split a PDDL goal into visit / inspect / manipulate targets.
+
+    GRSTAPS-X needs to know what KIND of task each symbol wants, because the
+    kind selects the trait requirement and the precedence chain. The flat
+    "visit everything" reading discards that. Reuses the existing FD predicate
+    vocabulary so the agent prompt does not need a new one.
+
+    Everything else stays predefined, exactly as the FD domain file is: species,
+    trait vectors and durations are checked-in constants, not something the LLM
+    is asked to invent. A goal that says nothing special gets plain visits and
+    no precedence -- the defaults do the right thing when the LLM is silent.
+    """
+    normalised = (pddl_goal or "").replace(")(", ") (")
+    try:
+        ast = lisp_string_to_ast(normalised)
+    except Exception as exc:
+        raise ValueError(f"Could not parse GRSTAPS-X goal {pddl_goal!r}") from exc
+
+    # destinations: {object -> place to leave it}, from (object-in-place ?o ?p)
+    # bound: {kind -> {symbol -> [robots]}}, from the -by predicates
+    found = {
+        "visit": [],
+        "inspect": [],
+        "manipulate": [],
+        "destinations": {},
+        "bound": {},
+    }
+
+    def walk(node, negated=False):
+        if isinstance(node, str) or not node:
+            raise ValueError("Expected a non-empty GRSTAPS-X goal expression")
+        head = node[0]
+        if not isinstance(head, str):
+            # ((pred a)) -- an extra pair of parens wraps the clause in a list.
+            # Descend rather than choking on an unhashable head.
+            for sub in node:
+                walk(sub, negated)
+            return
+        if head == "and":
+            if len(node) < 2 or negated:
+                raise ValueError("GRSTAPS-X requires a non-empty positive conjunction")
+            for sub in node[1:]:
+                walk(sub, negated)
+            return
+        if head == "not":
+            if len(node) != 2:
+                raise ValueError("not requires exactly one goal expression")
+            for sub in node[1:]:
+                walk(sub, not negated)
+            return
+        if head in _BOUND_PREDS:
+            if negated:
+                raise ValueError(f"Unsupported negative GRSTAPS-X goal: {head}")
+            if len(node) != 3 or not all(isinstance(s, str) for s in node[1:]):
+                raise ValueError(f"Invalid arguments for GRSTAPS-X predicate {head!r}")
+            robots = (
+                found["bound"]
+                .setdefault(_BOUND_PREDS[head], {})
+                .setdefault(node[2], [])
+            )
+            if node[1] not in robots:
+                robots.append(node[1])
+            return
+        entry = _GOAL_PREDS.get(head)
+        if entry is None or head in ("at-place", "at-object", "holding"):
+            raise ValueError(
+                f"Unsupported GRSTAPS-X goal predicate {head!r}; use visited-*, "
+                "visited-*-by, safe, inspected-by, (not (suspicious ...)), or "
+                "object-in-place. Final poses, pick-and-hold and disjunctions "
+                "are not implemented."
+            )
+        arity = 3 if head == "object-in-place" else 2
+        if len(node) != arity or not all(isinstance(s, str) for s in node[1:]):
+            raise ValueError(f"Invalid arguments for GRSTAPS-X predicate {head!r}")
+        kind, idx = entry
+        # (not (suspicious o)) asks for an inspection; a bare (suspicious o)
+        # asks to MAKE something suspicious, which is not a thing we can plan.
+        if head == "suspicious" and not negated:
+            raise ValueError("Use (not (suspicious object)) to request inspection")
+        # Every other predicate here states something to ACHIEVE, so negating it
+        # asks for the opposite -- "do not visit", "do not hold". Nothing in the
+        # domain can achieve an absence, and silently planning the positive
+        # would do the very thing the goal forbids.
+        if negated and head != "suspicious":
+            raise ValueError(f"Unsupported negative GRSTAPS-X goal: {head}")
+        try:
+            symbol = node[idx]
+        except IndexError:
+            return
+        if isinstance(symbol, str) and symbol not in found[kind]:
+            found[kind].append(symbol)
+        if head == "object-in-place" and len(node) > 2:
+            # (object-in-place ?o ?p) names where the object must END UP. The
+            # place task carries it there via its terminal configuration.
+            found["destinations"][node[1]] = node[2]
+
+    walk(ast)
+    return found
+
+
+def _visit_targets(pddl_goal: str):
+    """Backwards-compatible flat list of every symbol a goal mentions."""
+    found = parse_goal_targets(pddl_goal)
+    out = []
+    for kind in ("visit", "inspect", "manipulate"):
+        for s in found[kind] + list(found["bound"].get(kind, {})):
+            if s not in out:
+                out.append(s)
+    return out
+
+
+def _identity_dims(fleet_names):
+    """{robot -> trait dimension only that robot carries}, after TRAIT_DIM.
+
+    ITAGS matches traits, not names, so pinning a task to a robot means giving
+    the robot a trait nobody else has and making the task demand it. Coalition
+    traits add up, so a task demanding several identities gets all of them.
+    """
+    return {r: TRAIT_DIM + i for i, r in enumerate(fleet_names)}
+
+
+def _pad(traits, width):
+    return list(traits) + [0] * (width - len(traits))
+
+
+def enumerate_tasks(
+    goal,
+    durations,
+    vertex_of,
+    atomic_manipulation=True,
+    inspect_traits=None,
+    identity=None,
+):
+    """Goal -> (tasks, {symbol -> [task indices]}, intrinsic precedence pairs).
+
+    This is the job the PDDL task planner does for us on the other path. Our
+    domain is thin enough that the mapping is a lookup rather than a search:
+    a visit is one task, an inspection is one (coalition) task, and a
+    manipulation is pick-then-place.
+
+    The intrinsic ordering that PDDL preconditions used to guarantee -- pick
+    before place, inspect before pick -- has to be emitted explicitly here.
+    That is the one correctness burden this entry point takes on, so it is
+    returned rather than left to the caller to remember.
+
+    `identity` ({robot -> trait dim}, see _identity_dims) is needed when the
+    goal pins tasks to robots; every vector is then widened to cover it.
+    """
+    tasks: List[dict] = []
+    of_symbol: Dict[str, List[int]] = {}
+    if inspect_traits is None:
+        inspect_traits = requirement_traits(DEFAULT_INSPECT_REQUIREMENT)
+    precedence: List[List[int]] = []
+    identity = identity or {}
+    width = TRAIT_DIM + len(identity)
+    bound = getattr(goal, "robot_bound", None) or {}
+
+    def add(name, traits, duration, sym, end=None, robots=()):
+        idx = len(tasks)
+        end_v = vertex_of.get(end.lower()) if end else None
+        if end and end_v is None:
+            logger.warning("Destination %s is not in the graph; ignoring it.", end)
+        traits = _pad(traits, width)
+        for r in robots:
+            traits[identity[r]] = 1
+        tasks.append(_task(name, traits, duration, vertex_of[sym.lower()], end_v))
+        of_symbol.setdefault(sym.lower(), []).append(idx)
+        return idx
+
+    inspect_set = {s.lower() for s in (goal.inspect_points or [])}
+    inspect_set |= set(bound.get("inspect", {}))
+    manipulate_set = {s.lower() for s in (goal.manipulate_points or [])}
+    bound_visits = bound.get("visit", {})
+
+    for sym in goal.goal_points or []:
+        if sym.lower() in inspect_set or sym.lower() in manipulate_set:
+            continue  # a richer task for this symbol is added below
+        if sym.lower() in bound_visits:
+            continue  # a named robot already goes there
+        add(
+            f"visit-location {sym.lower()} :: visit",
+            _traits(SENSOR),
+            durations["visit-location"],
+            sym,
+        )
+
+    # One task per named robot: "both robots visit o6" is two visits.
+    for sym, robots in bound_visits.items():
+        for r in robots:
+            add(
+                f"visit-location {sym} :: visit by {r}",
+                _traits(SENSOR),
+                durations["visit-location"],
+                sym,
+                robots=[r],
+            )
+
+    # A pinned inspection is still one coalition task; its team must include
+    # every robot named for it, on top of the usual requirement.
+    bound_inspects = bound.get("inspect", {})
+    for sym in list(
+        dict.fromkeys(
+            [s.lower() for s in goal.inspect_points or []] + list(bound_inspects)
+        )
+    ):
+        robots = bound_inspects.get(sym, [])
+        add(
+            f"inspect-object {sym} :: joint_observation"
+            + (f" by {', '.join(robots)}" if robots else ""),
+            inspect_traits,
+            durations["inspect-object"],
+            sym,
+            robots=robots,
+        )
+
+    for sym in goal.manipulate_points or []:
+        dest = (getattr(goal, "manipulate_destinations", None) or {}).get(sym.lower())
+        if atomic_manipulation:
+            # One task from "lift it" to "set it down". The scheduler already
+            # gives a robot one task at a time, so making the carry atomic is
+            # what turns "carries one object" from likely into guaranteed --
+            # split into pick and place, a robot can pick a second object
+            # before putting the first down.
+            first = add(
+                f"relocate-object {sym.lower()} :: relocate",
+                _traits(MANIP),
+                durations["pick-object"] + durations["place-object"],
+                sym,
+                end=dest,
+            )
+        else:
+            first = add(
+                f"pick-object {sym.lower()} :: pick",
+                _traits(MANIP),
+                durations["pick-object"],
+                sym,
+            )
+            place = add(
+                f"place-object {sym.lower()} :: place",
+                _traits(MANIP),
+                durations["place-object"],
+                sym,
+                end=dest,
+            )
+            precedence.append([first, place])
+        # An inspection of the same symbol gates the manipulation, matching the
+        # PDDL path where it requires (inspected ?l).
+        for prior in of_symbol.get(sym.lower(), []):
+            if tasks[prior]["name"].startswith("inspect-object"):
+                precedence.append([prior, first])
+
+    return tasks, of_symbol, precedence
+
+
+def ordering_precedence(constraints, of_symbol):
+    """`before(a, b)` constraints -> task-index pairs.
+
+    Every task of `a` precedes every task of `b`. Symbol-level rather than
+    task-level because that is the granularity an instruction like "visit o2
+    first, then pick o42" actually specifies, and it stays unambiguous when a
+    symbol expands to several tasks.
+    """
+    pairs = []
+    for c in constraints or []:
+        if getattr(c, "predicate", None) != "before":
+            continue
+        symbols = getattr(c, "symbols", None) or []
+        if len(symbols) < 2:
+            continue
+        first = of_symbol.get(symbols[0].lower(), [])
+        second = of_symbol.get(symbols[1].lower(), [])
+        if not first or not second:
+            logger.warning(
+                "Ordering before(%s, %s) names a symbol with no task; ignoring.",
+                symbols[0],
+                symbols[1],
+            )
+            continue
+        for a in first:
+            for b in second:
+                pairs.append([a, b])
+    return pairs
+
+
+def precedence_cycle(n_tasks, pairs):
+    """A cycle in the ordering as task indices, first index repeated last.
+
+    None when the ordering is acyclic. The solver aborts with SIGABRT and no
+    message on a cyclic ordering, and an LLM can easily state one -- before(a,
+    b) alongside before(b, a) -- so it is caught here, where the task names are
+    still at hand to say which tasks are involved.
+    """
+    successors = {}
+    for a, b in pairs:
+        successors.setdefault(a, []).append(b)
+    on_path, finished = set(), set()
+    for root in range(n_tasks):
+        if root in finished:
+            continue
+        path = [root]
+        on_path.add(root)
+        stack = [iter(successors.get(root, ()))]
+        while stack:
+            for child in stack[-1]:
+                if child in on_path:
+                    return path[path.index(child) :] + [child]
+                if child not in finished:
+                    path.append(child)
+                    on_path.add(child)
+                    stack.append(iter(successors.get(child, ())))
+                    break
+            else:
+                done = path.pop()
+                on_path.discard(done)
+                finished.add(done)
+                stack.pop()
+    return None
+
+
+def task_location(task_name: str):
+    """Pull the location symbol out of a GRSTAPS-X task name.
+
+    The solver names tasks "<action> <arg> :: <role>", e.g.
+    "visit-location o0 :: visit". Grounding lowercases the DSG symbol to form
+    the PDDL location name, and the PDDL planners do the same, so the symbol
+    recovered here matches what goal_manager compares its goal against.
+    """
+    head = (task_name or "").split("::")[0].split()
+    return head[-1] if len(head) >= 2 else None
+
+
+def _mesh_place_graph(dsg):
+    """DSG mesh-places layer -> euclidean motion graph + symbol/position lookup."""
+    try:
+        layer = dsg.get_layer(spark_dsg.DsgLayers.MESH_PLACES)
+    except Exception:
+        layer = dsg.get_layer(20)
+
+    vertices, index_of, pos_of, symbol_of = [], {}, {}, {}
+    for node in layer.nodes:
+        sym = node.id.str(True)
+        p = node.attributes.position
+        index_of[sym] = len(vertices)
+        pos_of[sym] = (float(p[0]), float(p[1]))
+        symbol_of[len(vertices)] = sym
+        vertices.append({"id": len(vertices), "x": float(p[0]), "y": float(p[1])})
+
+    seen, edges = set(), []
+    for node in layer.nodes:
+        ia = index_of[node.id.str(True)]
+        for nid in node.siblings():
+            other = dsg.get_node(nid)
+            ib = index_of.get(other.id.str(True))
+            if ib is None or ib == ia:
+                continue
+            key = (min(ia, ib), max(ia, ib))
+            if key in seen:
+                continue
+            seen.add(key)
+            va, vb = vertices[ia], vertices[ib]
+            edges.append(
+                {
+                    "cost": math.hypot(va["x"] - vb["x"], va["y"] - vb["y"]),
+                    "vertex_a": ia,
+                    "vertex_b": ib,
+                }
+            )
+
+    graph = {
+        "configuration_type": "graph",
+        "graph_type": "euclidean",
+        "euclidean_graph_type": "singular",
+        "is_complete": False,
+        "edges": edges,
+        "vertices": vertices,
+    }
+    # symbol_of inverts the vertex numbering the solver works in, so a returned
+    # route can be read back as DSG place symbols instead of bare coordinates.
+    return graph, vertices, pos_of, symbol_of
+
+
+def _resolve_symbol(dsg, symbol):
+    """DSG position of a constraint symbol, trying both cases."""
+    for candidate in (symbol, symbol.upper(), symbol.lower()):
+        xy = _symbol_position(dsg, candidate)
+        if xy is not None:
+            return np.array(xy)
+    return None
+
+
+def _forbidden_sets(dsg, constraints):
+    """Split constraints into forbidden points and forbidden edge endpoints.
+
+    Mirrors the PDDL grounder's `_extract_forbidden_sets`, which handles both
+    predicates. Handling only forbidden-poi here would let a forbidden-edge
+    constraint look accepted while having no effect at all.
+    """
+    points, edges = [], []
+    for c in constraints or []:
+        predicate = getattr(c, "predicate", None)
+        symbols = getattr(c, "symbols", None) or []
+        if predicate == "forbidden-poi" and symbols:
+            xy = _resolve_symbol(dsg, symbols[0])
+            if xy is None:
+                logger.warning(
+                    "forbidden-poi %s not found in the DSG; ignoring", symbols[0]
+                )
+            else:
+                points.append(xy)
+        elif predicate == "forbidden-edge" and len(symbols) >= 2:
+            a = _resolve_symbol(dsg, symbols[0])
+            b = _resolve_symbol(dsg, symbols[1])
+            if a is None or b is None:
+                logger.warning(
+                    "forbidden-edge %s-%s: endpoint not in the DSG; ignoring",
+                    symbols[0],
+                    symbols[1],
+                )
+            else:
+                edges.append((a, b))
+    return points, edges
+
+
+def _prune_graph(graph, forbidden_xy, forbidden_edges_xy, radius, distance_fn=None):
+    """Isolate vertices near a forbidden point and cut forbidden edges.
+
+    Vertex ids are indices into the vertex list, so removing entries would
+    renumber everything; instead the vertices stay and only their edges go,
+    leaving them isolated and therefore unreachable.
+
+    `distance_fn(a_xy, b_xy)` measures the exclusion radius. It defaults to
+    euclidean, but the caller passes weighted navigable distance in metres.
+    A place nearby across a wall can remain outside the path-distance radius.
+    """
+    banned = set()
+    if forbidden_xy:
+        for v in graph["vertices"]:
+            for f in forbidden_xy:
+                # Euclidean distance is a lower bound on path distance, so a
+                # vertex further away than the radius in a straight line cannot
+                # be within it by any route. Cheap prefilter before the
+                # expensive graph search.
+                if math.hypot(v["x"] - f[0], v["y"] - f[1]) >= radius:
+                    continue
+                d = (
+                    distance_fn(f, (v["x"], v["y"]))
+                    if distance_fn is not None
+                    else math.hypot(v["x"] - f[0], v["y"] - f[1])
+                )
+                if d < radius:
+                    banned.add(v["id"])
+                    break
+
+    cut_pairs = set()
+    for a, b in forbidden_edges_xy or []:
+        va = _nearest_vertex(graph["vertices"], float(a[0]), float(a[1]))
+        vb = _nearest_vertex(graph["vertices"], float(b[0]), float(b[1]))
+        if va["id"] != vb["id"]:
+            cut_pairs.add((min(va["id"], vb["id"]), max(va["id"], vb["id"])))
+
+    if not banned and not cut_pairs:
+        return graph, 0
+
+    before = len(graph["edges"])
+    if cut_pairs:
+        graph["edges"] = [
+            e
+            for e in graph["edges"]
+            if (min(e["vertex_a"], e["vertex_b"]), max(e["vertex_a"], e["vertex_b"]))
+            not in cut_pairs
+        ]
+        logger.info(
+            "Constraints: cut %d forbidden edge(s)", before - len(graph["edges"])
+        )
+    if not banned:
+        return graph, 0
+    before = len(graph["edges"])
+    graph["edges"] = [
+        e
+        for e in graph["edges"]
+        if e["vertex_a"] not in banned and e["vertex_b"] not in banned
+    ]
+    logger.info(
+        "Constraints: isolated %d vertices within %.1f m of %d forbidden POI(s); "
+        "dropped %d motion-graph edges",
+        len(banned),
+        radius,
+        len(forbidden_xy),
+        before - len(graph["edges"]),
+    )
+    return graph, len(banned)
+
+
+def reachable_vertices(graph, start_ids):
+    """Vertex ids reachable from any start over the graph's surviving edges.
+
+    Pruning a forbidden POI isolates vertices rather than deleting them, so a
+    target can go on existing in the graph with nothing able to get to it. The
+    solver does not report that as a failure -- it returns a plan whose route is
+    empty, which compiles to an ActionSequence with no actions at all, so the
+    schedule claims the task while the robot stands still.
+    """
+    neighbours = {}
+    for e in graph.get("edges") or []:
+        neighbours.setdefault(e["vertex_a"], []).append(e["vertex_b"])
+        neighbours.setdefault(e["vertex_b"], []).append(e["vertex_a"])
+    seen = set(start_ids)
+    stack = list(seen)
+    while stack:
+        for nxt in neighbours.get(stack.pop(), ()):
+            if nxt not in seen:
+                seen.add(nxt)
+                stack.append(nxt)
+    return seen
+
+
+def _nearest_vertex(vertices, x, y):
+    return min(vertices, key=lambda v: math.hypot(v["x"] - x, v["y"] - y))
+
+
+def _find_node(dsg, symbol):
+    """Any DSG node by its symbol string, case-insensitively.
+
+    The DSG spells object symbols uppercase (O16) but PDDL requires lowercase,
+    so a goal arriving from the repair flow names o16 while the graph holds O16.
+    Matching exactly would make every goal from that path unresolvable.
+    """
+    wanted = (symbol or "").lower()
+    for layer_name in ("OBJECTS", "MESH_PLACES", "PLACES", "ROOMS"):
+        try:
+            layer = dsg.get_layer(getattr(spark_dsg.DsgLayers, layer_name))
+        except Exception:
+            continue
+        for node in layer.nodes:
+            if node.id.str(True).lower() == wanted:
+                return node
+    return None
+
+
+def _symbol_position(dsg, symbol):
+    """2D position of a symbol, for the motion graph."""
+    node = _find_node(dsg, symbol)
+    if node is None:
+        return None
+    p = node.attributes.position
+    return float(p[0]), float(p[1])
+
+
+def _symbol_position_3d(dsg, symbol):
+    """3D position of a symbol, which is what Pick/Place/Gaze act on."""
+    node = _find_node(dsg, symbol)
+    if node is None:
+        return None
+    return np.array(node.attributes.position, dtype=float)
+
+
+def _semantic_label(dsg, symbol):
+    """Object class for a symbol, as Pick/Place's object_class expects.
+
+    The same labelspace lookup DsgContextProvider does for the fast-downward
+    path, done here because the DSG is in scope while a plan is parameterised
+    and is not by the time it is compiled.
+    """
+    node = _find_node(dsg, symbol)
+    if node is None:
+        return ""
+    try:
+        labelspace = dsg.get_labelspace(node.layer.layer, node.layer.partition)
+        return labelspace.get_node_category(node) or ""
+    except Exception:
+        return ""
+
+
+# GRSTAPS-X task name -> the kind of executor action it becomes. Names follow
+# the solver's own "<action> <target> :: <role>" convention.
+TASK_ACTION_KINDS = {
+    "visit-location": "visit",
+    "inspect-object": "inspect",
+    "relocate-object": "relocate",
+    "pick-object": "pick",
+    "place-object": "place",
+}
+
+
+def _nearest_place(dsg, symbol):
+    """The mesh place nearest a symbol, lowercase: where an object "is"."""
+    xy = _symbol_position(dsg, symbol)
+    if xy is None:
+        return None
+    best, best_d = None, math.inf
+    for node in dsg.get_layer(spark_dsg.DsgLayers.MESH_PLACES).nodes:
+        p = node.attributes.position
+        d = math.hypot(p[0] - xy[0], p[1] - xy[1])
+        if d < best_d:
+            best, best_d = node.id.str(True).lower(), d
+    return best
+
+
+def _fleet_names(robot_states, goal, domain, quiet=False):
+    """Robots that can take part: a pose, and an executor that runs these plans."""
+    names = []
+    for robot_id, robot_pose in robot_states.items():
+        if robot_pose is None:
+            if not quiet:
+                logger.warning("Skipping robot %s: no pose available", robot_id)
+            continue
+        robot_type = str((getattr(goal, "robot_types", None) or {}).get(robot_id, ""))
+        robot_type = robot_type.strip().lower()
+        if robot_type in UNPLANNABLE_ROBOT_TYPES and robot_id not in (
+            domain.robot_species or {}
+        ):
+            if not quiet:
+                logger.warning(
+                    "Skipping robot %s: a %s cannot execute a GRSTAPS-X plan, since %s. "
+                    "Set robot_species for it to plan with it anyway.",
+                    robot_id,
+                    robot_type,
+                    UNPLANNABLE_ROBOT_TYPES[robot_type],
+                )
+            continue
+        names.append(robot_id)
+    return names
+
+
+def _wrap(fleet_names, grounded, robot_id):
+    """Wrap like the PDDL grounders do, because compile_plan dispatches on the
+    wrapper to decide how to reach the adaptors. Returning a bare problem hands
+    the whole adaptor dict to compile_plan, which then fails on adaptor.name.
+
+    A single-robot fleet stays a RobotWrapper so the existing single-robot path
+    is untouched; a real fleet becomes a MultiRobotWrapper, whose compile
+    dispatch splits the solved plan by agent. Without this only one robot's
+    assignment was ever published, which silently discarded the allocation the
+    solver had just computed.
+    """
+    if len(fleet_names) <= 1:
+        return RobotWrapper(fleet_names[0] if fleet_names else robot_id, grounded)
+    wrapper = MultiRobotWrapper(fleet_names, grounded)
+    # GRSTAPS-X uses the real robot names throughout the scenario config and
+    # echoes them back in agents[].name, so inner and outer names coincide and
+    # the remap is the identity.
+    for name in fleet_names:
+        wrapper.set_name_remap(name, name)
+    return wrapper
+
+
+def residual_goal(goal, dsg):
+    """The part of a goal the mission has not done yet, plus objects held for it.
+
+    Returns (goal, held): visits to places already visited, inspections already
+    made and relocations already finished (the object lies at its destination,
+    by the same nearest-place reading fast-downward's :init uses) are dropped.
+    A relocation whose object a robot is holding is taken out of the solver
+    altogether -- the allocator cannot pin a task to one robot -- and returned
+    as held = {robot -> [(object, destination or None)]}, to be carried and put
+    down by that robot before anything else.
+    """
+    state = getattr(goal, "world_state", None)
+    if state is None:
+        return goal, {}
+    visited = set(state.visited)
+    inspected = set(state.inspected)
+    dests = dict(goal.manipulate_destinations or {})
+    held, manipulate, done = {}, [], []
+    for obj in goal.manipulate_points:
+        holder = state.holder_of(obj)
+        if holder is not None:
+            held.setdefault(holder, []).append((obj, dests.pop(obj, None)))
+        elif obj in dests and _nearest_place(dsg, obj) == dests[obj]:
+            done.append(f"relocate {obj}")
+            dests.pop(obj)
+        else:
+            manipulate.append(obj)
+    visits = [s for s in goal.goal_points if s not in visited]
+    inspects = [s for s in goal.inspect_points if s not in inspected]
+    done += [f"visit {s}" for s in goal.goal_points if s in visited]
+    done += [f"inspect {s}" for s in goal.inspect_points if s in inspected]
+    # A pinned task is done only when THAT robot did it.
+    by_robot = {
+        "visit": {r.lower(): s for r, s in (state.visited_by or {}).items()},
+        "inspect": {r.lower(): s for r, s in (state.inspected_by or {}).items()},
+    }
+    bound = {}
+    for kind, targets in (goal.robot_bound or {}).items():
+        for sym, robots in targets.items():
+            left = [r for r in robots if sym not in by_robot[kind].get(r, ())]
+            done += [f"{kind} {sym} by {r}" for r in robots if r not in left]
+            if left:
+                bound.setdefault(kind, {})[sym] = left
+    dropped = done or held
+    if dropped:
+        logger.info(
+            "Already done: %s; held, carried first: %s",
+            ", ".join(done) or "nothing",
+            {r: [o for o, _ in objs] for r, objs in held.items()} or "nothing",
+        )
+    extra = goal.extra_precedence
+    if dropped and extra:
+        # Pairs index the full task list; with tasks gone they point elsewhere.
+        logger.warning(
+            "Dropping %d direct precedence pair(s): tasks removed", len(extra)
+        )
+        extra = []
+    return (
+        replace(
+            goal,
+            goal_points=visits,
+            inspect_points=inspects,
+            manipulate_points=manipulate,
+            manipulate_destinations=dests,
+            extra_precedence=extra,
+            robot_bound=bound,
+        ),
+        held,
+    )
+
+
+def _carry_prefix(dsg, graph, vertices, pose, held):
+    """Carry each held object to its destination: [(entry, ...)], end vertex.
+
+    The route is the shortest path over the motion graph the solver also gets,
+    so it honours forbidden places. An object with no destination is put down
+    where the robot stands.
+    """
+    routes = nx.Graph()
+    routes.add_nodes_from(v["id"] for v in vertices)
+    routes.add_weighted_edges_from(
+        (e["vertex_a"], e["vertex_b"], e["cost"]) for e in graph["edges"]
+    )
+    by_id = {v["id"]: v for v in vertices}
+    here = _nearest_vertex(vertices, float(pose[0]), float(pose[1]))
+    entries = []
+    for obj, dest in held:
+        if dest is None:
+            put_at = np.array([float(pose[0]), float(pose[1]), 0.0])
+            entries.append(
+                {
+                    "object": obj,
+                    "object_class": _semantic_label(dsg, obj),
+                    "carry_path": np.zeros((0, 2)),
+                    "dest_point": put_at,
+                }
+            )
+            continue
+        put_at = _symbol_position_3d(dsg, dest)
+        if put_at is None:
+            raise ValueError(f"Destination {dest} of held {obj} is not in the DSG")
+        end = _nearest_vertex(vertices, *put_at[:2])
+        try:
+            path = nx.shortest_path(routes, here["id"], end["id"], weight="weight")
+        except nx.NetworkXNoPath as exc:
+            raise ValueError(
+                f"No permitted route to carry held {obj} to {dest}"
+            ) from exc
+        entries.append(
+            {
+                "object": obj,
+                "object_class": _semantic_label(dsg, obj),
+                "carry_path": np.array(
+                    [[by_id[i]["x"], by_id[i]["y"]] for i in path], dtype=float
+                ),
+                "dest_point": np.asarray(put_at, dtype=float),
+            }
+        )
+        here = end
+    return entries, here
+
+
+def _parameterize_tasks(dsg, tasks, location_of, destination_of, motion_graph=None):
+    """Geometry each scheduled task needs before it can become a robot action.
+
+    The solver returns symbols and timings; every coordinate an executor acts on
+    still has to come from the DSG. This mirrors `dsg_pddl_planning`'s
+    `parameterize_*` helpers: in both pipelines the symbolic planner produces no
+    geometry, and a later pass supplies it.
+
+    The robot's own pose is deliberately absent. It is the end of whichever leg
+    that robot travelled to reach the task, which differs per robot for a
+    coalition task, so compile_plan supplies it. Everything here is a property
+    of the task and is shared by every robot assigned to it.
+    """
+    # Carry routes must use exactly the graph passed to the solver, including
+    # forbidden edges/areas. Rebuilding from the DSG reopens those routes.
+    graph = motion_graph or _mesh_place_graph(dsg)[0]
+    vertices = {v["id"]: v for v in graph["vertices"]}
+    routes = nx.Graph()
+    routes.add_nodes_from(vertices)
+    routes.add_weighted_edges_from(
+        (e["vertex_a"], e["vertex_b"], e["cost"]) for e in graph["edges"]
+    )
+    geometry = {}
+    for t in tasks or []:
+        name = t.get("name", "")
+        head = name.split()
+        kind = TASK_ACTION_KINDS.get(head[0]) if head else None
+        if kind is None:
+            logger.warning("Task %r has no executor action; skipping it", name)
+            continue
+        target = task_location(name)
+        position = _symbol_position_3d(dsg, location_of.get(target, target))
+        if position is None:
+            logger.warning(
+                "Task %r targets %s, which is not in the DSG; skipping it", name, target
+            )
+            continue
+
+        entry = {"action": kind, "target": target, "object_point": position}
+        if kind != "visit":
+            entry["object_class"] = _semantic_label(
+                dsg, location_of.get(target, target)
+            )
+
+        if kind in ("relocate", "place"):
+            dest = destination_of.get(target)
+            dest_point = (
+                _symbol_position_3d(dsg, location_of.get(dest, dest)) if dest else None
+            )
+            if dest_point is None:
+                # No destination means "put it back where it was found", which
+                # needs neither a carry nor a second position.
+                pass
+            elif kind == "place":
+                # place-object is named after the object but happens at the
+                # destination, so that is where the robot sets it down.
+                entry["object_point"] = dest_point
+            else:
+                entry["dest_point"] = dest_point
+                # An atomic relocation carries the object inside a single task,
+                # so the solver charges the carry to that task and never reports
+                # it as a transition. Without a path here the executor would be
+                # told to put the object down while still standing where it
+                # picked it up.
+                start = _nearest_vertex(list(vertices.values()), *position[:2])
+                end = _nearest_vertex(list(vertices.values()), *dest_point[:2])
+                try:
+                    path = nx.shortest_path(
+                        routes, start["id"], end["id"], weight="weight"
+                    )
+                except nx.NetworkXNoPath as exc:
+                    raise ValueError(
+                        f"No permitted carry route from {target} to {dest}"
+                    ) from exc
+                entry["carry_path"] = np.array(
+                    [[vertices[i]["x"], vertices[i]["y"]] for i in path], dtype=float
+                )
+        geometry[t.get("id")] = entry
+    return geometry
+
+
+@dispatch
+def ground_problem(
+    domain: GrstapsDomain,
+    dsg: Any,
+    robot_states: dict,
+    goal: GrstapsGoal,
+    feedback: Any = None,
+) -> Any:
+    # Return type is deliberately Any: a single-robot fleet yields a
+    # RobotWrapper and a real fleet a MultiRobotWrapper, and plum enforces a
+    # declared return type strictly enough that naming either one rejects the
+    # other at runtime.
+    logger.info("Grounding GRSTAPS-X problem for %s", goal.robot_id)
+
+    if domain.entry not in ("pddl", "itags"):
+        raise ValueError(f"Unknown GRSTAPS-X entry {domain.entry!r}")
+    if domain.entry == "itags" and domain.run_mode != "native":
+        raise ValueError("entry='itags' requires run_mode='native'")
+    if domain.entry == "pddl" and (
+        goal.manipulate_destinations
+        or goal.extra_precedence
+        or goal.robot_bound
+        or any(getattr(c, "predicate", None) == "before" for c in goal.constraints)
+    ):
+        raise ValueError(
+            "Relocation destinations, explicit ordering and robot-pinned tasks "
+            "require entry='itags'"
+        )
+    # Match PDDL's case-insensitive symbols and avoid duplicate scheduled tasks.
+    goal = replace(
+        goal,
+        goal_points=list(dict.fromkeys(s.lower() for s in goal.goal_points)),
+        inspect_points=list(dict.fromkeys(s.lower() for s in goal.inspect_points)),
+        manipulate_points=list(
+            dict.fromkeys(s.lower() for s in goal.manipulate_points)
+        ),
+        manipulate_destinations={
+            k.lower(): v.lower() for k, v in goal.manipulate_destinations.items()
+        },
+        robot_bound={
+            kind: {
+                sym.lower(): list(dict.fromkeys(r.lower() for r in robots))
+                for sym, robots in targets.items()
+            }
+            for kind, targets in (goal.robot_bound or {}).items()
+        },
+    )
+    goal, held = residual_goal(goal, dsg)
+
+    pose = robot_states.get(goal.robot_id)
+    if pose is None:
+        raise ValueError(
+            f"No pose for robot {goal.robot_id}; cannot place its start vertex."
+        )
+
+    graph, vertices, _, symbol_of_vertex = _mesh_place_graph(dsg)
+    if not vertices:
+        raise ValueError("DSG has no mesh-places layer; nothing to build a graph from.")
+
+    forbidden_pts, forbidden_edges = _forbidden_sets(
+        dsg, getattr(goal, "constraints", None)
+    )
+    path_distance = None
+    if forbidden_pts:
+        # Use edge lengths in metres. LayerPlanner's unweighted shortest-path
+        # distance counts edges and cannot implement a radius measured in m.
+        routes = nx.Graph()
+        routes.add_nodes_from(v["id"] for v in vertices)
+        routes.add_weighted_edges_from(
+            (e["vertex_a"], e["vertex_b"], e["cost"]) for e in graph["edges"]
+        )
+        distances = {}
+
+        def path_distance(a, b):
+            va = _nearest_vertex(vertices, *a)
+            vb = _nearest_vertex(vertices, *b)
+            if va["id"] not in distances:
+                distances[va["id"]] = nx.single_source_dijkstra_path_length(
+                    routes, va["id"]
+                )
+            return (
+                math.hypot(a[0] - va["x"], a[1] - va["y"])
+                + distances[va["id"]].get(vb["id"], math.inf)
+                + math.hypot(b[0] - vb["x"], b[1] - vb["y"])
+            )
+
+    radius_m = (
+        _forbidden_radius_m()
+        if domain.forbidden_radius_m is None
+        else domain.forbidden_radius_m
+    )
+    graph, _ = _prune_graph(
+        graph,
+        forbidden_pts,
+        forbidden_edges,
+        radius_m,
+        path_distance,
+    )
+
+    prefix, start_after_prefix = {}, {}
+    for robot, objects in held.items():
+        name = next((r for r in robot_states if r.lower() == robot), None)
+        if name is None or robot_states.get(name) is None:
+            raise ValueError(f"{robot} holds {[o for o, _ in objects]} but has no pose")
+        prefix[name], start_after_prefix[name] = _carry_prefix(
+            dsg, graph, vertices, robot_states[name], objects
+        )
+
+    if not (
+        goal.goal_points
+        or goal.inspect_points
+        or goal.manipulate_points
+        or goal.robot_bound
+    ):
+        # Nothing left for the solver -- it rejects an empty task list -- so
+        # the plan is just the carries, or nothing at all for an achieved goal.
+        logger.info(
+            "Nothing left to schedule%s",
+            f"; carrying held objects first: {sorted(prefix)}" if prefix else "",
+        )
+        return _wrap(
+            _fleet_names(robot_states, goal, domain, quiet=True),
+            GroundedGrstapsProblem(
+                scenario_dir="",
+                domain=domain,
+                motion_graph=graph,
+                prefix=prefix,
+                nothing_to_solve=True,
+            ),
+            goal.robot_id,
+        )
+
+    if domain.entry == "itags":
+        # The itags entry reads everything from absolute paths, so it needs
+        # nothing from the grstapsx checkout and can write anywhere writable.
+        scenario_dir = os.path.join(
+            _work_dir(domain), f"{domain.scenario_name}_{goal.robot_id}"
+        )
+    else:
+        # grstapsx_example resolves the graph under the checkout's data dir.
+        scenario_dir = os.path.join(
+            domain.repo_root, "data", "grstapsx", domain.scenario_name
+        )
+    os.makedirs(os.path.join(scenario_dir, "maps"), exist_ok=True)
+    with open(os.path.join(scenario_dir, "maps", "ground_graph.json"), "w") as fo:
+        json.dump(graph, fo)
+
+    # Goal symbols become the PDDL location names directly (lowercased, as the
+    # PDDL planners do), so a GRSTAPS-X plan names the same DSG symbols a
+    # fast-downward plan does and the two stay comparable. Each is snapped to
+    # its nearest motion-graph vertex.
+    nodes, location_of, loc_names = {}, {}, []
+    vertex_of = {}  # pddl name -> its snapped motion-graph vertex
+    missing = []
+    manipulate = {s.lower() for s in (getattr(goal, "manipulate_points", None) or [])}
+    inspect_targets = {s.lower() for s in (getattr(goal, "inspect_points", None) or [])}
+    # A manipulation target still has to be reached, so it is a location like
+    # any other; only its goal predicate differs.
+    _seen_lower = set()
+    all_targets = []
+    for s in (
+        list(goal.goal_points)
+        + list(getattr(goal, "manipulate_points", None) or [])
+        + list(getattr(goal, "inspect_points", None) or [])
+        + list((getattr(goal, "manipulate_destinations", None) or {}).values())
+        + [sym for targets in goal.robot_bound.values() for sym in targets]
+    ):
+        if s.lower() not in _seen_lower:
+            _seen_lower.add(s.lower())
+            all_targets.append(s)
+    for sym in all_targets:
+        xy = _symbol_position(dsg, sym)
+        if xy is None:
+            # Reject the whole request below rather than silently dropping part
+            # of a mission. The ROS node catches the error and remains alive.
+            missing.append(sym)
+            continue
+        v = _nearest_vertex(vertices, *xy)
+        name = sym.lower()
+        loc_names.append(name)
+        location_of[name] = sym
+        # Coordinates must be the VERTEX's, not the object's: the solver treats
+        # x/y and id as the same point, and a mismatch makes allocation fail
+        # with "Searched the entire space, but couldn't find a solution".
+        nodes[name] = {"x": v["x"], "y": v["y"], "id": v["id"]}
+        vertex_of[name] = v
+
+    if missing:
+        raise ValueError(f"Goal symbol(s) not in the DSG: {', '.join(missing)}")
+    if not loc_names:
+        raise ValueError(
+            "None of the requested goal symbols "
+            f"({', '.join(all_targets) or 'none given'}) are in the DSG; "
+            "nothing to plan for."
+        )
+
+    # Every robot with a pose joins the fleet, so GRSTAPS-X can actually
+    # allocate. Robots without one are skipped rather than failing the request.
+    fleet = []
+    for robot_id in _fleet_names(robot_states, goal, domain):
+        robot_pose = robot_states[robot_id]
+        # A robot carrying a held object starts its schedule where it puts it
+        # down: the carry runs before anything the solver gives it.
+        v = start_after_prefix.get(robot_id) or _nearest_vertex(
+            vertices, float(robot_pose[0]), float(robot_pose[1])
+        )
+        # The allocator looks each start up in `nodes`; without it the config
+        # fails to parse with "json is missing field 'x'".
+        nodes[f"_start_{v['id']}"] = {"x": v["x"], "y": v["y"], "id": v["id"]}
+        fleet.append((robot_id, v))
+
+    if not fleet:
+        raise ValueError("No robot in robot_states has a pose; nothing to plan for.")
+
+    # A task pinned to a robot that is not planning cannot be given to anyone
+    # else, so say why rather than plan without it.
+    named = {
+        r
+        for targets in goal.robot_bound.values()
+        for rs in targets.values()
+        for r in rs
+    }
+    absent = sorted(named - {robot_id.lower() for robot_id, _ in fleet})
+    if absent:
+        known = {r.lower(): r for r in robot_states}
+        why = [
+            f"{r} has no pose (its map->base_link transform is missing)"
+            if r in known and robot_states[known[r]] is None
+            else f"{r} is not a robot this planner can use"
+            if r in known
+            else f"{r} is not a known robot (known: {', '.join(sorted(known))})"
+            for r in absent
+        ]
+        raise ValueError(
+            f"The goal assigns work to {', '.join(absent)}, but " + "; ".join(why)
+        )
+    identity = (
+        _identity_dims([robot_id.lower() for robot_id, _ in fleet]) if named else {}
+    )
+    width = TRAIT_DIM + len(identity)
+
+    # Say so when a target is cut off, rather than letting the solver "succeed"
+    # with an empty route. Seeding the search with the fleet's own vertices
+    # keeps a target a robot already stands on reachable, which it is.
+    reachable = reachable_vertices(graph, [v["id"] for _, v in fleet])
+    stranded = sorted(n for n, v in vertex_of.items() if v["id"] not in reachable)
+    if stranded:
+        cause = (
+            "a forbidden-poi constraint isolates it"
+            if forbidden_pts or forbidden_edges
+            else "the motion graph is disconnected there"
+        )
+        raise ValueError(
+            f"No robot can reach {', '.join(stranded)}: {cause}. Lower "
+            f"the forbidden radius (now {radius_m:.1f} m, set by "
+            f"{FORBIDDEN_RADIUS_ENV}), drop the "
+            "constraint, or choose a different target."
+        )
+
+    durations = {
+        "visit-location": domain.visit_duration_s,
+        "inspect-object": domain.inspect_duration_s,
+        "pick-object": domain.pick_duration_s,
+        "place-object": domain.place_duration_s,
+    }
+    with open(os.path.join(scenario_dir, "domain.pddl"), "w") as fo:
+        fo.write(render_domain_pddl(durations, domain.atomic_manipulation))
+
+    objs = " ".join(loc_names)
+    init_lines = [f"    (is-location {n})" for n in loc_names]
+    # pick-object requires (inspected ?l), which makes the full chain
+    # inspect -> pick -> place available. Pre-satisfying it in :init for
+    # locations nobody asked to inspect keeps a plain pick/place two steps long
+    # instead of silently forcing a coalition inspection -- and a fleet with no
+    # UAV can still manipulate.
+    init_lines += [
+        f"    (inspected {n})" for n in loc_names if n not in inspect_targets
+    ]
+    init = "\n".join(init_lines)
+
+    # Each goal predicate asks for the last link of the chain it needs, since
+    # (placed x) already implies (picked x) and, when requested, (inspected x).
+    def _goal_for(n):
+        if n in manipulate:
+            return f"      (placed {n})"
+        if n in inspect_targets:
+            return f"      (inspected {n})"
+        return f"      (visited {n})"
+
+    goal_lines = "\n".join(_goal_for(n) for n in loc_names)
+    with open(os.path.join(scenario_dir, "problem.pddl"), "w") as fo:
+        fo.write(
+            f"(define (problem omniplanner_grstaps)\n"
+            f"  (:domain dsg-visit)\n"
+            f"  (:objects\n    {objs} - location\n  )\n"
+            f"  (:init\n{init}\n  )\n"
+            f"  (:goal\n    (and\n{goal_lines}\n    )\n  )\n"
+            f"  (:metric minimize (total-time))\n)\n"
+        )
+
+    template = _solver_params(domain)
+    # Only emit species the fleet actually uses -- an unused species with a
+    # manipulator would let the allocator believe a capability is available.
+    robot_species = {
+        robot_id: species_for(
+            (goal.robot_types or {}).get(robot_id),
+            domain.robot_species,
+            robot_id,
+            domain.robot_type_species,
+        )
+        for robot_id, _ in fleet
+    }
+    logger.info(
+        "Fleet: %s",
+        ", ".join(f"{r}={s}" for r, s in sorted(robot_species.items())),
+    )
+    # Species: what each robot supplies. With pinned tasks every robot gets
+    # its own, its platform's traits plus its identity trait.
+    species_traits = {}
+    for robot_id, kind in list(robot_species.items()):
+        traits = _pad(SPECIES[kind]["traits"], width)
+        if identity:
+            traits[identity[robot_id.lower()]] = 1
+            robot_species[robot_id] = f"{kind}@{robot_id}"
+        species_traits[robot_species[robot_id]] = (kind, traits)
+    used = sorted(species_traits)
+
+    mp = json.loads(json.dumps(template["motion_planners"][0]))
+    if domain.entry == "itags":
+        mp["environment_parameters"]["use_data_dir"] = False
+        mp["environment_parameters"]["graph_filepath"] = os.path.join(
+            scenario_dir, "maps", "ground_graph.json"
+        )
+    else:
+        mp["environment_parameters"]["graph_filepath"] = (
+            f"/grstapsx/{domain.scenario_name}/maps/ground_graph.json"
+        )
+    config = {
+        "_comment": f"generated by omniplanner for robot {goal.robot_id}",
+        "motion_planners": [mp],
+        "species": [
+            {
+                "name": name,
+                "traits": species_traits[name][1],
+                "bounding_radius": SPECIES[species_traits[name][0]]["bounding_radius"],
+                "speed": SPECIES[species_traits[name][0]]["speed"],
+                "mp_index": 0,
+            }
+            for name in used
+        ],
+        "robots": [
+            {
+                "name": robot_id,
+                "species": robot_species[robot_id],
+                "initial_configuration": {
+                    "configuration_type": "graph",
+                    "graph_type": "euclidean",
+                    "id": v["id"],
+                },
+            }
+            for robot_id, v in fleet
+        ],
+        "itags_parameters": template["itags_parameters"],
+        "scheduler_parameters": template["scheduler_parameters"],
+        "nodes": nodes,
+        # base_traits is what a subtask DEMANDS; species traits are what a robot
+        # SUPPLIES. visit demands only a sensor, which every species has, so any
+        # platform can take it and the choice falls to speed. pick/place demand
+        # a manipulator, so only spot_arm is eligible however close another
+        # robot happens to be.
+        #
+        # An all-zero requirement is NOT a valid way to say "anyone": ITAGS
+        # fails before motion planning with "Request for time from unknown time
+        # 'motion_planning_time'", because a zero requirement vector gives its
+        # allocation heuristic nothing to normalise against.
+        "action_templates": {
+            "visit-location": {
+                "subtasks": [
+                    {
+                        "role": "visit",
+                        "base_traits": _pad(_traits(SENSOR), width),
+                        "duration": durations["visit-location"],
+                        "location": "arg0",
+                    }
+                ]
+            },
+            # A true coalition: ONE subtask whose requirement no single robot
+            # meets. Trait vectors ADD UP across the robots assigned to a
+            # subtask (data/README.md), so requiring ground>=1, air>=1 and
+            # sensing>=2 forces a mixed ground+air team on the same task at the
+            # same time -- e.g. spot [1,0,1,0] + uav [0,1,1,0] = [1,1,2,0].
+            #
+            # Splitting this into two subtasks instead would produce two
+            # INDEPENDENTLY SCHEDULED tasks, one per role, which is a different
+            # (and weaker) thing: each role filled, but not concurrently.
+            "inspect-object": {
+                "subtasks": [
+                    {
+                        "role": "joint_observation",
+                        "base_traits": _pad(
+                            requirement_traits(domain.inspect_requirement), width
+                        ),
+                        "duration": durations["inspect-object"],
+                        "location": "arg0",
+                    },
+                ]
+            },
+            "relocate-object": {
+                "subtasks": [
+                    {
+                        "role": "relocate",
+                        "base_traits": _pad(_traits(MANIP), width),
+                        "duration": durations["pick-object"]
+                        + durations["place-object"],
+                        "location": "arg0",
+                    }
+                ]
+            },
+            "pick-object": {
+                "subtasks": [
+                    {
+                        "role": "pick",
+                        "base_traits": _pad(_traits(MANIP), width),
+                        "duration": durations["pick-object"],
+                        "location": "arg0",
+                    }
+                ]
+            },
+            "place-object": {
+                "subtasks": [
+                    {
+                        "role": "place",
+                        "base_traits": _pad(_traits(MANIP), width),
+                        "duration": durations["place-object"],
+                        "location": "arg0",
+                    }
+                ]
+            },
+        },
+    }
+    with open(os.path.join(scenario_dir, "action_trait_config.json"), "w") as fo:
+        json.dump(config, fo, indent=1)
+
+    if domain.entry == "itags":
+        # The ITAGS entry point takes already-enumerated tasks, so the PDDL
+        # above is not read at all -- it is still written because it documents
+        # the same problem in a form a human (and the other entry point) can
+        # check against.
+        tasks, of_symbol, precedence = enumerate_tasks(
+            goal,
+            durations,
+            vertex_of,
+            domain.atomic_manipulation,
+            inspect_traits=requirement_traits(domain.inspect_requirement),
+            identity=identity,
+        )
+        if not tasks:
+            raise ValueError("No tasks to allocate; nothing to plan for.")
+        user_pairs = ordering_precedence(getattr(goal, "constraints", None), of_symbol)
+        raw_pairs = []
+        for pair in getattr(goal, "extra_precedence", None) or []:
+            a, b = int(pair[0]), int(pair[1])
+            if not (0 <= a < len(tasks) and 0 <= b < len(tasks)):
+                logger.warning(
+                    "Precedence pair %s is out of range for %d task(s); ignoring.",
+                    pair,
+                    len(tasks),
+                )
+                continue
+            raw_pairs.append([a, b])
+        user_pairs += raw_pairs
+        if user_pairs:
+            logger.info(
+                "Ordering added %d precedence pair(s) (%d from before(), %d given directly)",
+                len(user_pairs),
+                len(user_pairs) - len(raw_pairs),
+                len(raw_pairs),
+            )
+        cycle = precedence_cycle(len(tasks), precedence + user_pairs)
+        if cycle:
+            raise ValueError(
+                "The ordering is contradictory, so no schedule exists: "
+                + " -> ".join(tasks[i]["name"] for i in cycle)
+                + ". Look for a before() constraint stated in both directions."
+            )
+        itags_input = {
+            "tasks": tasks,
+            # Both kinds of ordering end up in the same list: the intrinsic
+            # chain the PDDL preconditions used to guarantee, plus whatever the
+            # instruction asked for. ITAGS cannot tell them apart, and does not
+            # need to.
+            "precedence_constraints": precedence + user_pairs,
+            "plan_task_indices": list(range(len(tasks))),
+            "species": config["species"],
+            # Robots need full coordinates here. On the PDDL path the separate
+            # `nodes` block supplies them and the config carries only an id;
+            # the ITAGS input has no such block, so an id-only configuration
+            # fails to deserialise with "json is missing field 'x'".
+            "robots": [
+                {
+                    "name": robot_id,
+                    "species": robot_species[robot_id],
+                    "initial_configuration": _graph_config(v),
+                }
+                for robot_id, v in fleet
+            ],
+            "motion_planners": config["motion_planners"],
+            "itags_parameters": config["itags_parameters"],
+            "scheduler_parameters": config["scheduler_parameters"],
+        }
+        with open(os.path.join(scenario_dir, "itags_input.json"), "w") as fo:
+            json.dump(itags_input, fo, indent=1)
+        logger.info(
+            "Wrote ITAGS input: %d task(s), %d precedence pair(s) (%d intrinsic, %d from the instruction)",
+            len(tasks),
+            len(precedence) + len(user_pairs),
+            len(precedence),
+            len(user_pairs),
+        )
+
+    logger.info(
+        "Wrote GRSTAPS-X scenario to %s (%d vertices, %d locations)",
+        scenario_dir,
+        len(vertices),
+        len(loc_names),
+    )
+    grounded = GroundedGrstapsProblem(
+        scenario_dir=scenario_dir,
+        domain=domain,
+        location_of=location_of,
+        symbol_of_vertex=symbol_of_vertex,
+        destination_of={
+            str(k).lower(): str(v).lower()
+            for k, v in (goal.manipulate_destinations or {}).items()
+        },
+        motion_graph=graph,
+        prefix=prefix,
+    )
+    return _wrap([robot_id for robot_id, _ in fleet], grounded, goal.robot_id)
+
+
+# The solver parameters omniplanner runs with: GRSTAPS-X's wpc_spread scenario,
+# whose values were used in testing. Kept here so the itags entry needs no
+# file from the grstapsx checkout; the timeouts are capped per solve.
+SOLVER_PARAMS = {
+    "motion_planners": [
+        {
+            "config_type": "EuclideanGraphMotionPlanner",
+            "environment_parameters": {
+                "config_type": "EuclideanGraphEnvironment",
+                "configuration_type": "graph",
+                "graph_type": "euclidean",
+                "euclidean_graph_type": "singular",
+                "is_complete": False,
+                "use_data_dir": True,
+                "graph_filepath": "",
+            },
+            "algorithm_parameters": {
+                "config_type": "EuclideanGraphMotionPlannerParameters",
+                "configuration_type": "graph",
+                "graph_type": "euclidean",
+                "euclidean_graph_type": "singular",
+                "is_complete": False,
+                "timeout": 60.0,
+            },
+        }
+    ],
+    "itags_parameters": {
+        "config_type": "BestFirstSearchParameters",
+        "has_timeout": True,
+        "timeout": 1200.0,
+        "timer_name": "itags",
+        "prune_before_eval": True,
+        "save_closed_nodes": False,
+        "save_pruned_nodes": False,
+    },
+    "scheduler_parameters": {
+        "config_type": "DeterministicMilpSchedulerParameters",
+        "scheduler_type": "milp",
+        "milp_scheduler_type": "deterministic",
+        "timeout": 60.0,
+        "milp_timeout": 60.0,
+        "threads": 0,
+        "compute_transition_duration_heuristic": False,
+        "use_hierarchical_objective": True,
+    },
+}
+
+
+def _solver_params(d: GrstapsDomain):
+    """Motion planner, search and scheduler parameters, timeouts capped.
+
+    The built-in SOLVER_PARAMS unless solver_params_from names a scenario in
+    the grstapsx checkout to copy them from.
+    """
+    params = json.loads(json.dumps(SOLVER_PARAMS))
+    if d.solver_params_from:
+        path = os.path.join(
+            d.repo_root,
+            "data",
+            "grstapsx",
+            d.solver_params_from,
+            "action_trait_config.json",
+        )
+        with open(path) as f:
+            loaded = json.load(f)
+        params.update({k: loaded[k] for k in params if k in loaded})
+    cap = float(d.solver_timeout_s)
+    for key, sub in (
+        ("itags_parameters", "timeout"),
+        ("scheduler_parameters", "timeout"),
+        ("scheduler_parameters", "milp_timeout"),
+    ):
+        params[key][sub] = min(float(params[key].get(sub, cap)), cap)
+    return params
+
+
+def _work_dir(d: GrstapsDomain):
+    return os.path.expanduser(
+        d.work_dir
+        or os.environ.get("ADT4_GRSTAPS_WORK_DIR")
+        or "~/.cache/omniplanner/grstaps"
+    )
+
+
+def _itags_binary(d: GrstapsDomain):
+    """The configured itags binary, else the one a colcon build installed."""
+    return (
+        d.itags_binary
+        or os.environ.get("ADT4_ITAGS_BINARY")
+        or shutil.which("itags")
+        or os.path.expanduser("~/grstapsx/build-native/itags")
+    )
+
+
+def _run(cmd, d: GrstapsDomain, cwd):
+    """Run the solver, killing it if it outlives solver_timeout_s.
+
+    The solver caps its own search and MILP time at solver_timeout_s; the
+    margin covers start-up and writing the solution.
+    """
+    limit = float(d.solver_timeout_s) + 30.0
+    try:
+        return subprocess.run(
+            cmd,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            env=_solver_env(d),
+            timeout=limit,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"GRSTAPS-X did not finish within {limit:.0f} s and was stopped; "
+            "raise solver_timeout_s or simplify the goal."
+        ) from exc
+
+
+def _solver_command(d: GrstapsDomain, rel: str):
+    """Build the solver invocation for whichever run mode is configured.
+
+    docker : needs a WLS licence (node-locked ones are bound to a HOSTID and
+             fail inside a container), so it is capped by WLS concurrent
+             sessions and needs network at solve time.
+    native : runs a locally built binary, which a Named-User licence supports
+             with no session cap and no network once installed.
+    """
+    args = [
+        f"{rel}/domain.pddl",
+        f"{rel}/problem.pddl",
+        f"{rel}/action_trait_config.json",
+    ]
+    if d.run_mode == "native":
+        return [d.native_binary] + args
+    if d.run_mode != "docker":
+        raise ValueError(
+            f"Unknown run_mode {d.run_mode!r}; expected 'docker' or 'native'."
+        )
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "-u",
+        f"{os.getuid()}:{os.getgid()}",
+        "-e",
+        "HOME=/tmp",
+        "-v",
+        f"{d.repo_root}:/ws/grstapsx",
+        "-v",
+        f"{d.license_path}:/opt/gurobi/gurobi.lic:ro",
+        d.docker_image,
+        "./build/grstapsx_example",
+    ] + args
+
+
+def _solver_env(d: GrstapsDomain):
+    """Environment for the solver process.
+
+    The native binary links libgurobi110.so and the conda toolchain, so it needs
+    LD_LIBRARY_PATH set or it dies with "error while loading shared libraries".
+    Docker carries its own environment, so nothing to add there.
+    """
+    if d.run_mode != "native":
+        return None
+    env = dict(os.environ)
+    # A colcon-built itags carries its own rpath to Gurobi and needs neither
+    # of these; a hand-built one links them from here.
+    lib_dirs = [
+        os.path.join(p, "lib")
+        for p in (d.gurobi_home, d.conda_prefix)
+        if p and os.path.isdir(os.path.join(p, "lib"))
+    ]
+    if env.get("LD_LIBRARY_PATH"):
+        lib_dirs.append(env["LD_LIBRARY_PATH"])
+    if lib_dirs:
+        env["LD_LIBRARY_PATH"] = ":".join(lib_dirs)
+    if d.gurobi_home and os.path.isdir(d.gurobi_home):
+        env["GUROBI_HOME"] = d.gurobi_home
+    # Otherwise Gurobi looks in its default places (~/gurobi.lic and others).
+    if d.license_path and os.path.exists(d.license_path):
+        env["GRB_LICENSE_FILE"] = d.license_path
+    return env
+
+
+def _run_solver(problem: GroundedGrstapsProblem):
+    """Invoke the solver binary, as pddl_planning does for fast-downward."""
+    d = problem.domain
+    rel = os.path.relpath(problem.scenario_dir, d.repo_root)
+    cmd = _solver_command(d, rel)
+    # Gurobi uses a Web License Service: every solve checks a token out over the
+    # network, and that checkout is flaky under repeated use -- observed ~30%
+    # success at 25s spacing, failing with a bare "No Gurobi license" (10009) or
+    # "Too many sessions" (10030). Neither is a property of the problem, so
+    # retry rather than reporting the plan as unsolvable.
+    last = None
+    for attempt in range(1, d.license_retries + 1):
+        logger.warning("Calling (attempt %d): %s", attempt, " ".join(cmd))
+        last = _run(cmd, d, d.repo_root)
+        logger.warning("Return code: %s", last.returncode)
+        if last.returncode == 0:
+            return last
+        output = (last.stdout or "") + (last.stderr or "")
+        if "10009" not in output and "10030" not in output:
+            return last  # a real planning failure; retrying will not help
+        if attempt < d.license_retries:
+            logger.warning(
+                "Gurobi licence checkout failed; retrying in %.1fs",
+                d.license_retry_delay_s,
+            )
+            time.sleep(d.license_retry_delay_s)
+    return last
+
+
+def _solution_dir(d: GrstapsDomain, scenario: str):
+    """Where the solver writes its results.
+
+    It writes under its own build tree, which differs by run mode: the docker
+    image builds into build/, while the native build lives in build-native/.
+    Looking in the wrong one makes a successful solve read as "no solution".
+    """
+    if d.run_mode == "native":
+        build_dir = os.path.dirname(os.path.abspath(d.native_binary))
+    else:
+        build_dir = os.path.join(d.repo_root, "build")
+    return os.path.join(build_dir, "solutions", scenario, "problem")
+
+
+def _run_itags(problem: GroundedGrstapsProblem):
+    """Run the itags binary on our generated problem inputs.
+
+    Skips PDDL task planning entirely: the tasks and their ordering are already
+    in the input file. The output is the same itags_solution.json the other
+    entry point produces, so nothing downstream changes.
+    """
+    d = problem.domain
+    in_path = os.path.join(problem.scenario_dir, "itags_input.json")
+    out_path = os.path.join(problem.scenario_dir, "itags_solution.json")
+    # The CLI requires the output path NOT to exist, and a stale file would be
+    # read back as this run's answer.
+    if os.path.exists(out_path):
+        os.remove(out_path)
+    binary = _itags_binary(d)
+    if not os.path.exists(binary):
+        raise FileNotFoundError(
+            f"itags binary not found (looked for {binary}). Build the grstapsx "
+            "package in this workspace, or set ADT4_ITAGS_BINARY."
+        )
+    cmd = [binary, in_path, out_path]
+    logger.warning("Calling: %s", " ".join(cmd))
+    result = _run(cmd, d, problem.scenario_dir)
+    logger.warning("Return code: %s", result.returncode)
+    return result, out_path
+
+
+@dispatch
+def make_plan(problem: GroundedGrstapsProblem, map_context: Any) -> GrstapsPlan:
+    if problem.nothing_to_solve:
+        return GrstapsPlan(makespan=0.0, tasks=[], prefix=problem.prefix)
+    if problem.domain.entry == "itags":
+        result, solution_file = _run_itags(problem)
+    else:
+        solution_dir = _solution_dir(problem.domain, problem.domain.scenario_name)
+        # a stale solution would be silently reported as this run's answer
+        shutil.rmtree(solution_dir, ignore_errors=True)
+
+        result = _run_solver(problem)
+        solution_file = os.path.join(solution_dir, "itags_files", "itags_solution.json")
+    if not os.path.exists(solution_file):
+        # The solver logs to stdout, not stderr, and reports licensing problems
+        # only there -- surface the real reason rather than an empty stderr.
+        combined = (result.stdout or "") + (result.stderr or "")
+        reasons = [
+            ln.strip()
+            for ln in combined.splitlines()
+            if "error]" in ln
+            or "GRBException" in ln
+            or "couldn't find a solution" in ln
+        ]
+        detail = reasons[-1] if reasons else (result.stderr or combined)[-300:]
+        raise Exception(
+            f"GRSTAPS-X produced no solution (exit {result.returncode}): {detail}"
+        )
+
+    with open(solution_file) as fo:
+        payload = json.load(fo)
+
+    # itags_solution.json is {"solution": {...}, "statistics": {...}}
+    solution = payload.get("solution", payload)
+    makespan = float(solution.get("makespan", 0.0))
+    tasks = solution.get("tasks", [])
+    agents = solution.get("agents", [])
+    logger.info(
+        "GRSTAPS-X solved: makespan=%.3f, %d task(s), %d agent(s)",
+        makespan,
+        len(tasks),
+        len(agents),
+    )
+    # Log the schedule itself: the makespan alone does not say who does what,
+    # in which order, or when -- which is the whole point of using this planner.
+    for t in sorted(tasks, key=lambda t: t.get("start_timepoint", 0.0)):
+        logger.info(
+            "  %-28s %7.2f -> %7.2f s  coalition=%s",
+            t.get("name", "?"),
+            t.get("start_timepoint", 0.0),
+            t.get("finish_timepoint", 0.0),
+            t.get("coalition"),
+        )
+    symbol_of_vertex = problem.symbol_of_vertex
+    by_id = {t.get("id"): t for t in tasks}
+    for a in agents:
+        legs = a.get("transitions") or []
+        n_pts = sum(len(tr.get("path") or []) for tr in legs)
+        logger.info(
+            "  robot %s: task order %s, %d leg(s), %d waypoint(s)",
+            a.get("name"),
+            a.get("individual_plan"),
+            len(legs),
+            n_pts,
+        )
+
+        # The symbolic plan: which target each scheduled task goes to, in the
+        # order this robot executes them. individual_plan holds task ids, so
+        # this is the solver's actual sequencing, not a re-derivation.
+        for step, task_id in enumerate(a.get("individual_plan") or []):
+            t = by_id.get(task_id) or {}
+            loc = task_location(t.get("name", ""))
+            logger.info(
+                "      %d. %-22s -> %-6s (%s)  %.2f -> %.2f s",
+                step + 1,
+                t.get("name", "?"),
+                loc or "?",
+                problem.location_of.get(loc, "?"),
+                t.get("start_timepoint", 0.0),
+                t.get("finish_timepoint", 0.0),
+            )
+
+        # The metric route, named by the DSG places it threads through. This is
+        # what the executor actually follows, so seeing it as t#### symbols is
+        # how you tell a sensible route from one that cuts through a wall.
+        for leg_i, tr in enumerate(legs):
+            route = []
+            for cfg in tr.get("path") or []:
+                sym = symbol_of_vertex.get(cfg.get("id"))
+                label = sym if sym else f"({cfg.get('x'):.1f},{cfg.get('y'):.1f})"
+                if not route or route[-1] != label:
+                    route.append(label)
+            if not route:
+                continue
+            logger.info(
+                "      leg %d (%d pts): %s", leg_i + 1, len(route), " -> ".join(route)
+            )
+
+    return GrstapsPlan(
+        makespan=makespan,
+        tasks=tasks,
+        agents=agents,
+        raw=payload,
+        location_of=problem.location_of,
+        symbol_of_vertex=symbol_of_vertex,
+        task_geometry=_parameterize_tasks(
+            map_context,
+            tasks,
+            problem.location_of,
+            problem.destination_of,
+            problem.motion_graph,
+        ),
+        precedence=[
+            list(pair) for pair in solution.get("precedence_constraints") or []
+        ],
+        prefix=problem.prefix,
+    )
