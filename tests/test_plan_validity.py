@@ -54,6 +54,20 @@ def test_goal_objects():
     assert g == {"visit": {"o5"}, "inspect": {"o8"}, "relocate": {"o4"}}
 
 
+def test_goal_objects_of_the_by_forms_are_their_targets():
+    g = goal_objects(
+        "(and (visited-object-by hilbert o20)(visited-place-by gauss t12)"
+        "(inspected-by hamilton o7))"
+    )
+    assert g == {"visit": {"o20", "t12"}, "inspect": {"o7"}, "relocate": set()}
+
+
+def test_removed_object_a_robot_must_visit_invalidates():
+    gone = [{"kind": REMOVED, "symbol": "O20", "old": (17.0, 3.0), "new": None}]
+    hit = affecting_changes(gone, {}, "(visited-object-by hilbert o20)")
+    assert [s for s, _ in hit] == ["o20"]
+
+
 def test_object_to_pick_moved_far_invalidates():
     deps = plan_dependencies([_plan()])
     hit = affecting_changes([_moved("O4", (26.0, -5.4), (30.0, -2.0))], deps, "")
