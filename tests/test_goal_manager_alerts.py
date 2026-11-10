@@ -9,15 +9,23 @@ from omniplanner_msgs.msg import ConstrainedPddlGoalMsg
 from omniplanner_ros.goal_manager_node import GoalManager
 
 
+class _Fake(NS):
+    # the merged goal manager reads coverage through a property
+    _coverage = GoalManager._coverage
+
+
 def _manager():
     sent = {"pause": 0, "resume": 0, "stop": 0, "goals": [], "display": [], "alert": []}
-    gm = NS(
+    gm = _Fake(
         _plan_constraints=frozenset(),
         _running_constraints=frozenset(),
         _running_goal=None,
         _pending_goal=None,
         _replan_reason=None,
         _plan_visited_pois=set(),
+        _plan_covered_pois=set(),
+        _plan_finish_times={},
+        _replan_horizon_s=0.0,
         _cache_valid=False,
         _plan_robots={"hilbert"},
         _paused={"hilbert"},
@@ -38,6 +46,9 @@ def _manager():
         "_resume_executor",
         "_stop_executor",
         "_visited_pois_cb",
+        "_coverage_cb",
+        "_commit_plan",
+        "_late_pois",
         "_map_version_cb",
         "_commanded_goal_cb",
         "_goal_already_satisfied",
@@ -125,3 +136,20 @@ def test_the_same_goal_is_replanned_once_the_map_changed():
     gm._visited_pois_cb(String(data=json.dumps(["o20"])))
     gm._commanded_goal_cb(goal)
     assert sent["goals"] == [goal, goal] and sent["resume"] == 1
+
+
+def test_fleet_coverage_alone_marks_the_plan_made_on_this_map():
+    """GRSTAPS-X may leave this robot out of the allocation: then only the fleet
+    coverage arrives, and it must still date the plan to the current map."""
+    gm, sent = _manager()
+    goal = gm._running_goal
+    gm._map_version_cb(Int64(data=4))
+    gm._commanded_goal_cb(goal)  # forwarded: no cached plan yet
+    gm._coverage_cb(String(data=json.dumps(["o20"])))  # only coverage arrives
+    assert gm._plan_map_version == 4 and gm._running_goal is goal
+    gm._commanded_goal_cb(goal)
+    assert sent["goals"] == [goal] and sent["resume"] == 1  # covered on this map
+    gm._map_version_cb(Int64(data=5))
+    gm._commanded_goal_cb(goal)
+    assert sent["goals"] == [goal, goal]  # the map changed: planned again
+

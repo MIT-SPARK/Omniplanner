@@ -54,6 +54,20 @@ def test_goal_objects():
     assert g == {"visit": {"o5"}, "inspect": {"o8"}, "relocate": {"o4"}}
 
 
+def test_goal_objects_of_the_by_forms_are_their_targets():
+    g = goal_objects(
+        "(and (visited-object-by hilbert o20)(visited-place-by gauss t12)"
+        "(inspected-by hamilton o7))"
+    )
+    assert g == {"visit": {"o20", "t12"}, "inspect": {"o7"}, "relocate": set()}
+
+
+def test_removed_object_a_robot_must_visit_invalidates():
+    gone = [{"kind": REMOVED, "symbol": "O20", "old": (17.0, 3.0), "new": None}]
+    hit = affecting_changes(gone, {}, "(visited-object-by hilbert o20)")
+    assert [s for s, _ in hit] == ["o20"]
+
+
 def test_object_to_pick_moved_far_invalidates():
     deps = plan_dependencies([_plan()])
     hit = affecting_changes([_moved("O4", (26.0, -5.4), (30.0, -2.0))], deps, "")
@@ -341,3 +355,41 @@ def test_a_cut_route_pauses_the_robots_and_replans():
     assert node._route == {}  # judged once
     N._check_routes(node)
     assert len(replans) == 1
+
+
+def _grstaps_fleet_plan():
+    """A solved GRSTAPS-X fleet plan (the fields compile_grstaps_plan reads):
+    hilbert inspects o8 then picks o4; euler only visits p3."""
+    leg = lambda *pts: {"path": [{"x": x, "y": y} for x, y in pts]}  # noqa: E731
+    return NS(
+        tasks=[{"id": 0, "name": "inspect o8"}, {"id": 1, "name": "pick o4"},
+               {"id": 2, "name": "visit p3"}],
+        agents=[
+            {"name": "hilbert", "individual_plan": [0, 1],
+             "transitions": [leg((0, 0), (4, 1)), leg((4, 1), (25, -5))]},
+            {"name": "euler", "individual_plan": [2], "transitions": [leg((0, 0), (9, 9))]},
+        ],
+        task_geometry={
+            0: {"action": "inspect", "target": "o8", "object_point": np.array([5.0, 1.0, 0.0])},
+            1: {"action": "pick", "target": "o4", "object_class": "trash",
+                "object_point": np.array([26.0, -5.4, 0.3])},
+            2: {"action": "visit", "target": "p3", "object_point": np.array([9.0, 9.0, 0.0])},
+        },
+        precedence=[],
+        prefix={},
+    )
+
+
+def test_grstaps_plans_are_judged_like_fast_downward_plans():
+    """GRSTAPS-X compiles to the same Follow / Gaze / Pick sequences, so the repair
+    node watches the same objects and routes for it."""
+    pytest = __import__("pytest")
+    gr = pytest.importorskip("omniplanner_ros.grstaps_planner_ros")
+    plan = _grstaps_fleet_plan()
+    plans = {r: gr.compile_grstaps_plan(plan, "p", r, "map") for r in ("hilbert", "euler")}
+    deps = plan_dependencies(plans.values())
+    assert deps == {"o8": ("gaze", (5.0, 1.0)), "o4": ("pick", (26.0, -5.4))}
+    moved = affecting_changes([_moved("o4", (26.0, -5.4), (40.0, 3.0))], deps, "")
+    assert [sym for sym, _ in moved] == ["o4"]
+    route = route_places(plans, lambda xy: f"p{int(xy[0])}")
+    assert route["euler"] and route["hilbert"]  # both robots' legs are watched
