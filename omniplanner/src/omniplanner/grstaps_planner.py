@@ -1235,7 +1235,6 @@ def region_core(members, xy, centre, fraction=None):
     return ranked[: max(1, int(np.ceil(fraction * len(ranked))))]
 
 
-
 def _env_number(name, default, cast=float, minimum=None):
     try:
         value = cast(os.getenv(name, default))
@@ -1807,12 +1806,6 @@ def ground_problem(
             for kind, targets in (goal.region_bound or {}).items()
         },
     )
-
-    pose = robot_states.get(goal.robot_id)
-    if pose is None:
-        raise ValueError(
-            f"No pose for robot {goal.robot_id}; cannot place its start vertex."
-        )
 
     graph, vertices, _, symbol_of_vertex = _mesh_place_graph(dsg)
     if not vertices:
