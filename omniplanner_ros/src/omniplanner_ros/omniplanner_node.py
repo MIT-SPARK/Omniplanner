@@ -111,15 +111,38 @@ class RobotPlanningAdaptor:
             qos_profile or 1,
         )
 
+    @property
+    def plan_topic(self):
+        return f"/{self.name}/omniplanner_node/compiled_plan_out"
+
     def get_pose(self, parent_frame):
-        self.ros_logger.info(
-            f"Looking up pose for {self.name} ({parent_frame}->{self.child_frame})"
-        )
         try:
             return get_robot_pose(self.tf_buffer, parent_frame, self.child_frame)
         except tf2_ros.TransformException as e:
             self.ros_logger.warning(str(e))
             return None
+
+    def lookup_pose(self, parent_frame, now=None, max_age_s=0.0):
+        """(pose or None, why there is none). Never waits for a transform.
+
+        A pose older than max_age_s (by its stamp against now, both on the
+        node's clock, so sim time works) is no pose: fleetlink keeps a robot's
+        last transform long after the robot went offline, and planning for it
+        hands it tasks it never runs. A static transform (stamp 0) is fresh.
+        """
+        try:
+            transform = lookup_robot_transform(
+                self.tf_buffer, parent_frame, self.child_frame
+            )
+        except tf2_ros.TransformException:
+            return None, f"no transform {parent_frame}->{self.child_frame}"
+        stamp = transform.header.stamp
+        stamp_ns = int(stamp.sec) * 10**9 + int(stamp.nanosec)
+        if now is not None and max_age_s and max_age_s > 0 and stamp_ns > 0:
+            age = (now.nanoseconds - stamp_ns) / 1e9
+            if age > max_age_s:
+                return None, f"pose is {age:.1f} s old (limit {max_age_s:.1f} s)"
+        return pose_from_transform(transform), ""
 
     def publish_plan(self, plan):
         self.plan_pub.publish(plan)
@@ -160,34 +183,46 @@ class OmniplannerNodeConfig(Config):
         return Config.load(OmniplannerNodeConfig, path)
 
 
+def lookup_robot_transform(tf_buffer, parent_frame: str, child_frame: str):
+    """The latest parent_frame -> child_frame transform, without waiting.
+
+    Waiting for a robot that is offline cost every plan a second per robot
+    (five offline robots, five seconds), for a transform that never came.
+    """
+    latest = rclpy.time.Time()
+    if not tf_buffer.can_transform(
+        parent_frame, child_frame, latest, timeout=rclpy.duration.Duration()
+    ):
+        raise tf2_ros.LookupException(
+            f"no transform {parent_frame}->{child_frame} (yet)"
+        )
+    return tf_buffer.lookup_transform(parent_frame, child_frame, latest)
+
+
+def pose_from_transform(transform) -> np.ndarray:
+    translation = transform.transform.translation
+    rotation = transform.transform.rotation
+    quat = [rotation.x, rotation.y, rotation.z, rotation.w]
+    roll, pitch, yaw = tf_transformations.euler_from_quaternion(quat)
+    return np.array([translation.x, translation.y, translation.z, yaw])
+
+
 def get_robot_pose(tf_buffer, parent_frame: str, child_frame: str) -> np.ndarray:
     """
     Looks up the transform from parent_frame to child_frame and returns [x, y, z, yaw].
 
     """
-    # TODO: use Time(0) instead of now?
-    try:
-        now = rclpy.time.Time()
-        tf_buffer.can_transform(
-            parent_frame,
-            child_frame,
-            now,
-            timeout=rclpy.duration.Duration(seconds=1.0),
-        )
-        transform = tf_buffer.lookup_transform(parent_frame, child_frame, now)
+    return pose_from_transform(
+        lookup_robot_transform(tf_buffer, parent_frame, child_frame)
+    )
 
-        translation = transform.transform.translation
-        rotation = transform.transform.rotation
 
-        # Convert quaternion to Euler angles
-        quat = [rotation.x, rotation.y, rotation.z, rotation.w]
-        roll, pitch, yaw = tf_transformations.euler_from_quaternion(quat)
-
-        return np.array([translation.x, translation.y, translation.z, yaw])
-
-    except tf2_ros.TransformException as e:
-        print(f"Transform error: {e}")
-        raise
+def plan_is_empty(plan) -> bool:
+    """An ActionSequence with no actions, or a Path with no poses."""
+    steps = getattr(plan, "actions", None)
+    if steps is None:
+        steps = getattr(plan, "poses", None)
+    return not steps
 
 
 class OmniPlannerRos(Node):
@@ -255,6 +290,17 @@ class OmniPlannerRos(Node):
             String, "~/plan_robots", qos_profile=latching_reliable_qos
         )
 
+        # Which robots get a Path (a Husky) and which an ActionSequence (a
+        # Spot), and on what topic: anyone stopping a robot needs to know.
+        self.robot_platforms_pub = self.create_publisher(
+            String, "~/robot_platforms", qos_profile=latching_reliable_qos
+        )
+
+        # A pose older than this counts as none (<= 0: any age will do).
+        self.declare_parameter("max_pose_age_s", 5.0)
+        self._max_pose_age_s = float(self.get_parameter("max_pose_age_s").value)
+        self._pose_status: Dict[str, str] = {}
+
         self.heartbeat_pub = self.create_publisher(NodeInfoMsg, "~/node_status", 1)
         heartbeat_timer_group = MutuallyExclusiveCallbackGroup()
         timer_period_s = 0.1
@@ -280,6 +326,23 @@ class OmniPlannerRos(Node):
                 f"I know about {robot_adaptor.name}, a {robot_adaptor.robot_type} robot"
             )
             self.robot_adaptors[robot_config.robot_name] = robot_adaptor
+        self.robot_platforms_pub.publish(
+            String(
+                data=json.dumps(
+                    {
+                        name: {
+                            "robot_type": a.robot_type,
+                            "plan_topic": a.plan_topic,
+                            "plan_msg": "nav_msgs/Path"
+                            if a.PLAN_MSG is Path
+                            else "robot_executor_msgs/ActionSequenceMsg",
+                        }
+                        for name, a in self.robot_adaptors.items()
+                    },
+                    sort_keys=True,
+                )
+            )
+        )
 
         # Initialize a feedback collector to be populated by plugins
         self.feedback = OmniplannerFeedbackCollector()
@@ -335,6 +398,10 @@ class OmniPlannerRos(Node):
         status = NodeInfoMsg.NOMINAL
         if not have_recent_dsg:
             status = NodeInfoMsg.WARNING
+        warnings = self.status_warnings()
+        if warnings:
+            status = NodeInfoMsg.WARNING
+            notes += " " + "; ".join(warnings)
 
         msg = NodeInfoMsg()
         msg.nickname = "omniplanner"
@@ -342,6 +409,10 @@ class OmniPlannerRos(Node):
         msg.status = status
         msg.notes = notes
         self.heartbeat_pub.publish(msg)
+
+    def status_warnings(self) -> List[str]:
+        """Problems for the status monitor to show; subclasses add theirs."""
+        return []
 
     def finalize_plans(self, plan_dict, robot_poses):
         """Last look at the compiled plans before they are published.
@@ -352,10 +423,22 @@ class OmniPlannerRos(Node):
         return plan_dict
 
     def get_robot_poses(self, dsg_frame):
-        pose_dict = {}
-        for name, pose_adaptor in self.robot_adaptors.items():
-            pose_dict[name] = pose_adaptor.get_pose(dsg_frame)
-        return pose_dict
+        return {name: self.robot_pose(name, dsg_frame) for name in self.robot_adaptors}
+
+    def robot_pose(self, name, frame=None):
+        """A robot's fresh pose, or None. Says so once when a robot's pose goes
+        missing or stale, and once when it is back -- not on every plan."""
+        pose, why = self.robot_adaptors[name].lookup_pose(
+            frame or self.dsg_frame, self.get_clock().now(), self._max_pose_age_s
+        )
+        before = self._pose_status.get(name)
+        if why != (before or ""):
+            if why:
+                self.get_logger().warning(f"{name}: {why}; not planning for it")
+            elif before:
+                self.get_logger().info(f"{name}: pose is fresh again")
+        self._pose_status[name] = why
+        return pose
 
     def register_plugin(self, name, plugin):
         self.get_logger().info(f"Registering subscription plugin {name}")
@@ -404,6 +487,8 @@ class OmniPlannerRos(Node):
                 )
                 plan_dict = collect_plans(compiled_plans)
                 plan_dict = self.finalize_plans(plan_dict, robot_poses)
+                if not plan_dict:
+                    raise ValueError("no robot is online to plan for")
             except Exception as exc:
                 # An exception escaping a subscription callback tears down the
                 # rclpy executor and kills the node, so one unplannable goal
@@ -432,6 +517,16 @@ class OmniPlannerRos(Node):
                     f"Dropping the plan for a superseded {name} goal"
                 )
                 done_planning()
+                return
+
+            if all(plan_is_empty(p) for p in plan_dict.values()):
+                # Empty plans would only preempt whatever the robots are doing.
+                reason = "goal already satisfied: nothing to do"
+                self.get_logger().warning(
+                    f"{name}: {reason}; dispatching nothing to {sorted(plan_dict)}"
+                )
+                done_planning()
+                self.plan_failed_pub.publish(String(data=f"{name}: {reason}"))
                 return
 
             for robot_name, compiled_plan in plan_dict.items():
