@@ -45,7 +45,10 @@ adds:
 * progress: a robot given a plan that neither moves nor reports an action for
   ``progress_timeout_s`` is reported, in the log and on ``~/progress_alert``.
   A Husky reports nothing, so its progress is its pose reaching its Path's
-  poses, which also records the places it visited.
+  poses, which also records the places it visited. That progress goes out on
+  ``/<robot>/omniplanner_node/path_status`` (JSON: plan_id, status progress,
+  done or stalled, reached, steps), so the goal manager knows when a Husky has
+  finished.
 * busy robots: a goal with a ``busy-robots`` constraint (see
   :data:`omniplanner.world_state.BUSY_ROBOTS`) adds work to the running
   mission. It is planned on free robots only; a busy robot, or one holding
@@ -61,6 +64,7 @@ and the upstream ``plugin.on_plan_compiled`` hook handle the per-call work.
 
 from __future__ import annotations
 
+import json
 import threading
 import uuid
 
@@ -215,6 +219,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         self._progress_timeout_s = float(self.get_parameter("progress_timeout_s").value)
         self._progress_move_m = float(self.get_parameter("progress_move_m").value)
         self._progress_pub = self.create_publisher(String, "~/progress_alert", 10)
+        self._path_status_pubs = {}
         self.create_timer(1.0, self._progress_tick)
         self.get_logger().info(
             "OmniPlannerRepairRos listening for persistent constraints on "
@@ -783,6 +788,12 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 path = np.array(
                     [[p.pose.position.x, p.pose.position.y] for p in plan.poses]
                 )
+            if path is not None and robot not in self._path_status_pubs:
+                # Made with the plan: a brand-new publisher's first message
+                # can go out before the goal manager is matched, and be lost.
+                self._path_status_pubs[robot] = self.create_publisher(
+                    String, f"/{robot}/omniplanner_node/path_status", 10
+                )
             pose = robot_poses.get(robot)
             self._dispatched[robot] = {
                 "plan_id": getattr(plan, "plan_id", "") or "(path)",
@@ -808,6 +819,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         """Fold a pose in: movement, a Husky's waypoints, and the watchdog."""
         now = self._now_s()
         visited_points = []
+        advanced = False
         with self._plan_lock:
             sent = self._dispatched.get(robot)
             if sent is None:
@@ -827,6 +839,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                         visited_points = path[sent["reached"] + 1 : reached + 1]
                         sent["reached"], sent["last_progress"] = reached, now
                         self._actions_done[robot] = reached
+                        advanced = True
             finished = sent["path"] is not None and sent["reached"] >= sent["steps"] - 1
             if finished:
                 del self._dispatched[robot]
@@ -851,6 +864,9 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 self.get_logger().info(f"{robot} passed: {sorted(new)}")
         if finished:
             self.get_logger().info(f"{robot} reached the end of its path")
+        if sent["path"] is not None and (advanced or finished or stalled):
+            status = "done" if finished else "stalled" if stalled else "progress"
+            self._publish_path_status(robot, sent, status)
         if stalled:
             text = (
                 f"{robot} has made no progress on plan {sent['plan_id']} for "
@@ -859,6 +875,18 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             )
             self.get_logger().warning(text)
             self._progress_pub.publish(String(data=text))
+
+    def _publish_path_status(self, robot, sent, status) -> None:
+        pub = self._path_status_pubs.get(robot)
+        if pub is None:
+            return
+        msg = {
+            "plan_id": sent["plan_id"],
+            "status": status,
+            "reached": int(sent["reached"]) + 1,
+            "steps": int(sent["steps"]),
+        }
+        pub.publish(String(data=json.dumps(msg)))
 
     def status_warnings(self):
         with self._plan_lock:

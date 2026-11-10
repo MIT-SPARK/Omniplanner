@@ -7,6 +7,7 @@ The repair node is built without ROS: its __init__ only creates publishers and
 timers, which are faked here.
 """
 
+import json
 import threading
 from types import SimpleNamespace as NS
 
@@ -173,6 +174,7 @@ def _node(dsg=None, poses=None, adaptors=None):
     node._replan_pub = publisher(None, "~/replan_request", 10)
     node._version_pub = publisher(None, "~/map_version", 1)
     node._progress_pub = publisher(None, "~/progress_alert", 10)
+    node._path_status_pubs = {}
     return node
 
 
@@ -365,6 +367,9 @@ def test_a_husky_reaching_its_path_visits_places():
     node._progress_tick()
     assert "t3" in node.world_tracker.visited
     assert "testhusky" not in node._dispatched  # at the end of its path
+    # ... and the goal manager is told, since a Husky reports no actions.
+    sent = node.f_pubs["/testhusky/omniplanner_node/path_status"].sent
+    assert [json.loads(m.data)["status"] for m in sent] == ["progress", "done"]
 
 
 # ---------- P11: a plan that makes no progress ----------

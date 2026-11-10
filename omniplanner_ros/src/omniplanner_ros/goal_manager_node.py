@@ -16,7 +16,9 @@ paths via roslaunch ``remap``::
 What each robot is doing is kept per robot, from the planner's and executors'
 own absolute topics: ``/<name>/omniplanner_node/compiled_plan_out`` (its action
 sequence: plan id and length), ``/<name>/omniplanner_node/plan_visited_pois``
-(the POIs its plan visits) and ``/action_done`` (each finished action). A robot
+(the POIs its plan visits) and ``/action_done`` (each finished action). A Husky
+reports no actions; the planner follows its pose along its Path and says on
+``/<name>/omniplanner_node/path_status`` when it has finished or stalled. A robot
 that finishes moves what it visited into a set of achieved facts; one that
 fails or makes no progress (``progress_timeout_s``) gives its part of the goal
 back. A new goal is split into conjuncts, each done, in progress or new; only a
@@ -549,7 +551,16 @@ class GoalManager(Node):
                 10,
             )
         ]
-        if self._platform(robot) != HUSKY:
+        if self._platform(robot) == HUSKY:
+            subs.append(
+                self.create_subscription(
+                    String,
+                    f"/{robot}/omniplanner_node/path_status",
+                    lambda msg, r=robot: self._path_status_cb(r, msg),
+                    10,
+                )
+            )
+        else:
             subs.append(
                 self.create_subscription(
                     ActionSequenceMsg,
@@ -625,6 +636,26 @@ class GoalManager(Node):
             self._finish(msg.robot_name, "finished every action")
         else:
             self._publish_states()
+
+    def _path_status_cb(self, robot: str, msg: String) -> None:
+        """A Husky's progress along its Path, as the planner sees its pose."""
+        try:
+            status = json.loads(msg.data)["status"]
+        except Exception as exc:
+            self.get_logger().warning(f"Bad path_status for {robot}: {exc}")
+            return
+        entry = self._robots.get(robot)
+        if entry is None or entry.tracked or entry.status not in (RUNNING, STALLED):
+            return
+        if status == "stalled":
+            self._lose(robot, STALLED, "has not moved along its path")
+            return
+        entry.since = self._now()
+        if entry.status == STALLED:
+            entry.status = RUNNING
+            self._log_robot(robot, entry, "is making progress again")
+        if status == "done":
+            self._finish(robot, "reached the end of its path")
 
     def _finish(self, robot: str, why: str) -> None:
         """Every action of the robot's plan succeeded: what it covered is
@@ -716,10 +747,9 @@ class GoalManager(Node):
         self._states_pub.publish(String(data=json.dumps(self._robot_states())))
 
     def _running(self) -> Dict[str, RobotPlan]:
-        """Robots known to be executing their plan (progress is reported)."""
-        return {
-            r: e for r, e in self._robots.items() if e.status == RUNNING and e.tracked
-        }
+        """Robots executing their plan: a Spot reporting its actions, or a
+        Husky that has not reached the end of its Path yet."""
+        return {r: e for r, e in self._robots.items() if e.status == RUNNING}
 
     def robots_mid_task(self) -> Dict[str, RobotPlan]:
         """Robots in the middle of a plan: those a new plan would replace."""

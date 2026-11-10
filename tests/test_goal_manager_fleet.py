@@ -257,3 +257,36 @@ def test_a_husky_cannot_pause_and_is_stopped_by_an_empty_path(tmp_path):
     assert got and list(got[-1].poses) == []
     n.destroy_subscription(sub)
     h.close()
+
+
+def _path_status(h, robot, status):
+    h.node._path_status_cb(
+        robot, String(data=f'{{"plan_id": "(path)", "status": "{status}"}}')
+    )
+
+
+def test_a_husky_is_busy_until_the_planner_says_its_path_is_done(h):
+    """Found in the local e2e: a Husky reports no actions, so it stayed
+    "running" after reaching the end of its Path -- never done, never free."""
+    h.send("(and (visited-object o1) (visited-object o3))")
+    h.plan(euclid=("pe", 1, ["o1"]), gauss=("", 0, ["o3"]))
+    h.goals.clear()
+    # While it drives, it is busy: an additional task leaves it alone.
+    h.send("(visited-object o9)")
+    (sent,) = h.goals
+    assert h.busy(sent) == [["euclid", "gauss"]]
+    h.goals.clear()
+    _path_status(h, "gauss", "progress")
+    _path_status(h, "gauss", "done")
+    assert "gauss" not in h.node._robots
+    assert "o3" in h.node._visited()
+    h.send("(visited-object o3)")
+    assert h.goals == [] and any("already done" in t for t in h.texts)
+
+
+def test_a_husky_that_stops_moving_gives_its_part_back(h):
+    h.send("(visited-object o3)")
+    h.plan(gauss=("", 0, ["o3"]))
+    _path_status(h, "gauss", "stalled")
+    assert h.node._lost == {"(visited-object o3)"}
+    assert any(t.startswith("gauss:") for t in h.texts)
