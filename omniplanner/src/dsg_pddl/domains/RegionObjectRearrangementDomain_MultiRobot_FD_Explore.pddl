@@ -17,6 +17,7 @@
         (holding ?r - robot ?o - dsg_object)
         (hand-full ?r - robot)
         (object-in-place ?o - dsg_object ?p - place)
+        (object-placed-by ?r - robot ?o - dsg_object ?p - place)
         (place-in-region ?p - place ?reg - region)
 
         (visited-poi ?p - point-of-interest)
@@ -106,6 +107,7 @@
      :precondition (and (holding ?r ?o) (at-place ?r ?p))
      :effect (and (not (holding ?r ?o))
                   (not (hand-full ?r))
-                  (object-in-place ?o ?p)))
+                  (object-in-place ?o ?p)
+                  (object-placed-by ?r ?o ?p)))
 
 )

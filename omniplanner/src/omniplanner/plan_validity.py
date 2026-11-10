@@ -87,6 +87,8 @@ def goal_objects(pddl_goal: str) -> Dict[str, set]:
             out["inspect"].update(args[-1:])  # (inspected-by <robot> <object>)
         elif head == "object-in-place":
             out["relocate"].update(args[:1])
+        elif head == "object-placed-by":
+            out["relocate"].update(args[1:2])  # (object-placed-by <robot> <o> <p>)
         elif head == "holding":
             out["relocate"].update(args[-1:])
         else:
@@ -153,9 +155,22 @@ def route_places(plans: Dict[str, object], place_at) -> Route:
 
     place_at((x, y)) names the place at a path point, or None for a point that
     is not one (the robot's start, an object it walks up to).
+
+    A Husky's plan is a nav_msgs/Path, with no actions: each step between two
+    of its poses is a leg, numbered by the pose it starts from, so a robot
+    past pose i (done = i) is past legs 0 .. i-1.
     """
     route: Route = {}
     for robot, seq in plans.items():
+        if not hasattr(seq, "actions") and hasattr(seq, "poses"):
+            places = [
+                place_at((float(p.pose.position.x), float(p.pose.position.y)))
+                for p in seq.poses
+            ]
+            route[robot] = [(i, places[i : i + 2]) for i in range(len(places) - 1)]
+            if len(places) == 1:
+                route[robot] = [(0, places)]
+            continue
         legs = []
         for i, a in enumerate(getattr(seq, "actions", [])):
             if type(a).__name__ != "Follow":
