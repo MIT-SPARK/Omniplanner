@@ -295,6 +295,9 @@ EMPTY_PATH_WINDOW_S = 5.0
 
 # The constraint an additional task carries: robots the planner leaves alone.
 BUSY_ROBOTS = "busy-robots"
+# The constraint a goal starting a new mission carries (every robot idle): the
+# planner forgets earlier missions' visits, so they do not satisfy this goal.
+NEW_MISSION = "new-mission"
 
 
 @dataclass
@@ -343,6 +346,8 @@ class Decision:
     # Conjuncts the planner is sent.
     todo: List[str] = field(default_factory=list)
     busy: List[str] = field(default_factory=list)
+    # Every robot was idle: the goal starts a new mission.
+    new_mission: bool = False
 
 
 @dataclass
@@ -1037,12 +1042,39 @@ class GoalManager(Node):
     def _commanded_goal_cb(self, msg: ConstrainedPddlGoalMsg) -> None:
         # Flow: decide → (pause →) forward, or leave the robots be → log.
         self._replan_reason = None  # a new instruction supersedes it
+        new_mission = self._starts_new_mission(msg)
+        if new_mission:
+            self._forget_finished_mission()
         decision = self._decide(msg)
+        decision.new_mission = new_mission and decision.action == REPAIR
         self._log_decision(msg, decision)
         if decision.action in (SKIP, WAIT):
             self._notify_operator(f"{self._describe(msg)}: {decision.reason}.")
             return
         self._forward_for_replanning(msg, decision)
+
+    def _starts_new_mission(self, msg: ConstrainedPddlGoalMsg) -> bool:
+        """Every robot is idle and nothing is being planned: the goal starts
+        a new mission, unless it asks again for work a lost robot left."""
+        if self._pending is not None or self._paused:
+            return False
+        if any(e.status in (RUNNING, STALLED) for e in self._robots.values()):
+            return False
+        return not (self._lost & set(goal_conjuncts(msg.goal.pddl_goal)))
+
+    def _forget_finished_mission(self) -> None:
+        """P16: what earlier, finished goals achieved does not count for a
+        new mission, so a goal sent again after it finished is planned again.
+        Facts the planner found already holding (a placement) are about the
+        map, not the mission, and are kept until the map changes."""
+        if self._achieved or self._lost:
+            self.get_logger().info(
+                "every robot is idle: the goal starts a new mission; forgetting "
+                f"what earlier goals achieved ({len(self._achieved)} POIs)"
+            )
+        self._achieved.clear()
+        self._lost = set()
+        self._mission = []
 
     # ------------- decision (domain-specific) -------------
 
@@ -1266,9 +1298,10 @@ class GoalManager(Node):
         text = "; ".join(parts) or "No robot was running"
         return text[0].upper() + text[1:]
 
-    def _goal_msg(self, msg, todo, busy) -> ConstrainedPddlGoalMsg:
-        """The goal as sent: only what is not done, plus the busy robots."""
-        if todo == goal_conjuncts(msg.goal.pddl_goal) and not busy:
+    def _goal_msg(self, msg, todo, busy, new_mission=False) -> ConstrainedPddlGoalMsg:
+        """The goal as sent: only what is not done, plus the busy robots, or
+        the mark that it starts a new mission."""
+        if todo == goal_conjuncts(msg.goal.pddl_goal) and not busy and not new_mission:
             return msg
         out = ConstrainedPddlGoalMsg()
         out.goal.robot_id = msg.goal.robot_id
@@ -1276,6 +1309,8 @@ class GoalManager(Node):
         out.constraints = list(msg.constraints)
         if busy:
             out.constraints.append(ConstraintFact(predicate=BUSY_ROBOTS, symbols=busy))
+        if new_mission:
+            out.constraints.append(ConstraintFact(predicate=NEW_MISSION, symbols=[]))
         return out
 
     def _forward_for_replanning(self, msg: ConstrainedPddlGoalMsg, d: Decision) -> None:
@@ -1291,7 +1326,7 @@ class GoalManager(Node):
                     )
                 )
             self._pause_executor()
-        out = self._goal_msg(msg, d.todo, d.busy)
+        out = self._goal_msg(msg, d.todo, d.busy, d.new_mission)
         # Record what the incoming plan will be grounded under, so the next goal
         # can tell whether the constraints have since changed.
         self._plan_constraints = constraint_signature(msg.constraints)

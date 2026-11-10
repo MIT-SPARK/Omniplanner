@@ -312,3 +312,42 @@ def test_a_husky_sent_an_empty_path_is_free(h):
     assert "gauss" in h.node._robots
     h.node._path_cb("gauss", Path())
     assert "gauss" not in h.node._robots
+
+
+def _new_mission(msg):
+    return any(c.predicate == "new-mission" for c in msg.constraints)
+
+
+def test_a_goal_sent_again_after_every_robot_finished_is_planned_again(h):
+    """P16 as the user put it: once a goal is finished, a new goal must not be
+    ignored because of it. The fleet is idle, so the goal starts a new mission
+    and the planner is told to forget earlier visits too."""
+    h.send("(visited-object o1)")
+    h.plan(euclid=("pe", 1, ["o1"]))
+    h.done("euclid", "pe")
+    h.goals.clear()
+    h.send("(visited-object o1)")
+    (sent,) = h.goals
+    assert _new_mission(sent)
+    assert any("starts a new mission" in m for m in h.logs)
+
+
+def test_while_a_robot_runs_a_goal_is_not_a_new_mission(h):
+    _three_robot_mission(h)
+    h.done("euclid", "pe")
+    h.done("euclid", "pe")
+    h.send("(visited-object o9)")
+    (sent,) = h.goals
+    assert not _new_mission(sent) and h.busy(sent) == [["hamilton", "hilbert"]]
+
+
+def test_asking_again_for_a_lost_robots_part_is_not_a_new_mission(h):
+    h.send("(and (visited-object o1) (visited-object o2))")
+    h.plan(euclid=("pe", 1, ["o1"]), hamilton=("ph", 1, ["o2"]))
+    h.done("euclid", "pe")
+    h.done("hamilton", "ph", success=False)
+    h.goals.clear()
+    h.send("(and (visited-object o1) (visited-object o2))")
+    (sent,) = h.goals
+    assert not _new_mission(sent)
+    assert sent.goal.pddl_goal == "(visited-object o2)"  # o1 stays done

@@ -564,3 +564,20 @@ def test_all_empty_plans_leave_the_running_plan_alone():
         not getattr(p, "actions", getattr(p, "poses", None)) for p in out.values()
     )
     assert node._plan_ids == before  # nothing was committed
+
+
+def test_a_new_mission_forgets_visits_but_not_holding():
+    """P16: a goal starting a new mission is planned from a clean slate, except
+    for what the robots physically hold."""
+    from omniplanner.world_state import NEW_MISSION
+
+    node = _node(_map())
+    node.world_tracker.visited |= {"o1", "t1"}
+    node.world_tracker._reported_holding["testbot_a"] = {"o2"}
+    state = node.world_state_for("(visited-object o1)", constraints=[])
+    assert "o1" in state.visited
+    state = node.world_state_for(
+        "(visited-object o1)", constraints=[NS(predicate=NEW_MISSION, symbols=[])]
+    )
+    assert state.visited == set()
+    assert node.world_tracker._reported_holding == {"testbot_a": {"o2"}}

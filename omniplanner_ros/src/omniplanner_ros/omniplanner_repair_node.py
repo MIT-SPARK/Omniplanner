@@ -88,6 +88,7 @@ from omniplanner.world_state import (
     busy_robots,
     goal_tokens,
     kept_objects,
+    new_mission,
     split_held,
     unavailable_robots,
 )
@@ -625,6 +626,12 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         """
         dsg = self._current_dsg()
         with self._world_lock:
+            if new_mission(constraints):
+                self.world_tracker.reset()
+                self.get_logger().info(
+                    "New mission: forgot earlier visits and inspections "
+                    "(holding is kept)"
+                )
             state = self.world_tracker.snapshot(dsg)
         busy = unavailable_robots(constraints, state, goal_tokens(pddl_goal))
         planning, release = split_held(state, kept_objects(pddl_goal))

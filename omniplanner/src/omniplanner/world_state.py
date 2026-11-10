@@ -44,6 +44,10 @@ MAP_METADATA_KEY = "heracles"
 # robots only; with no symbols, every robot is free. Without it the goal is a
 # repair of the current mission, and every robot may be replanned.
 BUSY_ROBOTS = "busy-robots"
+# A goal the goal manager sends when every robot is idle starts a new mission:
+# (new-mission). Earlier missions' visits and inspections are forgotten, so a
+# goal sent again after it finished is planned again; holding is kept.
+NEW_MISSION = "new-mission"
 
 
 @dataclass
@@ -93,6 +97,10 @@ def busy_robots(constraints) -> Optional[Set[str]]:
         if getattr(c, "predicate", None) == BUSY_ROBOTS:
             found = (found or set()) | {str(s).lower() for s in c.symbols}
     return found
+
+
+def new_mission(constraints) -> bool:
+    return any(getattr(c, "predicate", None) == NEW_MISSION for c in constraints or [])
 
 
 def goal_tokens(pddl_goal: str) -> Set[str]:
