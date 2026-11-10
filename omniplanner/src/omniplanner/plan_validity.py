@@ -77,10 +77,14 @@ def goal_objects(pddl_goal: str) -> Dict[str, set]:
         args = [str(a).lower() for a in node[1:] if isinstance(a, str)]
         if head in ("visited-object", "visited-place", "visited-poi"):
             out["visit"].update(args[:1])
+        elif head in ("visited-object-by", "visited-place-by", "visited-poi-by"):
+            out["visit"].update(args[-1:])  # (visited-object-by <robot> <target>)
         elif head in ("at-object", "at-place"):
             out["visit"].update(args[-1:])
         elif head in ("safe", "suspicious"):
             out["inspect"].update(args[:1])
+        elif head == "inspected-by":
+            out["inspect"].update(args[-1:])  # (inspected-by <robot> <object>)
         elif head == "object-in-place":
             out["relocate"].update(args[:1])
         elif head == "holding":
