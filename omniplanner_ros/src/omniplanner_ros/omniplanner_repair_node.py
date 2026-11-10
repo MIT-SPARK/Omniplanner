@@ -635,6 +635,11 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             state = self.world_tracker.snapshot(dsg)
         busy = unavailable_robots(constraints, state, goal_tokens(pddl_goal))
         planning, release = split_held(state, kept_objects(pddl_goal))
+        planning.cannot_manipulate = {
+            r
+            for r in (getattr(self, "robot_adaptors", None) or {})
+            if self._is_path_robot(r)
+        }
         release = {r: objs for r, objs in release.items() if r not in busy}
         self._pending_release = release
         self._pending_busy = busy

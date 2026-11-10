@@ -217,3 +217,26 @@ def test_an_additional_task_with_every_robot_busy_says_who():
     with pytest.raises(ValueError) as err:
         _plan(_map(), "(visited-place t2)", constraints=_busy("testbot_a", "testbot_b"))
     assert "busy (testbot_a, testbot_b)" in str(err.value)
+
+
+# ---------- a Husky has no arm ----------
+
+
+@needs_fd
+def test_a_fleet_pick_and_place_never_uses_a_husky():
+    """Found in the local e2e: the planner gave a Husky inspect, pick and place,
+    which its Path plan silently drops (it just drives there). testbot_a,
+    beside o58, is a Husky here: testbot_b has to do the carrying."""
+    husky = WorldState(cannot_manipulate={"testbot_a"})
+    actions, _ = _plan(_map(), "(object-in-place o58 t5)", world_state=husky)
+    hands = {
+        a[1] for a in actions if a[0] in ("inspect", "pick-object", "place-object")
+    }
+    assert hands == {"testbot_b"}
+
+
+def test_a_goal_naming_a_husky_to_place_says_it_cannot():
+    husky = WorldState(cannot_manipulate={"testbot_a"})
+    with pytest.raises(ValueError) as err:
+        _plan(_map(), "(object-placed-by testbot_a o58 t5)", world_state=husky)
+    assert "testbot_a cannot inspect, pick or place" in str(err.value)

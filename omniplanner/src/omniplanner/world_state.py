@@ -64,6 +64,8 @@ class WorldState:
     inspected_by: Dict[str, Set[str]] = field(default_factory=dict)
     # {robot -> objects that robot put down}, for (object-placed-by r o p).
     placed_by: Dict[str, Set[str]] = field(default_factory=dict)
+    # Robots with no arm or gaze (a Husky): they cannot inspect, pick or place.
+    cannot_manipulate: Set[str] = field(default_factory=set)
 
     def held_by(self, robot: str) -> List[str]:
         return list(self.holding.get(robot.lower(), []))

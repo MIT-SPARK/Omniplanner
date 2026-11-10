@@ -16,6 +16,7 @@
 
         (holding ?r - robot ?o - dsg_object)
         (hand-full ?r - robot)
+        (can-manipulate ?r - robot)
         (object-in-place ?o - dsg_object ?p - place)
         (object-placed-by ?r - robot ?o - dsg_object ?p - place)
         (place-in-region ?p - place ?reg - region)
@@ -85,7 +86,7 @@
 
     (:action inspect
      :parameters (?r - robot ?o - dsg_object)
-     :precondition (at-object ?r ?o)
+     :precondition (and (can-manipulate ?r) (at-object ?r ?o))
      :effect (and (not (suspicious ?o))
                   (inspected-by ?r ?o)
                   (increase (total-cost) 1)
@@ -94,7 +95,8 @@
 
     (:action pick-object
      :parameters (?r - robot ?o - dsg_object ?p - place)
-     :precondition (and (not (hand-full ?r))
+     :precondition (and (can-manipulate ?r)
+                        (not (hand-full ?r))
                         (safe ?o)
                         (at-object ?r ?o)
                         (object-in-place ?o ?p))
@@ -104,7 +106,7 @@
 
     (:action place-object
      :parameters (?r - robot ?o - dsg_object ?p - place)
-     :precondition (and (holding ?r ?o) (at-place ?r ?p))
+     :precondition (and (can-manipulate ?r) (holding ?r ?o) (at-place ?r ?p))
      :effect (and (not (holding ?r ?o))
                   (not (hand-full ?r))
                   (object-in-place ?o ?p)

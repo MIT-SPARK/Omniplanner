@@ -517,6 +517,16 @@ def apply_world_state(init_facts, world_state, symbols, robot_ids):
     return facts
 
 
+MANIPULATION_BY = ("object-placed-by", "inspected-by", "holding")
+
+
+def _manipulation_robots(goal_string: str) -> set:
+    """Robots a goal asks to inspect, pick or place: (object-placed-by r o p),
+    (inspected-by r o), (holding r o)."""
+    preds = "|".join(MANIPULATION_BY)
+    return set(re.findall(rf"\(\s*(?:{preds})\s+([a-z0-9_]+)", goal_string.lower()))
+
+
 def _unique_symbols(symbols):
     """One symbol per lowercase name. A room R0 and an open-vocab region r0
     both become r0 in PDDL, and a name declared twice breaks the problem."""
@@ -601,6 +611,19 @@ def generate_multirobot_region_pddl(
         symbols_of_interest.append(
             PddlSymbol(rid, "robot", [], position=np.array(pose[:2]))
         )
+
+    # Only robots with an arm and gaze inspect, pick and place: a Husky's plan
+    # would silently drop those actions (compile_phoenix_pddl_plan).
+    no_arm = {
+        str(r).lower() for r in getattr(world_state, "cannot_manipulate", None) or ()
+    }
+    asked = _manipulation_robots(raw_pddl_goal_string) & no_arm
+    if asked:
+        raise ValueError(
+            f"{', '.join(sorted(asked))} cannot inspect, pick or place (no arm): "
+            "name a robot that can, or leave the robot out"
+        )
+    init_facts_tuples += [("can-manipulate", r) for r in robot_ids if r not in no_arm]
 
     # Every object starts suspicious, except those the mission already inspected.
     object_symbols = [s for s in symbols_of_interest if s.layer == "object"]
