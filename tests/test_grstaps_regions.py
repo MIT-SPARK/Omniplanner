@@ -13,6 +13,7 @@ from types import SimpleNamespace as NS
 import numpy as np
 import pytest
 import spark_dsg
+
 from omniplanner.grstaps_planner import (
     GrstapsDomain,
     GrstapsGoal,
@@ -276,6 +277,21 @@ def test_grounding_orders_a_whole_region_before_a_target(G, tmp_path, monkeypatc
     pinned = [n for n in names if n.endswith("by spot2")]
     assert len(explore) >= 4 and len(pinned) == 1
     assert sorted(a for a, b in data["precedence_constraints"] if b == o0) == explore
+
+
+def test_a_base_station_goal_plans_for_the_robots(G, tmp_path):
+    # The goal manager on a base station names itself, and it has no pose.
+    goal = GrstapsGoal(goal_points=["o0"], robot_id="willow")
+    poses = {"willow": None, "spot1": np.zeros(3), "spot2": None}
+    ground_problem(_domain(tmp_path), G, poses, goal)
+    names = [t["name"] for t in _itags_input(tmp_path, robot="willow")["tasks"]]
+    assert names == ["visit-location o0 :: visit"]
+
+
+def test_no_robot_with_a_pose_is_refused(G, tmp_path):
+    goal = GrstapsGoal(goal_points=["o0"], robot_id="willow")
+    with pytest.raises(ValueError, match="No robot in robot_states has a pose"):
+        ground_problem(_domain(tmp_path), G, {"willow": None, "spot1": None}, goal)
 
 
 def test_pddl_entry_refuses_region_goals(G, tmp_path):
