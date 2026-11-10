@@ -389,7 +389,9 @@ class GrstapsRos:
             robot_id=msg.goal.robot_id,
             constraints=persistent + per_msg,
             world_state=(
-                world_state_for(msg.goal.pddl_goal) if world_state_for else None
+                world_state_for(msg.goal.pddl_goal, constraints=persistent + per_msg)
+                if world_state_for
+                else None
             ),
         )
         return self._request(goal, robot_poses)

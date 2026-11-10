@@ -143,6 +143,16 @@ def _node(map_version=99):
         _replan_pub=NS(publish=published.append),
         _current_dsg=lambda: None,
         _map_version=lambda: map_version,
+        _map_state=lambda: ("", map_version),
+        _announced=set(),
+        _pending_epoch="",
+        _pending_busy=set(),
+        _left_alone=set(),
+        _running_plans={},
+        _dispatched={},
+        robot_adaptors={},
+        dsg_frame="map",
+        get_clock=lambda: NS(now=lambda: NS(nanoseconds=0)),
         create_publisher=lambda _type, topic, _qos: NS(
             topic=topic, publish=lambda m, t=topic: paused.append((t, m.data))
         ),
@@ -162,6 +172,11 @@ def _node(map_version=99):
         "_pause_pub_for",
         "finalize_plans",
         "_put_down_first",
+        "_leave_busy_alone",
+        "_keep_carrying",
+        "_is_path_robot",
+        "_watch_progress",
+        "_now_s",
     ):
         setattr(node, name, getattr(N, name).__get__(node))
     node.paused = paused
@@ -362,18 +377,40 @@ def _grstaps_fleet_plan():
     hilbert inspects o8 then picks o4; euler only visits p3."""
     leg = lambda *pts: {"path": [{"x": x, "y": y} for x, y in pts]}  # noqa: E731
     return NS(
-        tasks=[{"id": 0, "name": "inspect o8"}, {"id": 1, "name": "pick o4"},
-               {"id": 2, "name": "visit p3"}],
+        tasks=[
+            {"id": 0, "name": "inspect o8"},
+            {"id": 1, "name": "pick o4"},
+            {"id": 2, "name": "visit p3"},
+        ],
         agents=[
-            {"name": "hilbert", "individual_plan": [0, 1],
-             "transitions": [leg((0, 0), (4, 1)), leg((4, 1), (25, -5))]},
-            {"name": "euler", "individual_plan": [2], "transitions": [leg((0, 0), (9, 9))]},
+            {
+                "name": "hilbert",
+                "individual_plan": [0, 1],
+                "transitions": [leg((0, 0), (4, 1)), leg((4, 1), (25, -5))],
+            },
+            {
+                "name": "euler",
+                "individual_plan": [2],
+                "transitions": [leg((0, 0), (9, 9))],
+            },
         ],
         task_geometry={
-            0: {"action": "inspect", "target": "o8", "object_point": np.array([5.0, 1.0, 0.0])},
-            1: {"action": "pick", "target": "o4", "object_class": "trash",
-                "object_point": np.array([26.0, -5.4, 0.3])},
-            2: {"action": "visit", "target": "p3", "object_point": np.array([9.0, 9.0, 0.0])},
+            0: {
+                "action": "inspect",
+                "target": "o8",
+                "object_point": np.array([5.0, 1.0, 0.0]),
+            },
+            1: {
+                "action": "pick",
+                "target": "o4",
+                "object_class": "trash",
+                "object_point": np.array([26.0, -5.4, 0.3]),
+            },
+            2: {
+                "action": "visit",
+                "target": "p3",
+                "object_point": np.array([9.0, 9.0, 0.0]),
+            },
         },
         precedence=[],
         prefix={},
@@ -386,7 +423,9 @@ def test_grstaps_plans_are_judged_like_fast_downward_plans():
     pytest = __import__("pytest")
     gr = pytest.importorskip("omniplanner_ros.grstaps_planner_ros")
     plan = _grstaps_fleet_plan()
-    plans = {r: gr.compile_grstaps_plan(plan, "p", r, "map") for r in ("hilbert", "euler")}
+    plans = {
+        r: gr.compile_grstaps_plan(plan, "p", r, "map") for r in ("hilbert", "euler")
+    }
     deps = plan_dependencies(plans.values())
     assert deps == {"o8": ("gaze", (5.0, 1.0)), "o4": ("pick", (26.0, -5.4))}
     moved = affecting_changes([_moved("o4", (26.0, -5.4), (40.0, 3.0))], deps, "")

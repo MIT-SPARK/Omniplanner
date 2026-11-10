@@ -117,7 +117,7 @@ def test_map_holding_overrides_reports():
     G.metadata.add({"heracles": {"map_version": 3, "holding": {"hilbert": ["O8"]}}})
     assert holding_from_dsg(G) == {"hilbert": ["o8"]}
     t = WorldStateTracker()
-    t.record("PICK", True, ROBOT, object_id="O4")
+    t.record("PICK", True, "euclid", object_id="O8")  # the map says otherwise
     assert t.snapshot(G).holding == {"hilbert": ["o8"]}
 
 
@@ -227,7 +227,22 @@ def _repair_node_stub(holding, dsg=None):
         dsg_frame="map",
         get_logger=lambda: NS(info=lambda *_: None, error=lambda *_: None),
     )
-    node._put_down_first = N._put_down_first.__get__(node)
+    node._pending_busy, node._dispatched = set(), {}
+    node._left_alone, node._running_plans, node._actions_done = set(), {}, {}
+    node._active_goal = ""
+    node.get_clock = lambda: NS(now=lambda: NS(nanoseconds=0))
+    node.get_logger = lambda: NS(
+        info=lambda *_: None, warning=lambda *_: None, error=lambda *_: None
+    )
+    for name in (
+        "_put_down_first",
+        "_leave_busy_alone",
+        "_keep_carrying",
+        "_is_path_robot",
+        "_watch_progress",
+        "_now_s",
+    ):
+        setattr(node, name, getattr(N, name).__get__(node))
     node._pause_pub_for = lambda robot: None
     node._place_finder = lambda dsg: lambda xy: None
     node._map_version = lambda: 0

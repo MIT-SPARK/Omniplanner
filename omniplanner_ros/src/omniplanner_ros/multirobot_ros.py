@@ -145,7 +145,9 @@ class MultiRobotPddlConstrainedPlannerRos(MultiRobotPddlPlannerRos):
             robot_id=msg.goal.robot_id,
             constraints=merged,
             world_state=(
-                world_state_for(msg.goal.pddl_goal) if world_state_for else None
+                world_state_for(msg.goal.pddl_goal, constraints=merged)
+                if world_state_for
+                else None
             ),
         )
         return PlanRequest(domain=self.domain, goal=goal, robot_states=robot_poses)
