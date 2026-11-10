@@ -290,3 +290,25 @@ def test_a_husky_that_stops_moving_gives_its_part_back(h):
     _path_status(h, "gauss", "stalled")
     assert h.node._lost == {"(visited-object o3)"}
     assert any(t.startswith("gauss:") for t in h.texts)
+
+
+def test_a_husky_sent_an_empty_path_is_free(h):
+    """Found in the local e2e: the planner stops an idle Husky with an empty
+    Path, and the goal manager counted it busy, so an additional task that
+    only it could do was refused ("every robot ... is busy")."""
+    from nav_msgs.msg import Path
+
+    h.send("(visited-object o1)")
+    h.node._path_cb("gauss", Path())  # the Path comes first ...
+    h.plan(euclid=("pe", 2, ["o1"]), gauss=("", 0, []))
+    assert "gauss" not in h.node._robots
+    h.goals.clear()
+    h.send("(visited-object o9)")
+    (sent,) = h.goals
+    assert h.busy(sent) == [["euclid"]]
+    # ... or after the plan that lists it.
+    h.t += 60
+    h.plan(gauss=("", 0, ["o9"]))
+    assert "gauss" in h.node._robots
+    h.node._path_cb("gauss", Path())
+    assert "gauss" not in h.node._robots

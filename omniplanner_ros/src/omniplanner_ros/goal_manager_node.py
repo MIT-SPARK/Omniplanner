@@ -289,6 +289,10 @@ RUNNING, DONE, FAILED, PREEMPTED, STALLED = (
 CONJ_DONE, CONJ_IN_PROGRESS, CONJ_NEW = "done", "in progress", "new"
 # What a new goal does.
 SKIP, WAIT, REPAIR, ADDITIONAL = "skip", "wait", "repair", "additional task"
+# An empty Path seen this recently, with the plan that lists the Husky, is
+# that plan's Path for it (the two come on different topics).
+EMPTY_PATH_WINDOW_S = 5.0
+
 # The constraint an additional task carries: robots the planner leaves alone.
 BUSY_ROBOTS = "busy-robots"
 
@@ -388,6 +392,8 @@ class GoalManager(Node):
         self._plan_robots: Set[str] = set()
         self._paused: Set[str] = set()
         self._executor_pubs: Dict[Tuple[str, str], object] = {}
+        # A Husky's latest Path: (number of poses, when it came).
+        self._paths: Dict[str, Tuple[int, float]] = {}
         # Per robot: what its plan covers and how far it got.
         self._robots: Dict[str, RobotPlan] = {}
         # The latest sequence each robot was sent: (plan_id, actions, when).
@@ -552,14 +558,20 @@ class GoalManager(Node):
             )
         ]
         if self._platform(robot) == HUSKY:
-            subs.append(
+            subs += [
                 self.create_subscription(
                     String,
                     f"/{robot}/omniplanner_node/path_status",
                     lambda msg, r=robot: self._path_status_cb(r, msg),
                     10,
-                )
-            )
+                ),
+                self.create_subscription(
+                    Path,
+                    plan_topic(robot),
+                    lambda msg, r=robot: self._path_cb(r, msg),
+                    1,
+                ),
+            ]
         else:
             subs.append(
                 self.create_subscription(
@@ -636,6 +648,13 @@ class GoalManager(Node):
             self._finish(msg.robot_name, "finished every action")
         else:
             self._publish_states()
+
+    def _path_cb(self, robot: str, msg: Path) -> None:
+        """A Husky's new Path. An empty one stops it: it is free, not busy."""
+        self._paths[robot] = (len(msg.poses), self._now())
+        entry = self._robots.get(robot)
+        if not msg.poses and entry is not None and not entry.tracked:
+            self._drop(robot, "was sent an empty Path: it is idle")
 
     def _path_status_cb(self, robot: str, msg: String) -> None:
         """A Husky's progress along its Path, as the planner sees its pose."""
@@ -789,6 +808,10 @@ class GoalManager(Node):
             self._track_robot(robot)
             self._warm_executor(robot)
             if self._platform(robot) == HUSKY:
+                poses, when = self._paths.get(robot, (None, 0.0))
+                if poses == 0 and self._now() - when < EMPTY_PATH_WINDOW_S:
+                    # Its new Path (just before this list) is empty: it is idle.
+                    continue
                 entry = RobotPlan(
                     since=self._now(), stamp=pending.stamp if pending else self._stamp
                 )
