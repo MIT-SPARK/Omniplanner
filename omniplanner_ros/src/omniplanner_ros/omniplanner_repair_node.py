@@ -15,6 +15,23 @@ adds:
   ``~/reset_mission_state`` forgets visits and inspections for a new mission.
 * putting down first: an object a robot holds that the new goal no longer
   mentions is put down where the robot stands before its new plan starts.
+* plan validity under scene changes: changes applied to the map arrive on
+  ``~/scene_changes`` (the scene change writer's applied topic). Those our own
+  executors made are ignored; the rest are judged, after a short settle, by
+  :func:`omniplanner.plan_validity.affecting_changes` against what the current
+  plans still act on and what the goal asks for. A change that invalidates the
+  plan -- or a failed pick, up to ``max_pick_retries`` -- is sent to the goal
+  manager on ``~/replan_request`` once this node holds a map that contains it.
+  A scene change that invalidates the plan pauses every robot in it at once,
+  on ``executor_pause_topic``, so none drives on while the map catches up.
+  The replanned sequence releases each robot; if no plan is found they stay
+  stopped and the goal manager tells the operator.
+* the map version this node plans on, latched on ``~/map_version``, so the
+  goal manager replans a goal the running plan covers once the map changed.
+* routes under map edits: each new map is checked against the part of every
+  robot's route still ahead. A place on it that is gone, or two places it
+  drives between that are no longer connected (e.g. an SGET edit), pauses the
+  robots and replans, so they go around instead of following the old path.
 
 This module does **not** override ``register_plugin`` or duplicate the
 plan-handling logic in ``OmniPlannerRos``; the plugin-side ``pddl_callback``
@@ -27,12 +44,27 @@ import threading
 
 import numpy as np
 import rclpy
+import spark_dsg
 from dsg_pddl.pddl_grounding import ConstraintFact
-from omniplanner.world_state import WorldStateTracker, kept_objects, split_held
+from heracles_ros_interfaces.msg import SceneChangeMsg
+from omniplanner.plan_validity import (
+    affecting_changes,
+    broken_route,
+    plan_dependencies,
+    route_places,
+)
+from omniplanner.world_state import (
+    MAP_METADATA_KEY,
+    WorldStateTracker,
+    kept_objects,
+    split_held,
+)
 from omniplanner_msgs.msg import ConstraintList
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.qos import DurabilityPolicy, QoSProfile
 from robot_executor_interface.action_descriptions import ActionSequence, Place
 from robot_executor_msgs.msg import ActionDoneMsg
+from std_msgs.msg import Bool, Int64, String
 from std_srvs.srv import Trigger
 
 from omniplanner_ros.omniplanner_node import OmniPlannerRos
@@ -52,6 +84,27 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         # {robot -> objects} the plan being built must put down first; set by
         # world_state_for, consumed by finalize_plans for the same request.
         self._pending_release: dict = {}
+
+        # Plan validity: what the published plans still act on, the goal they
+        # were made for, scene changes waiting to be judged, and pick failures.
+        self._plan_lock = threading.Lock()
+        self._plan_deps: dict = {}
+        self._plan_robots: list = []
+        self._pause_pubs: dict = {}
+        self._planning_goal = ""
+        self._active_goal = ""
+        self._pending_changes: list = []
+        self._pending_version = 0
+        self._pick_failures: dict = {}
+        # Routes still ahead: the places each Follow passes, the plan each
+        # robot runs, how many of its actions are done, and the map version
+        # the route was last checked on.
+        self._route: dict = {}
+        self._plan_ids: dict = {}
+        self._actions_done: dict = {}
+        self._route_version = None
+        self._published_version = None
+        self._version_pub = None
 
         super().__init__()
 
@@ -74,6 +127,29 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         self.create_service(
             Trigger, "~/reset_mission_state", self._reset_mission_state_callback
         )
+
+        # Scene changes, as applied to the map. A plan they invalidate is
+        # replanned through the goal manager (~/replan_request).
+        self.declare_parameter("move_threshold_m", 0.5)
+        self.declare_parameter("change_settle_s", 1.0)
+        self.declare_parameter("max_pick_retries", 2)
+        self.declare_parameter(
+            "executor_pause_topic", "/{robot}/spot_executor_node/pause"
+        )
+        self._move_threshold_m = float(self.get_parameter("move_threshold_m").value)
+        self._change_settle_s = float(self.get_parameter("change_settle_s").value)
+        self._max_pick_retries = int(self.get_parameter("max_pick_retries").value)
+        self._executor_pause_topic = str(
+            self.get_parameter("executor_pause_topic").value
+        )
+        self._replan_pub = self.create_publisher(String, "~/replan_request", 10)
+        self.create_subscription(
+            SceneChangeMsg, "~/scene_changes", self._scene_changes_callback, 10
+        )
+        self._settle_timer = None
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self._version_pub = self.create_publisher(Int64, "~/map_version", latched)
+        self._publish_map_version()
         self.get_logger().info(
             "OmniPlannerRepairRos listening for persistent constraints on "
             "~/constraints and mission progress on /action_done"
@@ -97,6 +173,10 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             return self.dsg_last
 
     def _action_done_callback(self, msg: ActionDoneMsg) -> None:
+        with self._plan_lock:
+            if msg.plan_id and msg.plan_id == self._plan_ids.get(msg.robot_name):
+                done = self._actions_done.get(msg.robot_name, 0) + 1
+                self._actions_done[msg.robot_name] = done
         points = [(p.x, p.y) for p in msg.points]
         with self._world_lock:
             new = self.world_tracker.record(
@@ -111,6 +191,185 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             self.get_logger().info(
                 f"{msg.robot_name} {msg.action_type.lower()} done: {sorted(new)}"
             )
+        obj = (msg.object_id or "").lower()
+        if msg.action_type in ("PICK", "GAZE") and msg.success and obj:
+            with self._plan_lock:
+                self._plan_deps.pop(obj, None)  # done: a later move no longer matters
+            self._pick_failures.pop(obj, None)
+        elif msg.action_type == "PICK" and not msg.success and obj:
+            tries = self._pick_failures.get(obj, 0) + 1
+            self._pick_failures[obj] = tries
+            if tries <= self._max_pick_retries:
+                self._request_replan(
+                    f"pick of {obj} by {msg.robot_name} failed "
+                    f"(attempt {tries} of {self._max_pick_retries})"
+                )
+            else:
+                self.get_logger().error(
+                    f"pick of {obj} failed {tries} times; not replanning for it again"
+                )
+
+    # ------------- plan validity under scene changes -------------
+
+    def _scene_changes_callback(self, msg: SceneChangeMsg) -> None:
+        if msg.source.startswith("executor/"):
+            return  # our own pick or place: the plan already accounts for it
+        changes = [
+            {
+                "kind": c.kind,
+                "symbol": c.symbol,
+                "old": (c.old_position.x, c.old_position.y),
+                "new": (c.new_position.x, c.new_position.y),
+            }
+            for c in msg.changes
+        ]
+        with self._plan_lock:
+            self._pending_changes += changes
+            self._pending_version = max(self._pending_version, msg.map_version)
+            if self._settle_timer is None:
+                # A detector reports a burst; judge it once, after it settles.
+                self._settle_timer = self.create_timer(
+                    self._change_settle_s, self._judge_changes
+                )
+        self.get_logger().info(
+            f"{msg.source}: {len(changes)} scene change(s) at map_version "
+            f"{msg.map_version}; judging after {self._change_settle_s:.1f} s"
+        )
+
+    def _judge_changes(self) -> None:
+        with self._plan_lock:
+            self._settle_timer.cancel()
+            self.destroy_timer(self._settle_timer)
+            self._settle_timer = None
+            changes, self._pending_changes = self._pending_changes, []
+            version, self._pending_version = self._pending_version, 0
+            deps, goal = dict(self._plan_deps), self._active_goal
+            robots = list(self._plan_robots)
+        with self._world_lock:
+            state = self.world_tracker.snapshot(self._current_dsg())
+        affected = affecting_changes(
+            changes, deps, goal, state, move_threshold_m=self._move_threshold_m
+        )
+        if not affected:
+            self.get_logger().info(
+                f"scene change does not affect the plan: "
+                f"{sorted({c['symbol'] for c in changes})}"
+            )
+            return
+        reason = "scene changed: " + "; ".join(r for _, r in affected)
+        self._pause_robots(robots, reason)
+        self._wait_for_map_then_replan(version, reason)
+
+    def _pause_robots(self, robots, reason: str) -> None:
+        """Stop the robots in the plan now, before waiting for the map."""
+        for robot in robots:
+            self._pause_pub_for(robot).publish(Bool(data=True))
+        if robots:
+            self.get_logger().warning(f"pausing {', '.join(robots)}: {reason}")
+
+    def _pause_pub_for(self, robot: str):
+        # Made with the plan, not at pause time: a brand-new publisher's first
+        # message can go out before the executor is matched, and be lost.
+        pub = self._pause_pubs.get(robot)
+        if pub is None:
+            topic = self._executor_pause_topic.format(robot=robot)
+            pub = self.create_publisher(Bool, topic, 10)
+            self._pause_pubs[robot] = pub
+        return pub
+
+    def dsg_callback(self, msg):
+        super().dsg_callback(msg)
+        self._publish_map_version()
+        self._check_routes()
+
+    @staticmethod
+    def _mesh_places(dsg) -> dict:
+        """{symbol -> node id} of the places in a map."""
+        if dsg is None:
+            return {}
+        layer = dsg.get_layer(spark_dsg.DsgLayers.MESH_PLACES)
+        return {n.id.str(True).lower(): n.id.value for n in layer.nodes}
+
+    def _place_finder(self, dsg):
+        """place_at((x, y)): the place a plan's path point is on, or None."""
+        if dsg is None:
+            return lambda xy: None
+        layer = dsg.get_layer(spark_dsg.DsgLayers.MESH_PLACES)
+        nodes = list(layer.nodes)
+        if not nodes:
+            return lambda xy: None
+        xy = np.array([n.attributes.position[:2] for n in nodes])
+        names = [n.id.str(True).lower() for n in nodes]
+
+        def place_at(p):
+            d = np.hypot(xy[:, 0] - p[0], xy[:, 1] - p[1])
+            i = int(np.argmin(d))
+            return names[i] if d[i] < 0.05 else None
+
+        return place_at
+
+    def _check_routes(self) -> None:
+        """Replan if the new map cuts the route still ahead of a robot."""
+        version = self._map_version()
+        with self._plan_lock:
+            if not self._route or version == self._route_version:
+                return
+            self._route_version = version
+            route, done = dict(self._route), dict(self._actions_done)
+            robots = list(self._plan_robots)
+        dsg = self._current_dsg()
+        places = self._mesh_places(dsg)
+        broken = broken_route(
+            route,
+            done,
+            has_place=lambda s: s in places,
+            connected=lambda a, b: dsg.has_edge(places[a], places[b]),
+        )
+        if not broken:
+            return
+        with self._plan_lock:
+            self._route = {}  # judged; the new plan brings its own route
+        reason = "map changed: " + "; ".join(why for _, why in broken)
+        self._pause_robots(robots, reason)
+        self._request_replan(reason)
+
+    def _publish_map_version(self) -> None:
+        if self._version_pub is None:  # a map before __init__ finished
+            return
+        version = self._map_version()
+        if version != self._published_version:
+            self._published_version = version
+            self._version_pub.publish(Int64(data=version))
+
+    def _map_version(self) -> int:
+        dsg = self._current_dsg()
+        try:
+            state = dsg.metadata.get().get(MAP_METADATA_KEY, {})
+            return int(state.get("map_version") or 0)
+        except Exception:
+            return 0
+
+    def _wait_for_map_then_replan(self, version, reason, waited=0.0):
+        """Replan only once the planner holds a map with the change in it."""
+        if self._map_version() >= version or waited >= 10.0:
+            if waited >= 10.0:
+                self.get_logger().warning(
+                    f"map_version {version} not received after 10 s; replanning anyway"
+                )
+            self._request_replan(reason)
+            return
+        timer = None
+
+        def again():
+            timer.cancel()
+            self.destroy_timer(timer)
+            self._wait_for_map_then_replan(version, reason, waited + 0.2)
+
+        timer = self.create_timer(0.2, again)
+
+    def _request_replan(self, reason: str) -> None:
+        self.get_logger().warning(f"plan invalidated: {reason}; requesting a replan")
+        self._replan_pub.publish(String(data=reason))
 
     def _reset_mission_state_callback(self, request, response):
         with self._world_lock:
@@ -132,6 +391,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             state = self.world_tracker.snapshot(dsg)
         planning, release = split_held(state, kept_objects(pddl_goal))
         self._pending_release = release
+        self._planning_goal = pddl_goal
         self.get_logger().info(
             f"Planning from mission state: {len(planning.visited)} visited, "
             f"{len(planning.inspected)} inspected, holding={planning.holding}"
@@ -140,6 +400,28 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         return planning
 
     def finalize_plans(self, plan_dict, robot_poses):
+        plan_dict = self._put_down_first(plan_dict, robot_poses)
+        # What these plans act on, for judging later scene changes.
+        with self._plan_lock:
+            self._plan_deps = plan_dependencies(plan_dict.values())
+            self._plan_robots = sorted(plan_dict)
+            self._active_goal = self._planning_goal
+            self._route = route_places(
+                plan_dict, self._place_finder(self._current_dsg())
+            )
+            self._plan_ids = {r: p.plan_id for r, p in plan_dict.items()}
+            self._actions_done = {}
+            self._route_version = self._map_version()
+        for robot in self._plan_robots:
+            self._pause_pub_for(robot)
+        watched = {
+            r: len({p for _, places in legs for p in places if p})
+            for r, legs in self._route.items()
+        }
+        self.get_logger().info(f"watching route places for map edits: {watched}")
+        return plan_dict
+
+    def _put_down_first(self, plan_dict, robot_poses):
         release, self._pending_release = self._pending_release, {}
         if not release:
             return plan_dict

@@ -93,6 +93,11 @@ class PlannerConfig(Config):
 
 
 class RobotPlanningAdaptor:
+    # The compiled plan's message type. One publisher per topic: a subclass that
+    # sent another type used to add a second publisher of a different type on the
+    # same topic, which zenoh tolerates and Fast DDS refuses (the node died).
+    PLAN_MSG = ActionSequenceMsg
+
     def __init__(self, config, node=None, tf_buffer=None, qos_profile=None):
         self.tf_buffer = tf_buffer
         self.name = config.robot_name
@@ -101,7 +106,7 @@ class RobotPlanningAdaptor:
         self.ros_logger = node.get_logger()
 
         self.plan_pub = node.create_publisher(
-            ActionSequenceMsg,
+            self.PLAN_MSG,
             f"/{self.name}/omniplanner_node/compiled_plan_out",
             qos_profile or 1,
         )
@@ -131,11 +136,12 @@ class RobotConfig(Config):
 
 
 class PhoenixPlanningAdaptor(RobotPlanningAdaptor):
+    PLAN_MSG = Path
+
     def __init__(self, config, **data):
+        # a Path plan is latest-only, as before (depth 1, whatever qos_profile says)
+        data["qos_profile"] = 1
         super().__init__(config, **data)
-        self.plan_pub = data["node"].create_publisher(
-            Path, f"/{self.name}/omniplanner_node/compiled_plan_out", 1
-        )
 
 
 @register_config("robot_adaptor", name="phoenix", constructor=PhoenixPlanningAdaptor)
@@ -393,6 +399,11 @@ class OmniPlannerRos(Node):
                     plans = full_planning_pipeline(
                         plan_request, self.dsg_last, self.feedback
                     )
+                compiled_plans = compile_plan(
+                    self.robot_adaptors, self.dsg_frame, plans
+                )
+                plan_dict = collect_plans(compiled_plans)
+                plan_dict = self.finalize_plans(plan_dict, robot_poses)
             except Exception as exc:
                 # An exception escaping a subscription callback tears down the
                 # rclpy executor and kills the node, so one unplannable goal
@@ -423,9 +434,6 @@ class OmniPlannerRos(Node):
                 done_planning()
                 return
 
-            compiled_plans = compile_plan(self.robot_adaptors, self.dsg_frame, plans)
-            plan_dict = collect_plans(compiled_plans)
-            plan_dict = self.finalize_plans(plan_dict, robot_poses)
             for robot_name, compiled_plan in plan_dict.items():
                 self.robot_adaptors[robot_name].publish_plan(to_msg(compiled_plan))
                 # TODO: combine markers into single array so that latching works

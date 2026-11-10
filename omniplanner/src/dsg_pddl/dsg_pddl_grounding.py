@@ -360,6 +360,9 @@ def add_symbol_positions(G, symbols):
             pddl_symbol_char = s.symbol[0]
             dsg_symbol_char = pddl_char_to_dsg_char(pddl_symbol_char)
             ns = spark_dsg.NodeSymbol(dsg_symbol_char, int(s.symbol[1:]))
+            if not G.has_node(ns):
+                # open-vocab regions use a lowercase r prefix
+                ns = spark_dsg.NodeSymbol(pddl_symbol_char, int(s.symbol[1:]))
             # A copy: the attribute array is a view into the graph's storage.
             position = np.array(G.get_node(ns).attributes.position[:2])
             if position is None:
