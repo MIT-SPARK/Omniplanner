@@ -1,155 +1,95 @@
 """The goal manager stops and tells the operator when the world breaks the plan."""
 
-import json
-from types import SimpleNamespace as NS
+import pytest
 
-from std_msgs.msg import Int64, String
+pytest.importorskip("robot_executor_msgs.msg")
 
-from omniplanner_msgs.msg import ConstrainedPddlGoalMsg
-from omniplanner_ros.goal_manager_node import GoalManager
+from goal_manager_harness import Harness  # noqa: E402
+from std_msgs.msg import String  # noqa: E402
 
-
-class _Fake(NS):
-    # the merged goal manager reads coverage through a property
-    _coverage = GoalManager._coverage
+GOAL = "(visited-object o20)"
 
 
-def _manager():
-    sent = {"pause": 0, "resume": 0, "stop": 0, "goals": [], "display": [], "alert": []}
-    gm = _Fake(
-        _plan_constraints=frozenset(),
-        _running_constraints=frozenset(),
-        _running_goal=None,
-        _pending_goal=None,
-        _replan_reason=None,
-        _plan_visited_pois=set(),
-        _plan_covered_pois=set(),
-        _plan_finish_times={},
-        _replan_horizon_s=0.0,
-        _cache_valid=False,
-        _plan_robots={"hilbert"},
-        _paused={"hilbert"},
-        _executor_cmd=lambda robot, verb: sent.__setitem__(verb, sent[verb] + 1),
-        _map_version=0,
-        _plan_map_version=0,
-        _pending_map_version=0,
-        _goal_pub=NS(publish=sent["goals"].append),
-        _display_pub=NS(publish=lambda m: sent["display"].append(m.data)),
-        _alert_pub=NS(publish=lambda m: sent["alert"].append(m.data)),
-        get_logger=lambda: NS(info=lambda *_: None, warning=lambda *_: None),
-    )
-    for name in (
-        "_planner_failed_cb",
-        "_replan_request_cb",
-        "_notify_operator",
-        "_pause_executor",
-        "_resume_executor",
-        "_stop_executor",
-        "_visited_pois_cb",
-        "_coverage_cb",
-        "_commit_plan",
-        "_late_pois",
-        "_map_version_cb",
-        "_commanded_goal_cb",
-        "_goal_already_satisfied",
-        "_forward_for_replanning",
-        "_log_skip",
-        "_log_replan",
-    ):
-        setattr(gm, name, getattr(GoalManager, name).__get__(gm))
-    goal = ConstrainedPddlGoalMsg()
-    goal.goal.robot_id, goal.goal.pddl_goal = "hilbert", "(visited-object o20)"
-    gm._pending_goal = gm._running_goal = goal
-    return gm, sent
+@pytest.fixture
+def h(tmp_path):
+    harness = Harness(tmp_path)
+    yield harness
+    harness.close()
 
 
-def test_failed_operator_goal_stops_and_says_why():
-    gm, sent = _manager()
-    gm._planner_failed_cb(
-        String(
-            data="multi_robot_pddl_constrained: Cannot satisfy the goal and "
-            "constraints: o20 cannot be reached"
-        )
-    )
-    assert sent["stop"] == 1 and sent["resume"] == 0
-    (text,) = sent["display"]
-    assert sent["alert"] == [text]
-    assert "(visited-object o20)" in text and "o20 cannot be reached" in text
-    assert "Stopped; waiting for a new goal" in text
+def _running(h):
+    """hilbert is driving a plan for GOAL."""
+    goal = h.send(GOAL, robot_id="hilbert")
+    h.plan(hilbert=("p1", 3, ["p4", "o20"]))
+    h.goals.clear()
+    h.sent.clear()
+    return goal
+
+
+def test_failed_operator_goal_stops_and_says_why(h):
+    _running(h)
+    h.send("(visited-object o21)", robot_id="hilbert")
+    h.failed("Cannot satisfy the goal and constraints: o21 cannot be reached")
+    assert ("hilbert", "stop") in h.sent and ("hilbert", "resume") not in h.sent
+    text = h.texts[-1]
+    assert "hilbert's goal '(visited-object o21)'" in text
+    assert "o21 cannot be reached" in text
+    assert "Stopped hilbert; waiting for a new goal" in text
     assert "multi_robot_pddl_constrained" not in text
 
 
-def test_failed_scene_change_replan_stops_and_tells_the_operator():
-    gm, sent = _manager()
-    gm._replan_request_cb(String(data="scene changed: o20 removed before the visit"))
-    gm._planner_failed_cb(
+def test_failed_scene_change_replan_stops_and_tells_the_operator(h):
+    _running(h)
+    h.node._replan_request_cb(
+        String(data="scene changed: o20 removed before the visit")
+    )
+    assert [g.goal.pddl_goal for g in h.goals] == [GOAL]
+    h.node._planner_failed_cb(
         String(data="grstaps_planner: Goal symbol(s) not in the DSG: o20")
     )
-    assert sent["stop"] == 1 and sent["resume"] == 0  # the old plan drives to o20
-    (text,) = sent["display"]
-    assert sent["alert"] == [text]
+    assert ("hilbert", "stop") in h.sent  # the old plan drives to o20
+    assert ("hilbert", "resume") not in h.sent
+    text = h.texts[-1]
     assert "o20 removed" in text and "not in the DSG: o20" in text
-    assert "hilbert stopped" in text and "grstaps_planner" not in text
+    assert "Stopped hilbert" in text and "grstaps_planner" not in text
 
 
-def test_a_scene_change_stops_the_robots_even_with_resume_on_failure():
-    gm, sent = _manager()
-    gm._resume_on_failure = True
-    gm._replan_request_cb(String(data="scene changed: o20 removed before the visit"))
-    gm._planner_failed_cb(String(data="p: no plan"))
-    assert sent["stop"] == 1 and sent["resume"] == 0
+def test_a_scene_change_stops_the_robots_even_with_resume_on_failure(tmp_path):
+    h = Harness(tmp_path, resume_on_plan_failure=True)
+    _running(h)
+    h.node._replan_request_cb(
+        String(data="scene changed: o20 removed before the visit")
+    )
+    h.failed("no plan")
+    assert ("hilbert", "stop") in h.sent and ("hilbert", "resume") not in h.sent
+    h.close()
 
 
-def test_a_replan_that_succeeded_is_not_held_against_a_later_failure():
-    gm, sent = _manager()
-    gm._replan_request_cb(String(data="scene changed: o4 moved"))
-    gm._visited_pois_cb(String(data=json.dumps(["o4"])))  # the new plan arrived
-    gm._planner_failed_cb(String(data="p: no plan"))
-    assert "Cannot repair" not in sent["display"][0]
+def test_a_replan_that_succeeded_is_not_held_against_a_later_failure(h):
+    _running(h)
+    h.node._replan_request_cb(String(data="scene changed: o4 moved"))
+    h.plan(hilbert=("p2", 3, ["o20"]))  # the new plan arrived
+    h.send("(visited-object o21)", robot_id="hilbert")
+    h.failed("no plan")
+    assert "Cannot repair" not in h.texts[-1]
 
 
-def _plan_running(gm, goal):
-    gm._commanded_goal_cb(goal)
-    gm._visited_pois_cb(String(data=json.dumps(["o20"])))  # its plan arrived
+def test_the_same_goal_is_not_replanned_on_the_same_map(h):
+    h.map_version(4)
+    _running(h)
+    h.send(GOAL, robot_id="hilbert")
+    assert h.goals == [] and h.sent == []  # in progress: the running plan goes on
+    assert "already in progress (hilbert)" in h.texts[-1]
 
 
-def test_the_same_goal_is_not_replanned_on_the_same_map():
-    gm, sent = _manager()
-    goal = gm._running_goal
-    gm._map_version_cb(Int64(data=4))
-    _plan_running(gm, goal)
-    gm._commanded_goal_cb(goal)
-    assert sent["goals"] == [goal]  # covered: the running plan goes on
-    assert sent["resume"] == 1
-
-
-def test_the_same_goal_is_replanned_once_the_map_changed():
-    gm, sent = _manager()
-    goal = gm._running_goal
-    gm._map_version_cb(Int64(data=4))
-    _plan_running(gm, goal)
-    gm._map_version_cb(Int64(data=5))  # e.g. "SGET: delete t444"
-    gm._commanded_goal_cb(goal)
-    assert sent["goals"] == [goal, goal]  # planned again, on the edited map
-    assert sent["resume"] == 0
-    # The new plan is on the edited map, so the next resend is covered again.
-    gm._visited_pois_cb(String(data=json.dumps(["o20"])))
-    gm._commanded_goal_cb(goal)
-    assert sent["goals"] == [goal, goal] and sent["resume"] == 1
-
-
-def test_fleet_coverage_alone_marks_the_plan_made_on_this_map():
-    """GRSTAPS-X may leave this robot out of the allocation: then only the fleet
-    coverage arrives, and it must still date the plan to the current map."""
-    gm, sent = _manager()
-    goal = gm._running_goal
-    gm._map_version_cb(Int64(data=4))
-    gm._commanded_goal_cb(goal)  # forwarded: no cached plan yet
-    gm._coverage_cb(String(data=json.dumps(["o20"])))  # only coverage arrives
-    assert gm._plan_map_version == 4 and gm._running_goal is goal
-    gm._commanded_goal_cb(goal)
-    assert sent["goals"] == [goal] and sent["resume"] == 1  # covered on this map
-    gm._map_version_cb(Int64(data=5))
-    gm._commanded_goal_cb(goal)
-    assert sent["goals"] == [goal, goal]  # the map changed: planned again
-
+def test_the_same_goal_is_replanned_once_the_map_changed(h):
+    h.map_version(4)
+    _running(h)
+    h.map_version(5)  # e.g. "SGET: delete t444"
+    h.send(GOAL, robot_id="hilbert")
+    assert len(h.goals) == 1  # planned again, on the edited map
+    assert any("planned on an older map" in m for m in h.logs)
+    # The new plan is on the edited map, so the next resend is in progress again.
+    h.plan(hilbert=("p2", 3, ["o20"]))
+    h.send(GOAL, robot_id="hilbert")
+    assert len(h.goals) == 1

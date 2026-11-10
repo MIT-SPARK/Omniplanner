@@ -1,4 +1,4 @@
-"""Goal manager: skip replanning when the current plan already satisfies a new goal.
+"""Goal manager: decide, per goal, what the planner still has to do.
 
 The node sits between the user (or upstream agent) and the omniplanner. It owns
 the "should we even replan?" decision so we can avoid restarting the executor
@@ -10,28 +10,50 @@ paths via roslaunch ``remap``::
   remap:
     - {from: ~/commanded_goal,    to: /<robot>/commanded_goal}
     - {from: ~/planner_goal,      to: /<robot>/omniplanner_node/multi_robot_pddl_constrained/pddl_goal}
-    - {from: ~/plan_visited_pois, to: /<robot>/omniplanner_node/plan_visited_pois_all}
     - {from: ~/plan_robots,       to: /<robot>/omniplanner_node/plan_robots}
     - {from: ~/map_version,       to: /<robot>/omniplanner_node/map_version}
 
-Executors are addressed directly, as ``/<name>/spot_executor_node/{pause,resume,stop}``
-for every robot in the running plan, so a base station needs no robot names.
+What each robot is doing is kept per robot, from the planner's and executors'
+own absolute topics: ``/<name>/omniplanner_node/compiled_plan_out`` (its action
+sequence: plan id and length), ``/<name>/omniplanner_node/plan_visited_pois``
+(the POIs its plan visits) and ``/action_done`` (each finished action). A robot
+that finishes moves what it visited into a set of achieved facts; one that
+fails or makes no progress (``progress_timeout_s``) gives its part of the goal
+back. A new goal is split into conjuncts, each done, in progress or new; only a
+goal with something new, or a lost robot, goes to the planner, and only a goal
+whose every conjunct is achieved is skipped. A goal that does not touch the
+running mission while robots are busy goes as an additional task, with a
+``busy-robots`` constraint naming the robots the planner should leave alone.
+The per-robot state is latched on ``~/robot_plan_states`` (JSON).
+
+Executors are addressed directly: a Spot as ``/<name>/spot_executor_node/{pause,
+resume,stop}``; a Husky (phoenix, which has no pause) is stopped with an empty
+Path on its ``compiled_plan_out``. The platform comes from the planner's robots
+config (``plugin_config_path``, the omniplanner_plugins.yaml the planner loads),
+else from the type of that topic. A base station needs no robot names; its own
+name (``base_station_name``, default the node's namespace) is the fleet, never a
+robot.
 
 The current implementation is specific to the multi-robot PDDL "visit POIs"
-domain. The decision is broken out into ``_goal_already_satisfied`` so it's
-clear what would need to change to support other domains in the future.
+domain. The decision is broken out into ``_decide`` so it's clear what would
+need to change to support other domains in the future.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Dict, Optional, Set, Tuple
+import time
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Set, Tuple
 
 import rclpy
+import yaml
 from dsg_pddl.pddl_utils import lisp_string_to_ast
-from omniplanner_msgs.msg import ConstrainedPddlGoalMsg, TaskScheduleMsg
+from nav_msgs.msg import Path
+from omniplanner_msgs.msg import ConstrainedPddlGoalMsg, ConstraintFact, TaskScheduleMsg
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile
+from robot_executor_msgs.msg import ActionDoneMsg, ActionSequenceMsg
 from std_msgs.msg import Bool, Int64, String
 
 # Goal-side predicates we treat as "must visit".
@@ -150,25 +172,237 @@ def extract_forbidden_pois(constraint_facts) -> Set[str]:
     return out
 
 
+def _ast_to_str(ast) -> str:
+    if isinstance(ast, str):
+        return ast
+    return "(" + " ".join(_ast_to_str(a) for a in ast) + ")"
+
+
+def goal_conjuncts(pddl_goal: str) -> List[str]:
+    """The goal's top-level conjuncts, each as PDDL text.
+
+    "(and a b)", "a b" and "(and (and a) b)" all give [a, b]. A goal that does
+    not parse is one conjunct, its own text: it is then never judged done.
+    """
+    text = (pddl_goal or "").strip()
+    if not text:
+        return []
+    ast = _parse_goal(f"(and {text})")
+    if ast is None:
+        return [text]
+    out: List[str] = []
+
+    def flatten(node):
+        if not isinstance(node, str) and node and node[0] == "and":
+            for sub in node[1:]:
+                flatten(sub)
+        else:
+            out.append(_ast_to_str(node))
+
+    flatten(ast)
+    return list(dict.fromkeys(out))
+
+
+def _named_robots(ast) -> Set[str]:
+    """Robots a goal names explicitly: the first argument of a ``*-by``
+    predicate (visited-object-by, object-placed-by, explored-region-by...)."""
+    if isinstance(ast, str) or not ast:
+        return set()
+    if ast[0] in ("and", "or", "not"):
+        return set().union(*(_named_robots(sub) for sub in ast[1:]))
+    if str(ast[0]).endswith("-by") and len(ast) >= 2:
+        return {str(ast[1]).lower()}
+    return set()
+
+
+def _conjunct_symbols(ast) -> Set[str]:
+    """Every object, place or region a conjunct is about, robots left out."""
+    if isinstance(ast, str) or not ast:
+        return set()
+    if ast[0] in ("and", "or", "not"):
+        return set().union(*(_conjunct_symbols(sub) for sub in ast[1:]))
+    args = [str(a).lower() for a in ast[1:] if isinstance(a, str)]
+    if str(ast[0]).endswith("-by"):
+        args = args[1:]
+    return set(args)
+
+
+def _positive(ast) -> bool:
+    """No negation anywhere: only such a conjunct can be confirmed done from a
+    set of achieved facts (a missing visit is not evidence of no visit)."""
+    if isinstance(ast, str) or not ast:
+        return True
+    if ast[0] == "not":
+        return False
+    return all(_positive(sub) for sub in ast[1:])
+
+
+def load_robot_platforms(path: str) -> Dict[str, str]:
+    """{robot_name -> platform} from the planner's omniplanner_plugins.yaml.
+
+    The same ``robots`` list ``OmniplannerNodeConfig`` loads; read as plain YAML
+    so this node needs none of the planner plugins. ``type: phoenix`` (or
+    ``robot_type: husky``) is a Husky; anything else is named by its robot_type.
+    """
+    with open(path) as f:
+        config = yaml.safe_load(f) or {}
+    out = {}
+    for robot in config.get("robots") or []:
+        name = str(robot.get("robot_name") or "")
+        if name:
+            out[name] = platform_of(robot.get("type"), robot.get("robot_type"))
+    return out
+
+
+HUSKY = "husky"
+
+
+def platform_of(adaptor_type, robot_type) -> str:
+    robot_type = str(robot_type or "").strip().lower()
+    if adaptor_type == "phoenix" or robot_type == HUSKY:
+        return HUSKY
+    return robot_type or "spot"
+
+
+def plan_topic(robot: str) -> str:
+    return f"/{robot}/omniplanner_node/compiled_plan_out"
+
+
+def _names(robots) -> str:
+    robots = sorted(robots)
+    if len(robots) <= 2:
+        return " and ".join(robots)
+    return ", ".join(robots[:-1]) + " and " + robots[-1]
+
+
+# A robot's plan, as far as this node can tell.
+RUNNING, DONE, FAILED, PREEMPTED, STALLED = (
+    "running",
+    "done",
+    "failed",
+    "preempted",
+    "stalled",
+)
+# What a conjunct of a new goal is.
+CONJ_DONE, CONJ_IN_PROGRESS, CONJ_NEW = "done", "in progress", "new"
+# What a new goal does.
+SKIP, WAIT, REPAIR, ADDITIONAL = "skip", "wait", "repair", "additional task"
+# The constraint an additional task carries: robots the planner leaves alone.
+BUSY_ROBOTS = "busy-robots"
+
+
+@dataclass
+class RobotPlan:
+    """One robot's share of the running plan."""
+
+    plan_id: str = ""
+    # Actions in its sequence, or None when no sequence is seen: a Husky gets a
+    # Path and reports no actions, so its progress is unknown.
+    total: Optional[int] = None
+    done: int = 0
+    status: str = RUNNING
+    # When it last made progress (got the plan, or finished an action).
+    since: float = 0.0
+    # (map epoch, map_version) the plan was made on.
+    stamp: Tuple[int, int] = (0, 0)
+    coverage: Set[str] = field(default_factory=set)
+    # Objects its successful actions reached (GAZE, PICK, PLACE).
+    reached: Set[str] = field(default_factory=set)
+    # The goal conjuncts its plan was given.
+    conjuncts: List[str] = field(default_factory=list)
+
+    @property
+    def tracked(self) -> bool:
+        return self.total is not None
+
+    @property
+    def remaining(self) -> Set[str]:
+        return self.coverage - self.reached
+
+    def describe(self) -> str:
+        if not self.tracked:
+            return f"{self.status}, progress unknown (no action reports)"
+        return (
+            f"{self.status}, {self.done} of {self.total} actions, "
+            f"plan {self.plan_id[:8] or '?'}"
+        )
+
+
+@dataclass
+class Decision:
+    action: str
+    reason: str
+    # conjunct -> (class, detail)
+    classes: Dict[str, Tuple[str, str]] = field(default_factory=dict)
+    # Conjuncts the planner is sent.
+    todo: List[str] = field(default_factory=list)
+    busy: List[str] = field(default_factory=list)
+
+
+@dataclass
+class Pending:
+    """A goal sent to the planner whose plan has not come back yet."""
+
+    kind: str
+    msg: object
+    conjuncts: List[str]
+    stamp: Tuple[int, int]
+    at: float
+
+
 class GoalManager(Node):
-    """Pause executors, decide if replan is needed, then either resume or forward."""
+    """Decide what a goal still needs; pause, forward, or leave the robots be."""
 
-    def __init__(self):
-        super().__init__("goal_manager")
+    def __init__(self, **kwargs):
+        super().__init__("goal_manager", **kwargs)
 
-        # POIs visited by the active plan, across all its robots. Updated by
-        # the omniplanner's `on_plan_compiled` hook.
-        self._plan_visited_pois: Set[str] = set()
+        # The base station's own name: a goal addressed to it is for the fleet,
+        # and it is never paused, stopped or listed as a robot.
+        self.declare_parameter("base_station_name", "")
+        self._base_station = str(
+            self.get_parameter("base_station_name").value or ""
+        ) or self.get_namespace().strip("/")
+        # Which executor each robot runs, from the planner's robots config.
+        self.declare_parameter("plugin_config_path", "")
+        self._platforms: Dict[str, str] = {}
+        config_path = str(self.get_parameter("plugin_config_path").value or "")
+        if config_path:
+            try:
+                self._platforms = load_robot_platforms(config_path)
+            except Exception as exc:
+                self.get_logger().error(f"Cannot read robots from {config_path}: {exc}")
+        if not self._platforms:
+            self.get_logger().warning(
+                "No robots config (plugin_config_path): each robot's platform is "
+                "read from its plan topic's type once the planner advertises it"
+            )
+        # The frame of the empty Path that stops a Husky.
+        self.declare_parameter("plan_frame", "map")
+        self._plan_frame = str(self.get_parameter("plan_frame").value or "map")
+
         # Robots the running plan gave actions to, and those of them paused
-        # for a goal that has not been settled yet.
+        # for a goal that has not been settled yet. A Husky cannot pause, but
+        # is held here so a failed goal still stops it.
         self._plan_robots: Set[str] = set()
         self._paused: Set[str] = set()
         self._executor_pubs: Dict[Tuple[str, str], object] = {}
-        # What the planner says the whole plan covers, when it reports that.
-        self._plan_covered_pois: Set[str] = set()
-        self._cache_valid: bool = False
-        # Constraints the cached plan was grounded under, so we can tell when a
-        # new goal changes them and a skip would be unsound.
+        # Per robot: what its plan covers and how far it got.
+        self._robots: Dict[str, RobotPlan] = {}
+        # The latest sequence each robot was sent: (plan_id, actions, when).
+        self._sequences: Dict[str, Tuple[str, int, float]] = {}
+        self._robot_subs: Dict[str, list] = {}
+        # What the fleet has achieved, from finished plans and action reports:
+        # {poi -> (map epoch, map_version, robot)} for visits, which outlive
+        # map edits; {conjunct -> stamp} for facts the planner said hold, which
+        # are only trusted on the map they were judged on.
+        self._achieved: Dict[str, Tuple[int, int, str]] = {}
+        self._facts: Dict[str, Tuple[int, int]] = {}
+        # The running mission's conjuncts, and those of them a lost robot
+        # (failed, stalled) gave back: they need a new plan.
+        self._mission: List[str] = []
+        self._lost: Set[str] = set()
+        # Constraints the pending (or, once it arrives, the running) plan is
+        # grounded under, so we can tell when a new goal changes them.
         self._plan_constraints: frozenset = frozenset()
         # Constraints of the plan that is actually running, kept while a
         # forwarded goal is being planned: if that planning fails, the running
@@ -176,9 +410,10 @@ class GoalManager(Node):
         self._running_constraints: frozenset = frozenset()
         # The goal of the plan being executed, and of the one being planned.
         # A replan request (the scene changed under the plan) re-sends the
-        # running goal; a goal the planner rejected never becomes it.
+        # running mission; a goal the planner rejected never becomes it.
         self._running_goal = None
         self._pending_goal = None
+        self._pending: Optional[Pending] = None
         # What a goal that cannot be planned does to the running plan: by
         # default the robots stop and wait for the next goal. The operator
         # asked for something else, so carrying on with the superseded plan
@@ -191,49 +426,46 @@ class GoalManager(Node):
         # failed), while that replan is outstanding. If it cannot be planned,
         # the running plan is no longer valid either: stop and tell the operator.
         self._replan_reason = None
-        # The planner's map version now, and the one the cached plan was made
-        # on. Once the map has changed (a scene change, an SGET edit) the plan
-        # may use what is gone, so a goal it covers is planned again.
+        # The planner's map. A version that goes down, or a new epoch, is a
+        # reload: nothing known about the old map holds, so the epoch counter
+        # moves on and every (epoch, version) stamp made before is stale.
         self._map_version: int = 0
-        self._plan_map_version: int = 0
-        self._pending_map_version: int = 0
+        self._map_epoch: int = 0
+        self._map_epoch_id: str = ""
+        self._running_epoch: int = 0
 
         # When the active plan's schedule is known, {poi -> finish time in
         # seconds}. Empty for planners that publish no schedule, which leaves
         # the horizon check inert rather than wrong.
         self._plan_finish_times: dict = {}
 
-        # A goal already covered by the cached plan is normally skipped. If the
-        # plan does not get to those POIs until after this many seconds, replan
-        # anyway and see whether a fresh plan does better -- coverage alone says
-        # nothing about *when*. Zero disables the check, which is the default so
-        # behaviour is unchanged unless a deployment opts in.
+        # A goal already covered by the running plan is normally left to it. If
+        # the plan does not get to those POIs until after this many seconds,
+        # replan anyway and see whether a fresh plan does better -- coverage
+        # alone says nothing about *when*. Zero disables the check, which is the
+        # default so behaviour is unchanged unless a deployment opts in.
         self.declare_parameter("replan_horizon_s", 0.0)
         self._replan_horizon_s = float(
             self.get_parameter("replan_horizon_s").value or 0.0
+        )
+        # A robot that got a plan and reports no action for this long is
+        # stalled: the operator is told, once per plan. Zero disables it.
+        self.declare_parameter("progress_timeout_s", 60.0)
+        self._progress_timeout_s = float(
+            self.get_parameter("progress_timeout_s").value or 0.0
         )
 
         # Subscriptions (private; remap at launch time).
         self._goal_sub = self.create_subscription(
             ConstrainedPddlGoalMsg, "~/commanded_goal", self._commanded_goal_cb, 10
         )
-        self._visited_sub = self.create_subscription(
-            String, "~/plan_visited_pois", self._visited_pois_cb, 10
-        )
         self._failed_sub = self.create_subscription(
             String, "~/planner_failed", self._planner_failed_cb, 10
         )
+        latched = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
         # Latched, so a restarted goal manager still knows who is executing.
         self._robots_sub = self.create_subscription(
-            String,
-            "~/plan_robots",
-            self._plan_robots_cb,
-            QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL),
-        )
-        # Fleet-wide coverage, from a planner that reports it.
-        # A planner may report only part of a multi-robot plan on plan_visited_pois.
-        self._coverage_sub = self.create_subscription(
-            String, "~/plan_coverage", self._coverage_cb, 10
+            String, "~/plan_robots", self._plan_robots_cb, latched
         )
         self._schedule_sub = self.create_subscription(
             TaskScheduleMsg, "~/plan_schedule", self._schedule_cb, 10
@@ -241,9 +473,16 @@ class GoalManager(Node):
         self._replan_sub = self.create_subscription(
             String, "~/replan_request", self._replan_request_cb, 10
         )
-        latched = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
         self._map_version_sub = self.create_subscription(
             Int64, "~/map_version", self._map_version_cb, latched
+        )
+        # Optional: an id written at every map load. A change is a reload even
+        # if the version did not go down.
+        self._map_epoch_sub = self.create_subscription(
+            String, "~/map_epoch", self._map_epoch_cb, latched
+        )
+        self._action_done_sub = self.create_subscription(
+            ActionDoneMsg, "/action_done", self._action_done_cb, 50
         )
 
         # Publishers (private; remap at launch time).
@@ -254,31 +493,239 @@ class GoalManager(Node):
         # (~/operator_display) and published for any other UI (~/operator_alert).
         self._display_pub = self.create_publisher(String, "~/operator_display", 10)
         self._alert_pub = self.create_publisher(String, "~/operator_alert", 10)
+        self._states_pub = self.create_publisher(String, "~/robot_plan_states", latched)
 
-        self.get_logger().info("goal_manager up; awaiting goals on ~/commanded_goal")
+        for robot in sorted(self._platforms):
+            self._track_robot(robot)
+        period = 5.0
+        if self._progress_timeout_s > 0:
+            period = min(period, max(self._progress_timeout_s / 4, 0.5))
+        self._watchdog = self.create_timer(period, self._watchdog_cb)
 
-    # ------------- callbacks -------------
+        self.get_logger().info(
+            f"goal_manager up on {self._base_station or 'this host'}; "
+            "awaiting goals on ~/commanded_goal"
+        )
 
-    def _visited_pois_cb(self, msg: String) -> None:
-        try:
-            pois = set(json.loads(msg.data))
-        except Exception as exc:
-            self.get_logger().warning(f"Bad plan_visited_pois payload: {exc}")
+    # ------------- robots: platform and topics -------------
+
+    def _now(self) -> float:
+        return time.monotonic()
+
+    @property
+    def _stamp(self) -> Tuple[int, int]:
+        return (self._map_epoch, self._map_version)
+
+    def _platform(self, robot: str) -> str:
+        platform = self._platforms.get(robot)
+        if platform is None:
+            self._discover_robots()
+            platform = self._platforms.get(robot, "spot")
+        return platform
+
+    def _discover_robots(self) -> None:
+        """Robots the planner advertises a plan topic for, and their platform
+        (a Husky's plan is a Path), for robots the config does not name."""
+        for name, types in self.get_topic_names_and_types():
+            parts = name.strip("/").split("/")
+            if parts[1:] != ["omniplanner_node", "compiled_plan_out"]:
+                continue
+            robot = parts[0]
+            if robot in self._platforms or robot == self._base_station:
+                continue
+            self._platforms[robot] = HUSKY if "nav_msgs/msg/Path" in types else "spot"
+            self._track_robot(robot)
+
+    def _track_robot(self, robot: str) -> None:
+        """Follow one robot's plans: its action sequence (not a Husky's Path,
+        which is another type) and the POIs its plan visits."""
+        if robot in self._robot_subs or robot == self._base_station:
             return
-        self._plan_visited_pois = pois
-        self._commit_plan()
-        self.get_logger().info(f"Updated plan cache: {len(pois)} visited POIs")
+        subs = [
+            self.create_subscription(
+                String,
+                f"/{robot}/omniplanner_node/plan_visited_pois",
+                lambda msg, r=robot: self._robot_coverage_cb(r, msg),
+                10,
+            )
+        ]
+        if self._platform(robot) != HUSKY:
+            subs.append(
+                self.create_subscription(
+                    ActionSequenceMsg,
+                    plan_topic(robot),
+                    lambda msg, r=robot: self._sequence_cb(r, msg),
+                    10,
+                )
+            )
+        self._robot_subs[robot] = subs
 
-    def _commit_plan(self) -> None:
-        """A plan for the pending goal arrived (this robot's POIs, or the fleet's
-        coverage -- GRSTAPS-X may leave this robot out of the allocation, so only
-        the coverage comes): it is now the running plan, made on the map version
-        the goal was forwarded at."""
-        self._cache_valid = True
-        self._running_constraints = self._plan_constraints
-        self._running_goal = self._pending_goal
-        self._plan_map_version = self._pending_map_version
-        self._replan_reason = None  # the replan succeeded
+    # ------------- callbacks: per-robot plan state -------------
+
+    def _sequence_cb(self, robot: str, msg: ActionSequenceMsg) -> None:
+        """A robot was sent a new action sequence: it replaces its plan."""
+        now = self._now()
+        self._sequences[robot] = (msg.plan_id, len(msg.actions), now)
+        old = self._robots.get(robot)
+        if old is not None and old.status == RUNNING and old.plan_id != msg.plan_id:
+            self._log_robot(robot, old, f"preempted by plan {msg.plan_id[:8]}")
+        pending = self._pending
+        entry = RobotPlan(
+            plan_id=msg.plan_id,
+            total=len(msg.actions),
+            since=now,
+            stamp=pending.stamp if pending else self._stamp,
+        )
+        self._robots[robot] = entry
+        if entry.total == 0:
+            self._finish(robot, "its new plan is empty")
+            return
+        self._log_robot(robot, entry, "got a new plan")
+
+    def _robot_coverage_cb(self, robot: str, msg: String) -> None:
+        """The POIs a robot's new plan visits, and so which conjuncts it has."""
+        try:
+            pois = {str(p).lower() for p in json.loads(msg.data)}
+        except Exception as exc:
+            self.get_logger().warning(f"Bad plan_visited_pois for {robot}: {exc}")
+            return
+        entry = self._robots.get(robot)
+        if entry is None:
+            if not pois:
+                return
+            # No sequence seen (a Husky, or a robot not yet followed).
+            entry = RobotPlan(since=self._now(), stamp=self._stamp)
+            self._robots[robot] = entry
+        entry.coverage = pois
+        goal = self._pending.conjuncts if self._pending else self._mission
+        entry.conjuncts = [
+            c for c in goal if _eval_goal_against_visited(_parse_goal(c.lower()), pois)
+        ]
+        self._log_robot(robot, entry, f"plan covers {sorted(pois)}")
+
+    def _action_done_cb(self, msg: ActionDoneMsg) -> None:
+        entry = self._robots.get(msg.robot_name)
+        if entry is None or not entry.tracked or msg.plan_id != entry.plan_id:
+            return
+        if entry.status not in (RUNNING, STALLED):
+            return
+        entry.done += 1
+        entry.since = self._now()
+        obj = (msg.object_id or "").lower()
+        action = msg.action_type.upper()
+        if entry.status == STALLED:
+            entry.status = RUNNING
+            self._log_robot(msg.robot_name, entry, "is making progress again")
+        if not msg.success:
+            self._lose(msg.robot_name, FAILED, f"{action} {obj}".strip() + " failed")
+            return
+        if obj and action in ("GAZE", "PICK", "PLACE"):
+            entry.reached.add(obj)
+        if entry.done >= entry.total:
+            self._finish(msg.robot_name, "finished every action")
+        else:
+            self._publish_states()
+
+    def _finish(self, robot: str, why: str) -> None:
+        """Every action of the robot's plan succeeded: what it covered is
+        achieved, and its entry is cleared. Other robots' entries stay."""
+        entry = self._robots.pop(robot)
+        entry.status = DONE
+        for poi in entry.coverage | entry.reached:
+            self._achieved[poi] = (*self._stamp, robot)
+        self._plan_robots.discard(robot)
+        done = [c for c in entry.conjuncts if self._is_done(c)]
+        self._log_robot(
+            robot,
+            entry,
+            f"{why}: achieved {sorted(entry.coverage | entry.reached)}"
+            + (f"; done {done}" if done else ""),
+        )
+
+    def _lose(self, robot: str, status: str, why: str) -> None:
+        """The robot will not finish its plan: only its conjuncts are open again."""
+        entry = self._robots.get(robot)
+        if entry is None:
+            return
+        entry.status = status
+        for poi in entry.reached:
+            self._achieved[poi] = (*self._stamp, robot)
+        open_again = [c for c in entry.conjuncts if not self._is_done(c)]
+        self._lost |= set(open_again)
+        if status != STALLED:
+            # A stalled robot keeps its entry, out of the running set, in case
+            # it reports progress after all.
+            self._robots.pop(robot)
+            self._plan_robots.discard(robot)
+        self._log_robot(robot, entry, why)
+        if status in (FAILED, STALLED):
+            part = (
+                f" Its part of the goal, {' '.join(open_again)}, is open again and "
+                "is replanned with the next goal or plan repair."
+                if open_again
+                else ""
+            )
+            self._notify_operator(f"{robot}: {why}.{part}")
+
+    def _watchdog_cb(self) -> None:
+        if not self._platforms or len(self._robot_subs) < len(self._platforms):
+            self._discover_robots()
+        self._check_progress()
+
+    def _check_progress(self) -> None:
+        """A robot that got a plan and reports no action for it (P11)."""
+        if self._progress_timeout_s <= 0:
+            return
+        now = self._now()
+        for robot, entry in sorted(self._robots.items()):
+            if (
+                entry.status != RUNNING
+                or not entry.tracked
+                or entry.done
+                or robot in self._paused
+            ):
+                continue
+            idle = now - entry.since
+            if idle >= self._progress_timeout_s:
+                self._lose(
+                    robot,
+                    STALLED,
+                    f"no progress on plan {entry.plan_id[:8]} for {idle:.0f} s "
+                    f"(0 of {entry.total} actions done). Check the robot, or "
+                    "re-send the goal",
+                )
+
+    def _log_robot(self, robot: str, entry: RobotPlan, what: str) -> None:
+        self.get_logger().info(f"{robot} {what} [{entry.describe()}]")
+        self._publish_states()
+
+    def _robot_states(self) -> dict:
+        return {
+            robot: {
+                "status": e.status,
+                "plan_id": e.plan_id,
+                "done": e.done,
+                "total": e.total,
+                "conjuncts": e.conjuncts,
+                "remaining": sorted(e.remaining),
+            }
+            for robot, e in sorted(self._robots.items())
+        }
+
+    def _publish_states(self) -> None:
+        self._states_pub.publish(String(data=json.dumps(self._robot_states())))
+
+    def _running(self) -> Dict[str, RobotPlan]:
+        """Robots known to be executing their plan (progress is reported)."""
+        return {
+            r: e for r, e in self._robots.items() if e.status == RUNNING and e.tracked
+        }
+
+    def robots_mid_task(self) -> Dict[str, RobotPlan]:
+        """Robots in the middle of a plan: those a new plan would replace."""
+        return {r: e for r, e in self._robots.items() if e.status == RUNNING}
+
+    # ------------- callbacks: plans and the map -------------
 
     def _plan_robots_cb(self, msg: String) -> None:
         """A new plan went out: it now decides who is executing.
@@ -286,21 +733,108 @@ class GoalManager(Node):
         A robot in it was preempted by its new action sequence, which also
         clears its pause. A paused robot left out of it would otherwise sit
         paused for ever, or, once resumed, carry on with the superseded plan,
-        so it is stopped.
+        so it is stopped. A robot that was not paused (busy with its part while
+        an additional task was planned) carries on.
         """
         try:
-            robots = set(json.loads(msg.data))
+            listed = set(json.loads(msg.data))
         except Exception as exc:
             self.get_logger().warning(f"Bad plan_robots payload: {exc}")
             return
-        for robot in sorted(self._paused - robots):
+        robots = listed - {self._base_station}
+        if robots != listed:
+            self.get_logger().warning(
+                f"plan_robots lists {self._base_station}, the base station; "
+                "it is not a robot and is left out"
+            )
+        left_out = self._paused - robots
+        for robot in sorted(left_out):
             self.get_logger().info(f"{robot} is not in the new plan; stopping it")
             self._executor_cmd(robot, "stop")
+            self._drop(robot, "stopped: not in the new plan")
         self._paused = set()
-        self._plan_robots = robots
+        self._plan_robots = robots | (self._plan_robots - left_out)
+        pending = self._pending
+        for robot in sorted(robots):
+            self._track_robot(robot)
+            self._warm_executor(robot)
+            if self._platform(robot) == HUSKY:
+                entry = RobotPlan(
+                    since=self._now(), stamp=pending.stamp if pending else self._stamp
+                )
+                self._robots[robot] = entry
+                self._log_robot(robot, entry, "got a new plan (a Path)")
+        if pending is not None:
+            self._commit_plan(pending, robots)
+
+    def _commit_plan(self, pending: Pending, robots: Set[str]) -> None:
+        """The plan for the pending goal arrived: it is now the running one."""
+        self._pending = None
+        self._replan_reason = None  # the replan succeeded
+        if pending.kind == ADDITIONAL:
+            self._mission += [c for c in pending.conjuncts if c not in self._mission]
+        else:
+            self._mission = list(pending.conjuncts)
+            self._lost = set()
+            self._running_goal = pending.msg
+            self._running_constraints = self._plan_constraints
+            self._running_epoch = pending.stamp[0]
+        # Every robot was sent an empty sequence: the goal already holds (P8).
+        fresh = [self._sequences.get(r) for r in robots]
+        if (
+            robots
+            and all(s is not None and s[2] >= pending.at for s in fresh)
+            and all(s[1] == 0 for s in fresh)
+        ):
+            self._goal_holds(pending.conjuncts)
+            self._notify_operator(
+                f"{self._describe(pending.msg)} already holds: the plan has "
+                "nothing to do."
+            )
+
+    def _goal_holds(self, conjuncts) -> None:
+        """The planner says these hold on the current map."""
+        for c in conjuncts:
+            self._facts[c.lower()] = self._stamp
+        self._lost -= set(conjuncts)
+
+    def _drop(self, robot: str, why: str) -> None:
+        entry = self._robots.pop(robot, None)
+        if entry is not None:
+            entry.status = PREEMPTED
+            self._log_robot(robot, entry, why)
 
     def _map_version_cb(self, msg: Int64) -> None:
-        self._map_version = int(msg.data)
+        version = int(msg.data)
+        if version < self._map_version:
+            # The version only goes up on one map, so this is a reload: the same
+            # number may come back on a different map.
+            self._map_reloaded(
+                f"map_version went down, {self._map_version} -> {version}"
+            )
+        self._map_version = version
+
+    def _map_epoch_cb(self, msg: String) -> None:
+        if self._map_epoch_id and msg.data != self._map_epoch_id:
+            self._map_reloaded(f"map epoch {self._map_epoch_id} -> {msg.data}")
+        self._map_epoch_id = msg.data
+
+    def _map_reloaded(self, why: str) -> None:
+        """Nothing known about the old map holds: forget every plan's coverage
+        and every achieved fact. The mission stays the operator's."""
+        self._map_epoch += 1
+        robots = sorted(self._robots)
+        self._robots.clear()
+        self._achieved.clear()
+        self._facts.clear()
+        self._lost = set()
+        self._plan_finish_times = {}
+        self._publish_states()
+        self._notify_operator(
+            f"The map was reloaded ({why}). Forgetting what was done and what "
+            f"{_names(robots) or 'the robots'} were doing; the next goal is "
+            "planned from the new map."
+        )
 
     def _planner_failed_cb(self, msg: String) -> None:
         """The forwarded goal produced no plan.
@@ -313,84 +847,108 @@ class GoalManager(Node):
         goal, so the running plan is no longer what they want. With
         resume_on_plan_failure they carry on with the current plan instead,
         but only if it was made under the same constraints -- if the failed
-        goal changed them (e.g. "avoid o14"), the current plan may break them.
+        goal changed them (e.g. "avoid o14"), the current plan may break them
+        -- and on the same map: after a reload the old plan is never resumed.
+
+        A planner that finds the goal already satisfied says so here: the
+        operator is told, and the same goal is not planned again on this map.
         """
         why = msg.data.split(": ", 1)[-1]  # drop the plugin name
+        holds = "already satisfied" in why.lower()
         goal = self._pending_goal
-        target = f"'{goal.goal.pddl_goal}'" if goal else "the goal"
+        pending, self._pending = self._pending, None
+        target = self._describe(goal)
+        if holds and pending is not None:
+            self._goal_holds(pending.conjuncts)
+        elif holds and goal is not None:
+            self._goal_holds(goal_conjuncts(goal.goal.pddl_goal))
         same_constraints = goal is None or (
             constraint_signature(goal.constraints) == self._running_constraints
         )
         self._plan_constraints = self._running_constraints
+        if pending is not None and pending.kind == ADDITIONAL:
+            # Nobody was paused for it: the running plans go on.
+            lead = (
+                f"{target} already holds; nothing to do"
+                if holds
+                else f"Could not plan the additional task {target} ({why})"
+            )
+            self._notify_operator(f"{lead}. The running plans continue.")
+            return
         if self._replan_reason is not None:
+            reason, self._replan_reason = self._replan_reason, None
+            stopped = self._stop_summary(*self._stop_executor())
+            if holds:
+                self._notify_operator(
+                    f"Replanned after {reason}: {target} already holds, nothing "
+                    f"is left to do. {stopped}."
+                )
+                return
             # The world changed under the plan and nothing fits the goal any
             # more. Resuming would drive the robots on to what is no longer
             # there, so they stop whatever resume_on_plan_failure says.
-            robots = ", ".join(sorted(self._paused)) or "The robots"
-            self._stop_executor()
             self._notify_operator(
-                f"Cannot repair the plan: {self._replan_reason}. "
+                f"Cannot repair the plan: {reason}. "
                 f"No plan achieves {target} ({why}). "
-                f"{robots} stopped. Please give a new instruction."
+                f"{stopped}. Please give a new instruction."
             )
-            self._replan_reason = None
             return
-        if same_constraints and getattr(self, "_resume_on_failure", False):
+        lead = (
+            f"{target} already holds; nothing to do"
+            if holds
+            else f"Could not plan {target} ({why})"
+        )
+        same_map = getattr(self, "_running_epoch", 0) == getattr(self, "_map_epoch", 0)
+        if same_constraints and same_map and getattr(self, "_resume_on_failure", False):
             self._resume_executor()
-            self._notify_operator(
-                f"Could not plan {target} ({why}). Continuing the current plan."
-            )
+            self._notify_operator(f"{lead}. Continuing the current plan.")
             return
-        self._stop_executor()
-        if same_constraints:
+        stopped = self._stop_summary(*self._stop_executor())
+        if not same_constraints:
             self._notify_operator(
-                f"Could not plan {target} ({why}). Stopped; waiting for a new goal."
+                f"{lead}. {stopped}: the current plan was made without these "
+                "constraints. Waiting for a new goal."
+            )
+        elif not same_map and getattr(self, "_resume_on_failure", False):
+            self._notify_operator(
+                f"{lead}. {stopped}: the map was reloaded since the current plan "
+                "was made. Waiting for a new goal."
             )
         else:
-            self._notify_operator(
-                f"Could not plan {target} ({why}). Stopped: the current plan "
-                "was made without these constraints. Waiting for a new goal."
-            )
+            self._notify_operator(f"{lead}. {stopped}; waiting for a new goal.")
 
     def _replan_request_cb(self, msg: String) -> None:
         """The plan no longer fits the world (e.g. the scene changed): replan.
 
-        Re-sends the goal the running plan was made for. The planner plans
-        from the current map and mission state, so only what is left is
-        planned, around the change.
+        Re-sends what is left of the running mission, as a repair: the planner
+        may give any robot a new plan. It plans from the current map and
+        mission state, so only what is left is planned, around the change.
         """
         goal = self._running_goal or self._pending_goal
         if goal is None:
             self.get_logger().info(f"replan requested ({msg.data}), but no goal yet")
             return
+        mission = self._mission or goal_conjuncts(goal.goal.pddl_goal)
+        todo = [c for c in mission if not self._is_done(c)]
+        if not todo:
+            self.get_logger().info(
+                f"replan requested ({msg.data}), but every conjunct of the "
+                f"mission is achieved: {mission}"
+            )
+            return
         self._pause_executor()
         self._replan_reason = msg.data
-        self._pending_map_version = self._map_version
-        self._goal_pub.publish(goal)
+        out = self._goal_msg(goal, todo, [])
+        self._pending = Pending(REPAIR, out, todo, self._stamp, self._now())
+        self._goal_pub.publish(out)
         self.get_logger().info(
-            f"replanning: {msg.data}. goal={goal.goal.pddl_goal!r}; forwarded to planner"
+            f"replanning: {msg.data}. goal={out.goal.pddl_goal!r}; forwarded to planner"
         )
 
     def _notify_operator(self, text: str) -> None:
         self.get_logger().warning(f"operator: {text}")
         self._display_pub.publish(String(data=text))
         self._alert_pub.publish(String(data=text))
-
-    def _coverage_cb(self, msg: String) -> None:
-        """Every POI the active plan visits, whichever robot visits it."""
-        try:
-            pois = set(json.loads(msg.data))
-        except Exception as exc:
-            self.get_logger().warning(f"Bad plan_coverage payload: {exc}")
-            return
-        self._plan_covered_pois = pois
-        self._commit_plan()
-        self.get_logger().info(f"Updated fleet coverage: {len(pois)} POIs")
-
-    @property
-    def _coverage(self) -> Set[str]:
-        """This robot's POIs plus whatever the fleet plan covers elsewhere."""
-        return self._plan_visited_pois | self._plan_covered_pois
 
     def _schedule_cb(self, msg: TaskScheduleMsg) -> None:
         """Record when the active plan reaches each POI.
@@ -413,7 +971,7 @@ class GoalManager(Node):
         )
 
     def _late_pois(self, pddl_goal: str) -> Set[str]:
-        """POIs this goal needs that the cached plan reaches after the horizon."""
+        """POIs this goal needs that the running plan reaches after the horizon."""
         if self._replan_horizon_s <= 0 or not self._plan_finish_times:
             return set()
         wanted = _goal_symbols(pddl_goal)
@@ -424,109 +982,303 @@ class GoalManager(Node):
         }
 
     def _commanded_goal_cb(self, msg: ConstrainedPddlGoalMsg) -> None:
-        # Flow: pause → decide → resume_or_forward → log.
+        # Flow: decide → (pause →) forward, or leave the robots be → log.
         self._replan_reason = None  # a new instruction supersedes it
-        self._pause_executor()
-        if self._goal_already_satisfied(msg):
-            self._resume_executor()
-            self._log_skip(msg)
+        decision = self._decide(msg)
+        self._log_decision(msg, decision)
+        if decision.action in (SKIP, WAIT):
+            self._notify_operator(f"{self._describe(msg)}: {decision.reason}.")
             return
-        self._forward_for_replanning(msg)
-        self._log_replan(msg)
+        self._forward_for_replanning(msg, decision)
 
     # ------------- decision (domain-specific) -------------
 
-    def _goal_already_satisfied(self, msg: ConstrainedPddlGoalMsg) -> bool:
-        """Return True iff the cached plan already satisfies the new goal.
+    def _visited(self) -> Set[str]:
+        return {p for p, a in self._achieved.items() if a[0] == self._map_epoch}
 
-        Specific to multi-robot PDDL with visited-{place,object,poi} predicates
-        and forbidden-poi constraints. Returns False whenever we don't have a
-        cached plan yet (forces an initial planning call) or whenever the goal
-        evaluator returns ``None`` (unknown -- replan to be safe).
+    def _done_detail(self, conjunct: str) -> str:
+        c = conjunct.lower()
+        if self._facts.get(c) == self._stamp:
+            return "the planner found it holds"
+        who = [
+            f"{p} by {a[2]} at map_version {a[1]}"
+            for p, a in sorted(self._achieved.items())
+            if p in _conjunct_symbols(_parse_goal(c))
+        ]
+        return "visited " + ", ".join(who) if who else "achieved"
+
+    def _is_done(self, conjunct: str) -> bool:
+        """An achieved fact: a visit the fleet made (on any version of this
+        map), or a fact the planner said holds on this very map."""
+        c = conjunct.lower()
+        if self._facts.get(c) == self._stamp:
+            return True
+        ast = _parse_goal(c)
+        if ast is None or not _positive(ast):
+            return False
+        visited = self._visited()
+        return _eval_goal_against_visited(ast, visited) is True
+
+    def _classify(self, conjuncts, forbidden: Set[str]) -> Dict[str, Tuple[str, str]]:
+        """Each conjunct: done (achieved), in progress (a running robot's
+        remaining plan reaches it, on the current map), or new."""
+        running = {r: e for r, e in self._running().items() if e.stamp == self._stamp}
+        stale = sorted(r for r, e in self._running().items() if e.stamp != self._stamp)
+        visited = self._visited()
+        out = {}
+        for c in conjuncts:
+            ast = _parse_goal(c.lower())
+            if self._is_done(c):
+                out[c] = (CONJ_DONE, self._done_detail(c))
+                continue
+            if ast is None or not _positive(ast):
+                out[c] = (CONJ_NEW, "not judged from plans")
+                continue
+            by = sorted(
+                r
+                for r, e in running.items()
+                if _eval_goal_against_visited(ast, visited | e.remaining) is True
+            )
+            if not by:
+                why = "no running plan reaches it"
+                if stale:
+                    why += f" ({_names(stale)} planned on an older map)"
+                out[c] = (CONJ_NEW, why)
+            elif set().union(*(running[r].remaining for r in by)) & forbidden:
+                out[c] = (CONJ_NEW, "the plan reaching it visits a forbidden POI")
+            elif late := self._late_pois(c):
+                out[c] = (
+                    CONJ_NEW,
+                    f"{sorted(late)} not reached until after "
+                    f"{self._replan_horizon_s:.0f}s",
+                )
+            else:
+                out[c] = (CONJ_IN_PROGRESS, _names(by))
+        return out
+
+    def _decide(self, msg: ConstrainedPddlGoalMsg) -> Decision:
+        """What the planner still has to do for this goal.
+
+        Skip only when every conjunct is an achieved fact -- never because a
+        plan merely covers it. Leave the robots be when the rest is in progress.
+        Otherwise forward, as a repair (the default: the planner may interrupt
+        any robot) or, when the goal does not touch the running mission while
+        robots are busy, as an additional task for the free robots.
         """
-        if not self._cache_valid:
-            return False
-        if self._map_version != self._plan_map_version:
-            return False  # the map changed since the plan was made
-        if constraint_signature(msg.constraints) != self._plan_constraints:
-            return False  # constraints changed; the cached plan predates them
+        conjuncts = goal_conjuncts(msg.goal.pddl_goal)
         forbidden = extract_forbidden_pois(msg.constraints)
-        if forbidden & self._coverage:
-            return False  # current plan would step on a now-forbidden POI
-        if goal_satisfied_by(msg.goal.pddl_goal, self._coverage) is not True:
-            return False
-        # Covered, but possibly not soon enough to be worth keeping.
-        return not self._late_pois(msg.goal.pddl_goal)
+        classes = self._classify(conjuncts, forbidden)
+        todo = [c for c in conjuncts if classes[c][0] != CONJ_DONE]
+        new = [c for c in todo if classes[c][0] == CONJ_NEW]
+        lost = sorted(self._lost & set(todo))
+        running = self._running()
+        changed = bool(running) and (
+            constraint_signature(msg.constraints) != self._running_constraints
+        )
+        d = Decision(REPAIR, "", classes, todo)
+        if conjuncts and not todo:
+            d.action = SKIP
+            d.reason = "already done, nothing to plan: " + "; ".join(
+                f"{c} ({classes[c][1]})" for c in conjuncts
+            )
+            return d
+        if todo and not new and not lost and not changed:
+            in_progress = sorted({classes[c][1] for c in todo})
+            d.action = WAIT
+            d.reason = f"already in progress ({', '.join(in_progress)}); not replanning"
+            return d
+        mission_open = [c for c in self._mission if not self._is_done(c)]
+        mission_symbols = set().union(
+            *(_conjunct_symbols(_parse_goal(c.lower())) for c in mission_open)
+        )
+        goal_symbols = set().union(
+            *(_conjunct_symbols(_parse_goal(c.lower())) for c in todo)
+        )
+        if lost:
+            d.reason = f"{' '.join(lost)} lost its robot"
+        elif changed:
+            d.reason = "the constraints changed"
+        elif not running:
+            d.reason = "no robot is busy"
+        elif self._paused or self._pending is not None:
+            d.reason = "a goal is still being planned"
+        elif not mission_open:
+            d.reason = "cannot tell what the running robots are doing"
+        elif msg.goal.robot_id in running:
+            # Addressed to a busy robot: it is that robot's new instruction.
+            d.reason = f"it is addressed to {msg.goal.robot_id}, which is busy"
+        elif goal_symbols & mission_symbols or set(todo) & set(mission_open):
+            d.reason = (
+                "it revises the running mission (shares "
+                f"{sorted(goal_symbols & mission_symbols)})"
+            )
+        else:
+            named = set().union(*(_named_robots(_parse_goal(c.lower())) for c in todo))
+            d.action = ADDITIONAL
+            d.busy = sorted(set(running) - named - {self._base_station})
+            d.reason = "it does not touch the running mission; busy robots: " + (
+                ", ".join(d.busy) or "none"
+            )
+        return d
 
     # ------------- side effects -------------
 
-    def _executor_cmd(self, robot: str, verb: str) -> None:
-        pub = self._executor_pubs.get((robot, verb))
+    def _warm_executor(self, robot: str) -> None:
+        """Create a robot's executor publishers ahead of need, so they are
+        matched by the time a pause or stop is sent."""
+        verbs = (
+            ("stop",) if self._platform(robot) == HUSKY else ("pause", "resume", "stop")
+        )
+        for verb in verbs:
+            self._executor_pub(robot, verb)
+
+    def _executor_pub(self, robot: str, verb: str):
+        husky = self._platform(robot) == HUSKY
+        key = (robot, "path" if husky else verb)
+        pub = self._executor_pubs.get(key)
         if pub is None:
-            pub = self.create_publisher(Bool, f"/{robot}/spot_executor_node/{verb}", 10)
-            self._executor_pubs[(robot, verb)] = pub
-        pub.publish(Bool(data=True))
+            if husky:
+                pub = self.create_publisher(Path, plan_topic(robot), 1)
+            else:
+                pub = self.create_publisher(
+                    Bool, f"/{robot}/spot_executor_node/{verb}", 10
+                )
+            self._executor_pubs[key] = pub
+        return pub
+
+    def _executor_cmd(self, robot: str, verb: str) -> bool:
+        """Pause, resume or stop one robot. True if it was reached: something
+        listens on its topic. A Husky's phoenix executor has no pause; it is
+        stopped by an empty Path, which replaces the one it is driving."""
+        if robot == self._base_station:
+            return False
+        if self._platform(robot) == HUSKY:
+            if verb != "stop":
+                return False
+            pub = self._executor_pub(robot, verb)
+            path = Path()
+            path.header.frame_id = self._plan_frame
+            path.header.stamp = self.get_clock().now().to_msg()
+            pub.publish(path)
+        else:
+            pub = self._executor_pub(robot, verb)
+            pub.publish(Bool(data=True))
+        return pub.get_subscription_count() > 0
 
     def _pause_executor(self) -> None:
         """Pause every robot of the running plan; an idle one ignores it."""
-        for robot in sorted(self._plan_robots):
-            self._executor_cmd(robot, "pause")
-        self._paused |= self._plan_robots
+        robots = sorted(self._plan_robots - {self._base_station})
+        huskies = [r for r in robots if self._platform(r) == HUSKY]
+        unreached = [
+            r for r in robots if r not in huskies and not self._executor_cmd(r, "pause")
+        ]
+        if huskies:
+            self.get_logger().warning(
+                f"Pause is not supported on a Husky: {_names(huskies)} keep driving "
+                "until the new plan replaces their path"
+            )
+        if unreached:
+            self.get_logger().warning(f"Could not reach {_names(unreached)} to pause")
+        self._paused |= set(robots)
 
     def _resume_executor(self) -> None:
+        now = self._now()
         for robot in sorted(self._paused):
-            self._executor_cmd(robot, "resume")
+            if self._platform(robot) != HUSKY:
+                self._executor_cmd(robot, "resume")
+            if robot in self._robots:
+                self._robots[robot].since = now  # paused time is not a stall
         self._paused = set()
 
-    def _stop_executor(self) -> None:
+    def _stop_executor(self):
+        """Stop every paused robot. Returns (stopped, unreached)."""
+        stopped, unreached = [], []
         for robot in sorted(self._paused):
-            self._executor_cmd(robot, "stop")
+            (stopped if self._executor_cmd(robot, "stop") else unreached).append(robot)
+            self._drop(robot, "stopped")
         self._paused = set()
-        self._cache_valid = False  # nothing is running any more
+        return stopped, unreached
 
-    def _forward_for_replanning(self, msg: ConstrainedPddlGoalMsg) -> None:
+    @staticmethod
+    def _stop_summary(stopped, unreached) -> str:
+        """Names only the robots a stop reached; never claims the others."""
+        parts = []
+        if stopped:
+            parts.append(f"Stopped {_names(stopped)}")
+        if unreached:
+            parts.append(
+                f"could not reach {_names(unreached)} to stop "
+                "(still driving the old plan, unless stopped by hand)"
+            )
+        text = "; ".join(parts) or "No robot was running"
+        return text[0].upper() + text[1:]
+
+    def _goal_msg(self, msg, todo, busy) -> ConstrainedPddlGoalMsg:
+        """The goal as sent: only what is not done, plus the busy robots."""
+        if todo == goal_conjuncts(msg.goal.pddl_goal) and not busy:
+            return msg
+        out = ConstrainedPddlGoalMsg()
+        out.goal.robot_id = msg.goal.robot_id
+        out.goal.pddl_goal = todo[0] if len(todo) == 1 else f"(and {' '.join(todo)})"
+        out.constraints = list(msg.constraints)
+        if busy:
+            out.constraints.append(ConstraintFact(predicate=BUSY_ROBOTS, symbols=busy))
+        return out
+
+    def _forward_for_replanning(self, msg: ConstrainedPddlGoalMsg, d: Decision) -> None:
+        if d.action == REPAIR:
+            mid = self.robots_mid_task()
+            if mid:
+                # P14: whose work the new plan may take over.
+                self.get_logger().info(
+                    "the new goal is a repair: the planner may replace the plans of "
+                    + "; ".join(
+                        f"{r} ({e.describe()}; {' '.join(e.conjuncts) or 'no conjuncts'})"
+                        for r, e in sorted(mid.items())
+                    )
+                )
+            self._pause_executor()
+        out = self._goal_msg(msg, d.todo, d.busy)
         # Record what the incoming plan will be grounded under, so the next goal
         # can tell whether the constraints have since changed.
         self._plan_constraints = constraint_signature(msg.constraints)
         self._pending_goal = msg
         # The planner plans on this map or a newer one, so a plan never looks
         # newer than it is.
-        self._pending_map_version = self._map_version
-        self._goal_pub.publish(msg)
+        self._pending = Pending(d.action, out, list(d.todo), self._stamp, self._now())
+        self._goal_pub.publish(out)
 
     # ------------- logging -------------
 
-    def _log_skip(self, msg: ConstrainedPddlGoalMsg) -> None:
-        self.get_logger().info(
-            f"cached plan satisfies goal; resuming without replan. "
-            f"goal={msg.goal.pddl_goal!r} cached={sorted(self._coverage)}"
-        )
+    def _describe(self, goal) -> str:
+        """How the operator is told about a goal. One addressed to the base
+        station is the fleet's: the base station is not a robot."""
+        if goal is None:
+            return "the goal"
+        owner = goal.goal.robot_id
+        if not owner or owner == self._base_station:
+            return f"the fleet goal '{goal.goal.pddl_goal}'"
+        return f"{owner}'s goal '{goal.goal.pddl_goal}'"
 
-    def _log_replan(self, msg: ConstrainedPddlGoalMsg) -> None:
-        forbidden = extract_forbidden_pois(msg.constraints)
-        sat = goal_satisfied_by(msg.goal.pddl_goal, self._coverage)
-        if not self._cache_valid:
-            reason = "no cached plan yet"
-        elif self._map_version != self._plan_map_version:
-            reason = (
-                f"map changed since the plan was made (map_version "
-                f"{self._plan_map_version} -> {self._map_version})"
-            )
-        elif forbidden & self._coverage:
-            reason = f"plan visits forbidden POIs {forbidden & self._coverage}"
-        elif sat is False:
-            reason = "cached plan violates new goal"
-        elif late := self._late_pois(msg.goal.pddl_goal):
-            reason = (
-                f"covered, but {sorted(late)} not reached until after "
-                f"{self._replan_horizon_s:.0f}s"
-            )
-        else:
-            reason = "goal satisfaction unknown for cached plan"
+    def _log_decision(self, msg: ConstrainedPddlGoalMsg, d: Decision) -> None:
+        classes = "; ".join(
+            f"{c} = {cls}" + (f" ({detail})" if detail else "")
+            for c, (cls, detail) in d.classes.items()
+        )
+        robots = "; ".join(
+            f"{r}: {e.describe()}" for r, e in sorted(self._robots.items())
+        )
+        verb = {
+            SKIP: "skipping",
+            WAIT: "not replanning",
+            REPAIR: "replanning (repair)",
+            ADDITIONAL: "planning an additional task",
+        }[d.action]
         self.get_logger().info(
-            f"replanning: {reason}. goal={msg.goal.pddl_goal!r} "
-            f"forbidden={forbidden} cached={sorted(self._coverage)}; "
-            f"forwarded to planner"
+            f"{verb}: {d.reason}. {self._describe(msg)} "
+            f"[{classes or 'no conjuncts'}] robots [{robots or 'none'}] "
+            f"map {self._stamp}"
+            + ("; forwarded to planner" if d.action in (REPAIR, ADDITIONAL) else "")
         )
 
 
