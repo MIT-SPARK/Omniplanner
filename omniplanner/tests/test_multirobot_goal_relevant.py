@@ -249,6 +249,39 @@ def test_same_missions_as_full_encoding(name):
     assert _travel(rel) <= _travel(full) * 1.05 + 1e-6
 
 
+# hamilton, beside o0, is a Husky here: no arm, so euclid has to do the handling
+HUSKY = WorldState(cannot_manipulate={"hamilton"})
+HANDS = ("inspect", "pick-object", "place-object")
+
+
+@pytest.mark.parametrize("scope", ["goal_relevant", "full"])
+def test_a_husky_never_inspects_picks_or_places(scope):
+    plan = _plan(
+        grid_dsg(),
+        f"(object-in-place o0 {place(9, 0)})",
+        scope=scope,
+        world_state=HUSKY,
+    )
+    assert {a[1] for a in plan.symbolic_actions if a[0] in HANDS} == {"euclid"}
+
+
+@pytest.mark.parametrize("scope", ["goal_relevant", "full"])
+def test_a_goal_naming_a_husky_to_handle_an_object_is_refused(scope):
+    with pytest.raises(ValueError, match="hamilton cannot inspect, pick or place"):
+        _grounded(
+            grid_dsg(), "(inspected-by hamilton o2)", scope=scope, world_state=HUSKY
+        )
+
+
+@pytest.mark.parametrize("scope", ["goal_relevant", "full"])
+def test_the_named_robot_places_the_object(scope):
+    # hamilton starts beside o0, but the goal pins the placing to euclid
+    plan = _plan(grid_dsg(), f"(object-placed-by euclid o0 {place(9, 0)})", scope=scope)
+    handling = [a for a in plan.symbolic_actions if a[0] in HANDS[1:]]
+    assert [a[1] for a in handling] == ["euclid", "euclid"]
+    assert handling[-1][3] == place(9, 0)
+
+
 # ---------------------------------------------------------------------------
 # constraints
 # ---------------------------------------------------------------------------

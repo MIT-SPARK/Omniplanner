@@ -547,6 +547,25 @@ def _manipulation_robots(goal_string: str) -> set:
     return set(re.findall(rf"\(\s*(?:{preds})\s+([a-z0-9_]+)", goal_string.lower()))
 
 
+def can_manipulate_facts(goal_string, robot_ids, world_state) -> List[tuple]:
+    """(can-manipulate r) for every robot with an arm and gaze.
+
+    Only those inspect, pick and place: a Husky's plan would silently drop
+    those actions (compile_phoenix_pddl_plan). A goal that names a robot
+    without an arm to do one of them is refused with the reason.
+    """
+    no_arm = {
+        str(r).lower() for r in getattr(world_state, "cannot_manipulate", None) or ()
+    }
+    asked = _manipulation_robots(goal_string) & no_arm
+    if asked:
+        raise ValueError(
+            f"{', '.join(sorted(asked))} cannot inspect, pick or place (no arm): "
+            "name a robot that can, or leave the robot out"
+        )
+    return [("can-manipulate", r) for r in robot_ids if r not in no_arm]
+
+
 def _unique_symbols(symbols):
     """One symbol per lowercase name. A room R0 and an open-vocab region r0
     both become r0 in PDDL, and a name declared twice breaks the problem."""
@@ -610,18 +629,9 @@ def generate_multirobot_region_pddl(
             PddlSymbol(rid, "robot", [], position=np.array(pose[:2]))
         )
 
-    # Only robots with an arm and gaze inspect, pick and place: a Husky's plan
-    # would silently drop those actions (compile_phoenix_pddl_plan).
-    no_arm = {
-        str(r).lower() for r in getattr(world_state, "cannot_manipulate", None) or ()
-    }
-    asked = _manipulation_robots(raw_pddl_goal_string) & no_arm
-    if asked:
-        raise ValueError(
-            f"{', '.join(sorted(asked))} cannot inspect, pick or place (no arm): "
-            "name a robot that can, or leave the robot out"
-        )
-    init_facts_tuples += [("can-manipulate", r) for r in robot_ids if r not in no_arm]
+    init_facts_tuples += can_manipulate_facts(
+        raw_pddl_goal_string, robot_ids, world_state
+    )
 
     # Every object starts suspicious, except those the mission already inspected.
     object_symbols = [s for s in symbols_of_interest if s.layer == "object"]
@@ -877,8 +887,7 @@ def generate_goal_relevant_multirobot_pddl(
     goal_pddl = simplify(parsed_goal)
     robot_ids = [rid for rid, pose in robot_states.items() if pose is not None]
 
-    all_symbols = extract_all_symbols(G)
-    normalize_symbols(all_symbols)
+    all_symbols = _unique_symbols(normalized(extract_all_symbols(G)))
     by_name = {s.symbol: s for s in all_symbols}
 
     planner, forbidden_symbols, forbidden_edges = constrained_places_planner(
@@ -1010,6 +1019,7 @@ def generate_goal_relevant_multirobot_pddl(
     init += [("object-in-place", o, p) for o, p in sorted(object_place.items())]
     init += [("place-in-region", p, r) for p, r in region_membership]
     init += [("at-poi", r, start_place[r]) for r in robot_ids]
+    init += can_manipulate_facts(raw_pddl_goal_string, robot_ids, world_state)
 
     symbols = list(selected.values())
     for rid in robot_ids:
