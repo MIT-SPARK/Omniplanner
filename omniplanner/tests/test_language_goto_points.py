@@ -39,3 +39,20 @@ def test_llm_goal_reassigned_to_addressed_robot():
     assert _assign_to_addressed_robot({"apollo": "g"}, named) == {"apollo": "g"}
     split = {"apollo": "a", "hamilton": "b"}
     assert _assign_to_addressed_robot(split, goal) == split
+
+
+@pytest.mark.parametrize(
+    "command, named",
+    [
+        ("apollo, inspect the sign", True),
+        ("Have APOLLO inspect the sign", True),
+        ("inspect the sign (apollo).", True),
+        ("inspect the apollo-11 poster", True),  # hyphen is a word boundary
+        ("inspect the apollonian sign", False),
+        ("inspect the sign near neoapollo", False),
+    ],
+)
+def test_named_robot_is_matched_as_whole_word(command, named):
+    goal = LanguageGoal(robot_id="euclid", command=command)
+    out = _assign_to_addressed_robot({"apollo": "g"}, goal)
+    assert out == ({"apollo": "g"} if named else {"euclid": "g"})

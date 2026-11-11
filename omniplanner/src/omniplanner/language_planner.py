@@ -1,5 +1,6 @@
 import ast
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,13 +29,18 @@ def _log_llm_usage(llm_interface) -> None:
         pass
 
 
+def _names_robot(command: str, robot: str) -> bool:
+    """True if ``command`` names ``robot`` as a whole word (case-insensitive)."""
+    return re.search(rf"\b{re.escape(robot.lower())}\b", command.lower()) is not None
+
+
 def _assign_to_addressed_robot(goal_dict, goal):
     """If the operator addressed one robot and the LLM gave the whole goal to a
     single *different* robot the command never mentions, give it back."""
     if not goal.robot_id or not isinstance(goal_dict, dict) or len(goal_dict) != 1:
         return goal_dict
     ((assigned, pddl_goal),) = goal_dict.items()
-    if assigned == goal.robot_id or assigned.lower() in goal.command.lower():
+    if assigned == goal.robot_id or _names_robot(goal.command, assigned):
         return goal_dict
     logger.warning(
         "LLM assigned the goal to %r but the instruction was issued to %r; reassigning",
