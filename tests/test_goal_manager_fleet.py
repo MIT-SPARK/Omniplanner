@@ -379,3 +379,25 @@ def test_a_robot_that_never_ran_its_plan_does_not_cover_its_targets(h):
     h.send("(and (visited-object o1) (visited-object o2))")
     (sent,) = h.goals
     assert sent.goal.pddl_goal == "(visited-object o1)"  # o2 stays done
+
+
+def test_a_spot_moving_through_one_long_follow_is_not_stalled(h):
+    """GRSTAPS-X sends one follow per task, so a far task is one action that
+    reports nothing for minutes. The planner's word that the Spot is moving
+    keeps it from being called stalled."""
+    h.send("(visited-object o1)")
+    h.plan(euclid=("pe", 1, ["o1"]))
+    progress = String(data='{"plan_id": "pe", "status": "progress"}')
+    for _ in range(4):
+        h.t += 40
+        h.node._path_status_cb("euclid", progress)
+        h.node._check_progress()
+    assert h.node._robots["euclid"].status == "running"
+    assert not any("no progress" in t for t in h.texts)
+    # Progress for an older plan does not count.
+    old = String(data='{"plan_id": "p0", "status": "progress"}')
+    h.t += 40
+    h.node._path_status_cb("euclid", old)
+    h.t += 30
+    h.node._check_progress()
+    assert any("no progress" in t for t in h.texts)

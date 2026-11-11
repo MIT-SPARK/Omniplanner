@@ -18,7 +18,8 @@ own absolute topics: ``/<name>/omniplanner_node/compiled_plan_out`` (its action
 sequence: plan id and length), ``/<name>/omniplanner_node/plan_visited_pois``
 (the POIs its plan visits) and ``/action_done`` (each finished action). A Husky
 reports no actions; the planner follows its pose along its Path and says on
-``/<name>/omniplanner_node/path_status`` when it has finished or stalled. A robot
+``/<name>/omniplanner_node/path_status`` when it has finished or stalled. A
+Spot moving is reported there as progress, so a long action is not a stall. A robot
 that finishes moves what it visited into a set of achieved facts; one that
 fails or makes no progress (``progress_timeout_s``) gives its part of the goal
 back. A new goal is split into conjuncts, each done, in progress or new; only a
@@ -560,16 +561,16 @@ class GoalManager(Node):
                 f"/{robot}/omniplanner_node/plan_visited_pois",
                 lambda msg, r=robot: self._robot_coverage_cb(r, msg),
                 10,
-            )
+            ),
+            self.create_subscription(
+                String,
+                f"/{robot}/omniplanner_node/path_status",
+                lambda msg, r=robot: self._path_status_cb(r, msg),
+                10,
+            ),
         ]
         if self._platform(robot) == HUSKY:
             subs += [
-                self.create_subscription(
-                    String,
-                    f"/{robot}/omniplanner_node/path_status",
-                    lambda msg, r=robot: self._path_status_cb(r, msg),
-                    10,
-                ),
                 self.create_subscription(
                     Path,
                     plan_topic(robot),
@@ -662,14 +663,24 @@ class GoalManager(Node):
             self._drop(robot, "was sent an empty Path: it is idle")
 
     def _path_status_cb(self, robot: str, msg: String) -> None:
-        """A Husky's progress along its Path, as the planner sees its pose."""
+        """A robot's progress, as the planner sees its pose: a Husky's along
+        its Path; a Spot's movement, which counts as progress during an action
+        (one long follow reports nothing until it ends)."""
         try:
-            status = json.loads(msg.data)["status"]
+            data = json.loads(msg.data)
+            status = data["status"]
         except Exception as exc:
             self.get_logger().warning(f"Bad path_status for {robot}: {exc}")
             return
         entry = self._robots.get(robot)
-        if entry is None or entry.tracked or entry.status not in (RUNNING, STALLED):
+        if entry is None or entry.status not in (RUNNING, STALLED):
+            return
+        if entry.tracked:
+            if status == "progress" and data.get("plan_id") == entry.plan_id:
+                entry.since = self._now()
+                if entry.status == STALLED:
+                    entry.status = RUNNING
+                    self._log_robot(robot, entry, "is making progress again")
             return
         if status == "stalled":
             self._lose(robot, STALLED, "has not moved along its path")

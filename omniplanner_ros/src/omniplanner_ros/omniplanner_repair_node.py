@@ -48,7 +48,8 @@ adds:
   poses, which also records the places it visited. That progress goes out on
   ``/<robot>/omniplanner_node/path_status`` (JSON: plan_id, status progress,
   done or stalled, reached, steps), so the goal manager knows when a Husky has
-  finished.
+  finished. A Spot moving goes out there too, as progress: one long follow
+  reports no action until it ends.
 * busy robots: a goal with a ``busy-robots`` constraint (see
   :data:`omniplanner.world_state.BUSY_ROBOTS`) adds work to the running
   mission. It is planned on free robots only; a busy robot, or one holding
@@ -811,7 +812,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 path = np.array(
                     [[p.pose.position.x, p.pose.position.y] for p in plan.poses]
                 )
-            if path is not None and robot not in self._path_status_pubs:
+            if robot not in self._path_status_pubs:
                 # Made with the plan: a brand-new publisher's first message
                 # can go out before the goal manager is matched, and be lost.
                 self._path_status_pubs[robot] = self.create_publisher(
@@ -842,7 +843,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         """Fold a pose in: movement, a Husky's waypoints, and the watchdog."""
         now = self._now_s()
         visited_points = []
-        advanced = False
+        advanced = moved = False
         with self._plan_lock:
             sent = self._dispatched.get(robot)
             if sent is None:
@@ -853,6 +854,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                     sent["pose"] = xy
                 elif np.hypot(*(xy - sent["pose"])) > self._progress_move_m:
                     sent["pose"], sent["last_progress"] = xy, now
+                    moved = True
                 path = sent["path"]
                 if path is not None and len(path):
                     ahead = np.hypot(*(path[sent["reached"] + 1 :] - xy).T)
@@ -890,6 +892,9 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         if sent["path"] is not None and (advanced or finished or stalled):
             status = "done" if finished else "stalled" if stalled else "progress"
             self._publish_path_status(robot, sent, status)
+        elif sent["path"] is None and moved:
+            # A Spot reports actions, but not during one: say it is moving.
+            self._publish_path_status(robot, sent, "progress")
         if stalled:
             text = (
                 f"{robot} has made no progress on plan {sent['plan_id']} for "

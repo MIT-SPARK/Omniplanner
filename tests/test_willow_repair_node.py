@@ -406,6 +406,21 @@ def test_moving_or_reporting_keeps_the_watchdog_quiet():
     assert node.f_pubs["~/progress_alert"].sent == []
 
 
+def test_a_moving_spot_is_reported_as_progress():
+    """One long follow reports no action until it ends: the goal manager hears
+    from here that the Spot is moving, so it does not call it stalled."""
+    node = _node(_map(), poses={"testbot_a": np.array([0.0, 0.0, 0.0, 0.0])})
+    node.finalize_plans({"testbot_a": _carry()}, node.f_poses)
+    node._progress_tick()  # first pose: nothing to compare with yet
+    node.f_poses["testbot_a"] = np.array([1.0, 0.0, 0.0, 0.0])
+    node._progress_tick()
+    node._progress_tick()  # not moved since: nothing new to say
+    sent = node.f_pubs["/testbot_a/omniplanner_node/path_status"].sent
+    assert [json.loads(m.data) for m in sent] == [
+        {"plan_id": "carry", "status": "progress", "reached": 0, "steps": 4}
+    ]
+
+
 # ---------- P13: holding the map has not heard of ----------
 
 

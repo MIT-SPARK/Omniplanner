@@ -150,6 +150,7 @@ def _node(map_version=99):
         _left_alone=set(),
         _running_plans={},
         _dispatched={},
+        _path_status_pubs={},
         robot_adaptors={},
         dsg_frame="map",
         get_clock=lambda: NS(now=lambda: NS(nanoseconds=0)),
