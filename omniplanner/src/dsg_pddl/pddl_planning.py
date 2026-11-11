@@ -1,7 +1,10 @@
+import glob
 import logging
+import math
 import os
 import subprocess
 import tempfile
+import time
 import uuid
 from datetime import datetime
 
@@ -10,10 +13,34 @@ from dsg_pddl.pddl_utils import lisp_string_to_ast
 
 logger = logging.getLogger(__name__)
 
-
 DEFAULT_FD_SEARCH = (
     "let(hff, ff(), let(hcea, cea(), lazy_greedy([hff, hcea], preferred=[hff, hcea])))"
 )
+
+# Anytime search for problems that ask for it (GroundedPddlProblem.anytime_search_s,
+# the small goal-relevant ones): the greedy plan above first, then weighted A*
+# with falling weights, each pass bounded by the best cost so far, until the
+# search space is exhausted or the budget runs out. The greedy plan alone ignores
+# cost: on 10-30 targets it drives 20-45% further than what this finds in 1-2 s.
+# (A cost-optimal A* would need an admissible heuristic that supports the
+# domains' derived predicates; LM-cut does not.)
+ANYTIME_FD_SEARCH = (
+    "let(hff, ff(), let(hcea, cea(), iterated(["
+    "lazy_greedy([hff, hcea], preferred=[hff, hcea]), "
+    "lazy_wastar([hff, hcea], preferred=[hff, hcea], w=5), "
+    "lazy_wastar([hff, hcea], preferred=[hff, hcea], w=3), "
+    "lazy_wastar([hff, hcea], preferred=[hff, hcea], w=2), "
+    "lazy_wastar([hff, hcea], preferred=[hff, hcea], w=1)"
+    "], repeat_last=true, continue_on_fail=true)))"
+)
+
+
+def _best_plan_file(plan_fn):
+    """The last (cheapest) plan an anytime search wrote: plan, or plan.1, plan.2, ..."""
+    numbered = sorted(glob.glob(plan_fn + ".*"), key=lambda f: int(f.rsplit(".", 1)[1]))
+    if numbered:
+        return numbered[-1]
+    return plan_fn if os.path.exists(plan_fn) else None
 
 
 # fast-downward exit codes (driver/returncodes.py).
@@ -66,6 +93,11 @@ def solve_pddl(problem: GroundedPddlProblem):
                                      Takes precedence over ADT4_FD_SEARCH when set.
         ADT4_FD_SEARCH             - raw value passed after `--search`.
         ADT4_FD_OVERALL_TIME_LIMIT - value passed via `--overall-time-limit`.
+        OMNIPLANNER_FD_TRANSLATE_TIME_LIMIT - optional translation limit.
+        OMNIPLANNER_FD_SEARCH_TIME_LIMIT - optional greedy-search limit.
+    Translation and greedy search are unlimited unless configured (0 or an
+    empty value disables either phase limit). Goal-relevant problems may use
+    a short anytime search first, then retry greedy if no plan was found.
     When unset, the historical lazy-greedy(ff + cea) search is used.
     """
     with tempfile.TemporaryDirectory() as tmpdirname:
@@ -103,24 +135,100 @@ def solve_pddl(problem: GroundedPddlProblem):
         fd_alias = os.getenv("ADT4_FD_ALIAS", "").strip()
         fd_search = os.getenv("ADT4_FD_SEARCH", "").strip()
         fd_time_limit = os.getenv("ADT4_FD_OVERALL_TIME_LIMIT", "").strip()
+        translate_time_limit = os.getenv(
+            "OMNIPLANNER_FD_TRANSLATE_TIME_LIMIT", ""
+        ).strip()
+        search_time_limit = os.getenv("OMNIPLANNER_FD_SEARCH_TIME_LIMIT", "").strip()
+        # an explicit alias / search from the environment wins over anytime search
+        anytime_s = getattr(problem, "anytime_search_s", 0.0) or 0.0
+        anytime = anytime_s > 0 and not fd_alias and not fd_search
 
-        command = ["fast-downward"]
-        command += ["--plan-file", plan_fn]
-        if fd_time_limit:
-            command += ["--overall-time-limit", fd_time_limit]
-        if fd_alias:
-            command += ["--alias", fd_alias]
-        command += [domain_fn]
-        command += [problem_fn]
-        if not fd_alias:
-            command += ["--search", fd_search or DEFAULT_FD_SEARCH]
+        def fd_command(search, search_time_limit, inputs=None):
+            """``inputs``: a translated task ([output.sas]) runs the search alone."""
+            command = ["fast-downward"]
+            if inputs is None and translate_time_limit not in (None, "", "0"):
+                command += ["--translate-time-limit", str(translate_time_limit)]
+            if search_time_limit not in (None, "", "0"):
+                command += ["--search-time-limit", str(search_time_limit)]
+            command += ["--plan-file", plan_fn]
+            if fd_time_limit:
+                command += ["--overall-time-limit", fd_time_limit]
+            if fd_alias:
+                command += ["--alias", fd_alias]
+            command += inputs or [domain_fn, problem_fn]
+            if not fd_alias:
+                command += ["--search", search]
+            return command
 
-        logger.warning(f"Calling: {command}")
-        return_code = subprocess.run(command)
-        logger.warning(f"Return code: {return_code}")
+        if anytime:
+            # fast-downward takes whole seconds ("1.0" is a usage error)
+            command = fd_command(ANYTIME_FD_SEARCH, max(1, math.ceil(anytime_s)))
+            # FD deletes output.sas after a run; keep it for the greedy retry below
+            command.insert(1, "--keep-sas-file")
+        else:
+            command = fd_command(fd_search or DEFAULT_FD_SEARCH, search_time_limit)
 
-        if os.path.exists(plan_fn):
-            with open(plan_fn, "r") as fo:
+        logger.info(f"Calling: {command}")
+        fd_start = time.perf_counter()
+        # Capture FD output instead of letting it stream to the terminal/log;
+        # surface it only on failure or at DEBUG.
+        #
+        # cwd=tmpdirname: Fast Downward's translate step writes its intermediate
+        # `output.sas` to the PROCESS CWD (a relative path -- see the FD driver's
+        # `--sas-file output.sas`), and the search step reads it back from there.
+        # Under `ros2 launch` the node's CWD is typically `/` (or another
+        # non-writable dir), so translate dies with
+        # `FileNotFoundError: 'output.sas'` (exit 30) and the whole solve -- and
+        # the omniplanner_node process -- crashes on an otherwise trivially
+        # solvable problem. Pin FD's CWD to the per-solve TemporaryDirectory we
+        # already own (domain/problem/plan live there too) so output.sas lands
+        # somewhere writable and isolated. Verified: identical domain+problem
+        # solves in ~0.13 s from a writable CWD but reproduces the exact
+        # FileNotFoundError from a non-writable one.
+        proc = subprocess.run(command, capture_output=True, text=True, cwd=tmpdirname)
+        fd_elapsed = time.perf_counter() - fd_start
+        logger.info(
+            f"fast-downward finished in {fd_elapsed:.3f}s (return code {proc.returncode})"
+        )
+        logger.debug("fast-downward stdout:\n%s", proc.stdout)
+        if proc.stderr:
+            logger.debug("fast-downward stderr:\n%s", proc.stderr)
+
+        # An anytime search that ran out of its budget before a first plan (or
+        # failed for a reason other than unsolvable/bad input/out of memory)
+        # gets the plain greedy search. A memory failure is terminal: another
+        # translation/search can exhaust the same machine again.
+        if (
+            anytime
+            and _best_plan_file(plan_fn) is None
+            and proc.returncode not in FD_UNSOLVABLE + FD_BAD_INPUT + FD_OUT_OF_MEMORY
+        ):
+            # the first run's translation (output.sas in the cwd) is reused: on
+            # big problems translating is most of the time (Penn, 98 goals: 12 s)
+            sas_fn = os.path.join(tmpdirname, "output.sas")
+            translated = "translate exit code: 0" in (proc.stdout or "")
+            inputs = [sas_fn] if translated and os.path.isfile(sas_fn) else None
+            logger.warning(
+                "Anytime search found no plan within %.1f s (return code %d); "
+                "retrying with the greedy search%s",
+                anytime_s,
+                proc.returncode,
+                " on the translated task" if inputs else "",
+            )
+            # the translator's part only: the failed search's lines would read as this run's
+            translate_out = (proc.stdout or "").split("translate exit code: 0", 1)[0]
+            proc = subprocess.run(
+                fd_command(DEFAULT_FD_SEARCH, search_time_limit, inputs),
+                capture_output=True,
+                text=True,
+                cwd=tmpdirname,
+            )
+            if inputs:  # the translator's stats (operators, facts) are in the first run
+                proc.stdout = translate_out + (proc.stdout or "")
+
+        best_plan_fn = _best_plan_file(plan_fn)
+        if best_plan_fn is not None:
+            with open(best_plan_fn, "r") as fo:
                 lines = fo.readlines()
             with open(debug_plan_fn, "w") as fo:
                 fo.writelines(lines)
@@ -130,9 +238,11 @@ def solve_pddl(problem: GroundedPddlProblem):
             logger.warning(
                 f"Planning failed. Please see {debug_fn} for the failed problem file."
             )
+            logger.warning("fast-downward stdout:\n%s", proc.stdout)
+            logger.warning("fast-downward stderr:\n%s", proc.stderr)
             with open(debug_fn, "w") as fo:
                 fo.write(problem.problem_str)
-            raise Exception(failure_reason(return_code.returncode, problem))
+            raise Exception(failure_reason(proc.returncode, problem))
 
     plan = [lisp_string_to_ast(line) for line in lines[:-1]]
     return plan

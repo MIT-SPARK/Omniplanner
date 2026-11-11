@@ -39,6 +39,8 @@ class LanguagePlannerRos:
             with open(str(path), "r") as fo:
                 # Currently, we have a fixed domain. In the future, could make adjustments based on goal message?
                 self.domain = PddlDomain(fo.read())
+        # See PddlConfig.scene_scope; controls scene-graph encoding size.
+        self.domain.scene_scope = config.scene_scope
 
         llm_config_fp = os.path.expandvars(config.llm_config)
         with open(llm_config_fp, "r") as file:
@@ -100,3 +102,6 @@ class LanguagePlannerConfig(sc.Config):
     domain_type: str = "Pddl"
     pddl_domain_name: str = "GotoObjectDomain"
     llm_config: str = ""
+    # "goal_relevant" (default): encode only goal-referenced symbols + containers
+    # + robot start, for fast planning. "full": encode the whole scene graph.
+    scene_scope: str = "goal_relevant"
