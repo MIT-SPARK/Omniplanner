@@ -361,3 +361,21 @@ def test_a_new_map_epoch_forgets_what_was_achieved(h):
     assert "o1" in h.node._visited()
     h.node._map_epoch_cb(String(data="e2"))  # the database was reloaded
     assert h.node._visited() == set() and h.node._robots == {}
+
+
+def test_a_robot_that_never_ran_its_plan_does_not_cover_its_targets(h):
+    """P17 at 16:24: euclid's plan was refused (the tablet held its lease) and
+    the next plan left it out. Its target is planned again, not taken as done
+    or in progress. hilbert keeps running, so this is not a new mission."""
+    h.send("(and (visited-object o1) (visited-object o2) (visited-object o3))")
+    h.plan(
+        euclid=("pe", 1, ["o1"]), hamilton=("ph", 1, ["o2"]), hilbert=("pi", 2, ["o3"])
+    )
+    h.node._pause_executor()
+    h.plan(hamilton=("ph2", 1, ["o2"]), hilbert=("pi2", 2, ["o3"]))
+    assert "euclid" not in h.node._robots  # left out: stopped and dropped
+    h.done("hamilton", "ph2")
+    h.goals.clear()
+    h.send("(and (visited-object o1) (visited-object o2))")
+    (sent,) = h.goals
+    assert sent.goal.pddl_goal == "(visited-object o1)"  # o2 stays done
