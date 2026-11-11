@@ -50,9 +50,9 @@ class LanguagePlannerRos:
             logger.info(f'Loading prompt from "{path}"')
             with open(str(path), "r") as file:
                 prompt = SimplePddlSceneGraphPrompt(**yaml.load(file))
-        # ADT4_LLM_MODEL overrides the configured model without editing the
+        # OMNIPLANNER_LLM_MODEL overrides the configured model without editing the
         # shared llm_config (e.g. a small model for testing).
-        model = os.environ.get("ADT4_LLM_MODEL") or self.llm_config["model"]
+        model = os.environ.get("OMNIPLANNER_LLM_MODEL") or self.llm_config["model"]
         logger.info(f"Language planner LLM model: {model}")
         config = OpenAIConfig(
             model=model,
