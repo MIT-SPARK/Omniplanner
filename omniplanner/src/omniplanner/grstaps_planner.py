@@ -1535,6 +1535,18 @@ def _busy_robots(goal):
     )
 
 
+def _unplannable(robot_id, goal, domain):
+    """Why robot_id's platform cannot run a GRSTAPS-X plan, or None."""
+    robot_type = str((getattr(goal, "robot_types", None) or {}).get(robot_id, ""))
+    robot_type = robot_type.strip().lower()
+    if robot_type in UNPLANNABLE_ROBOT_TYPES and robot_id not in (
+        domain.robot_species or {}
+    ):
+        reason = UNPLANNABLE_ROBOT_TYPES[robot_type]
+        return f"a {robot_type} cannot execute a GRSTAPS-X plan, since {reason}"
+    return None
+
+
 def _fleet_names(robot_states, goal, domain, quiet=False):
     """Robots that can take part: a pose, and an executor that runs these plans,
     and not busy with the current mission when the goal is an additional task."""
@@ -1551,18 +1563,14 @@ def _fleet_names(robot_states, goal, domain, quiet=False):
                     "Skipping robot %s: busy, and this is an additional task", robot_id
                 )
             continue
-        robot_type = str((getattr(goal, "robot_types", None) or {}).get(robot_id, ""))
-        robot_type = robot_type.strip().lower()
-        if robot_type in UNPLANNABLE_ROBOT_TYPES and robot_id not in (
-            domain.robot_species or {}
-        ):
+        why = _unplannable(robot_id, goal, domain)
+        if why:
             if not quiet:
                 logger.warning(
-                    "Skipping robot %s: a %s cannot execute a GRSTAPS-X plan, since %s. "
+                    "Skipping robot %s: %s. "
                     "Set robot_species for it to plan with it anyway.",
                     robot_id,
-                    robot_type,
-                    UNPLANNABLE_ROBOT_TYPES[robot_type],
+                    why,
                 )
             continue
         names.append(robot_id)
@@ -2073,6 +2081,16 @@ def ground_problem(
                 f"every robot that could do this is busy ({', '.join(busy)}); "
                 "name one in the goal to interrupt it"
             )
+        left_out = {
+            r: why
+            for r, pose in robot_states.items()
+            if pose is not None and (why := _unplannable(r, goal, domain))
+        }
+        if left_out:
+            raise ValueError(
+                "no robot online can run this plan: "
+                + "; ".join(f"{r} is online, but {w}" for r, w in left_out.items())
+            )
         raise ValueError(
             "No robot in robot_states has a pose (no robot is online); nothing to plan for."
         )
@@ -2091,6 +2109,8 @@ def ground_problem(
         why = [
             f"{r} has no pose (its map->base_link transform is missing)"
             if r in known and robot_states[known[r]] is None
+            else f"{r} cannot take it: {_unplannable(known[r], goal, domain)}"
+            if r in known and _unplannable(known[r], goal, domain)
             else f"{r} is not a robot this planner can use"
             if r in known
             else f"{r} is not a known robot (known: {', '.join(sorted(known))})"

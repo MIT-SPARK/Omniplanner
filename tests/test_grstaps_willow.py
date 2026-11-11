@@ -19,7 +19,7 @@ from omniplanner.grstaps_planner import (
     parse_goal_targets,
     residual_goal,
 )
-from omniplanner.world_state import BUSY_ROBOTS, WorldState
+from omniplanner.world_state import BUSY_ROBOTS, NEW_MISSION, WorldState
 
 DURATIONS = {
     "visit-location": 5.0,
@@ -152,3 +152,51 @@ def test_an_additional_task_with_everyone_busy_names_them(G, tmp_path):  # noqa:
     )
     with pytest.raises(ValueError, match=r"busy \(testbot_a\)"):
         ground_problem(_domain(tmp_path), G, {"testbot_a": np.zeros(3)}, goal)
+
+
+# ---------- Husky in the fleet, and fixes made for the FD planner ----------
+
+TYPES = {"testbot_a": "spot", "testbot_g": "husky"}
+
+
+def test_a_husky_is_left_out_and_the_spot_gets_the_work(G, tmp_path):  # noqa: F811
+    goal = GrstapsGoal(goal_points=["o0"], robot_id="willow", robot_types=TYPES)
+    poses = {"willow": None, "testbot_a": np.zeros(3), "testbot_g": np.zeros(3)}
+    assert ground_problem(_domain(tmp_path), G, poses, goal).name == "testbot_a"
+
+
+def test_a_goal_naming_a_husky_says_why_it_cannot_take_it(G, tmp_path):  # noqa: F811
+    goal = GrstapsGoal(
+        goal_points=["o0"],
+        manipulate_points=["o0"],
+        manipulate_destinations={"o0": "p0"},
+        robot_id="willow",
+        robot_types=TYPES,
+        robot_bound={"manipulate": {"o0": ["testbot_g"]}},
+    )
+    poses = {"willow": None, "testbot_a": np.zeros(3), "testbot_g": np.zeros(3)}
+    with pytest.raises(ValueError, match="testbot_g cannot take it: a husky cannot"):
+        ground_problem(_domain(tmp_path), G, poses, goal)
+
+
+def test_only_a_husky_online_is_not_called_no_robot_online(G, tmp_path):  # noqa: F811
+    goal = GrstapsGoal(goal_points=["o0"], robot_id="willow", robot_types=TYPES)
+    poses = {"willow": None, "testbot_a": None, "testbot_g": np.zeros(3)}
+    with pytest.raises(ValueError, match="testbot_g is online, but a husky cannot"):
+        ground_problem(_domain(tmp_path), G, poses, goal)
+
+
+def test_a_new_mission_goal_plans_like_any_other(G, tmp_path):  # noqa: F811
+    """The goal manager marks a goal sent to an idle fleet (new-mission); the
+    repair node resets its mission state, and GRSTAPS-X ignores the marker."""
+    goal = GrstapsGoal(
+        goal_points=["o0"],
+        robot_id="willow",
+        robot_types=TYPES,
+        constraints=[_C(NEW_MISSION, [])],
+        world_state=WorldState(),
+    )
+    poses = {"willow": None, "testbot_a": np.zeros(3), "testbot_g": np.zeros(3)}
+    assert ground_problem(_domain(tmp_path), G, poses, goal).name == "testbot_a"
+    names = [t["name"] for t in _itags_input(tmp_path, robot="willow")["tasks"]]
+    assert names == ["visit-location o0 :: visit"]
