@@ -3,7 +3,6 @@
 import numpy as np
 import pytest
 import spark_dsg
-
 from dsg_pddl.dsg_pddl_grounding import MissingSymbolError, add_symbol_positions
 from dsg_pddl.pddl_grounding import PddlSymbol
 
@@ -25,11 +24,7 @@ def test_missing_symbol_error_attributes():
     """Test that MissingSymbolError stores all required attributes."""
     ns = spark_dsg.NodeSymbol("O", 99)
     error = MissingSymbolError(
-        symbol=ns,
-        pddl_symbol="o99",
-        dsg_char="O",
-        index=99,
-        original=None
+        symbol=ns, pddl_symbol="o99", dsg_char="O", index=99, original=None
     )
 
     assert error.symbol == ns
@@ -41,9 +36,7 @@ def test_missing_symbol_error_attributes():
 
 def test_add_symbol_positions_success(minimal_dsg):
     """Test successful position addition for an existing symbol."""
-    symbols = [
-        PddlSymbol(symbol="o1", layer="object", unary_predicates_to_apply=[])
-    ]
+    symbols = [PddlSymbol(symbol="o1", layer="object", unary_predicates_to_apply=[])]
 
     result = add_symbol_positions(minimal_dsg, symbols)
 
@@ -55,9 +48,7 @@ def test_add_symbol_positions_success(minimal_dsg):
 
 def test_add_symbol_positions_missing_symbol(minimal_dsg):
     """Test that MissingSymbolError is raised for non-existent symbol."""
-    symbols = [
-        PddlSymbol(symbol="o99", layer="object", unary_predicates_to_apply=[])
-    ]
+    symbols = [PddlSymbol(symbol="o99", layer="object", unary_predicates_to_apply=[])]
 
     with pytest.raises(MissingSymbolError) as exc_info:
         add_symbol_positions(minimal_dsg, symbols)
@@ -73,10 +64,7 @@ def test_add_symbol_positions_already_positioned(minimal_dsg):
     position = np.array([5.0, 6.0])
     symbols = [
         PddlSymbol(
-            symbol="o1",
-            layer="object",
-            unary_predicates_to_apply=[],
-            position=position
+            symbol="o1", layer="object", unary_predicates_to_apply=[], position=position
         )
     ]
 
@@ -102,9 +90,7 @@ def _assert_round_trips(error):
         ("copy.deepcopy", copy_mod.deepcopy(error)),
     ):
         assert isinstance(clone, MissingSymbolError), name
-        assert [m.name for m in clone.missing] == [
-            m.name for m in error.missing
-        ], name
+        assert [m.name for m in clone.missing] == [m.name for m in error.missing], name
         assert [m.kind_hint for m in clone.missing] == [
             m.kind_hint for m in error.missing
         ], name

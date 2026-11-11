@@ -26,16 +26,15 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "examples"))
-from utils import build_test_dsg  # noqa: E402
+from importlib.resources import as_file, files  # noqa: E402
 
+import dsg_pddl.domains  # noqa: E402
 from dsg_pddl.dsg_pddl_grounding import (  # noqa: E402
     could_name_a_scene_symbol,
     generate_goal_relevant_pddl,
     ground_problem,
 )
 from dsg_pddl.dsg_pddl_planning import make_plan  # noqa: E402
-import dsg_pddl.domains  # noqa: E402
-from importlib.resources import as_file, files  # noqa: E402
 from dsg_pddl.grounding_errors import (  # noqa: E402
     GroundingError,
     MissingSymbol,
@@ -52,6 +51,7 @@ from dsg_pddl.pddl_grounding import (  # noqa: E402
     PddlGoal,
 )
 from dsg_pddl.pddl_planning import solve_pddl  # noqa: E402
+from utils import build_test_dsg  # noqa: E402
 
 PROBLEM_NAME = "object-rearrangement-domain"
 
@@ -135,9 +135,7 @@ def test_partially_missing_goal_still_raises():
     # o0 exists in the fixture, p99 does not -> only p99 reported
     with pytest.raises(MissingSymbolError) as exc_info:
         _ground("(and (object-in-place o0 p99))")
-    assert [(m.name, m.kind_hint) for m in exc_info.value.missing] == [
-        ("p99", "place")
-    ]
+    assert [(m.name, m.kind_hint) for m in exc_info.value.missing] == [("p99", "place")]
 
 
 def test_kind_hint_heuristic_unknown_leading_char():
