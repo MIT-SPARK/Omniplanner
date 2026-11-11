@@ -30,6 +30,8 @@
         (visited-place-by ?r - robot ?p - place)
         (visited-object-by ?r - robot ?o - dsg_object)
         (inspected-by ?r - robot ?o - dsg_object)
+        (visited-region-by ?r - robot ?reg - region)
+        (explored-region-by ?r - robot ?reg - region)
 
         (safe ?o - dsg_object)
         (explored-region ?reg - region)
@@ -71,6 +73,14 @@
         (forall (?p - place)
             (or (not (place-in-region ?p ?reg))
                 (visited-place ?p))))
+
+    (:derived (visited-region-by ?r - robot ?reg - region)
+        (exists (?p - place) (and (visited-place-by ?r ?p) (place-in-region ?p ?reg))))
+
+    (:derived (explored-region-by ?r - robot ?reg - region)
+        (forall (?p - place)
+            (or (not (place-in-region ?p ?reg))
+                (visited-place-by ?r ?p))))
 
     (:action goto-poi
         :parameters (?r - robot ?s - point-of-interest ?t - point-of-interest)
