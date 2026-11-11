@@ -25,6 +25,7 @@ __all__ = [
     "MissingSymbol",
     "GroundingError",
     "MissingSymbolError",
+    "GoalSymbolNotInMapError",
     "PddlSolverError",
     "PddlUnsolvableError",
     "PddlTimeoutError",
@@ -49,7 +50,6 @@ def _is_picklable(value) -> bool:
     except Exception:
         return False
     return True
-
 
 
 class MissingSymbolError(GroundingError):
@@ -158,6 +158,23 @@ class MissingSymbolError(GroundingError):
         self.args = (self._message(),)
 
 
+class GoalSymbolNotInMapError(MissingSymbolError, ValueError):
+    """A goal names symbols the scene graph lacks, found by the up-front goal
+    check (``check_goal_symbols``) before any problem is encoded.
+
+    A ``MissingSymbolError``, so callers that tell "explore more" from "abort"
+    see it as such, and a ``ValueError``, as the check raised before it was
+    typed. ``detail`` is the operator-facing message.
+    """
+
+    def __init__(self, missing=None, goal="", *, detail: str = "", **kwargs):
+        self.detail = detail
+        super().__init__(missing, goal, **kwargs)
+
+    def _message(self) -> str:
+        return self.detail or super()._message()
+
+
 class PddlSolverError(Exception):
     def __init__(self, message: str, returncode: int | None = None):
         self.returncode = returncode
@@ -200,9 +217,7 @@ FD_TIMEOUT_RETURNCODES = frozenset({21, 23, 24})
 FD_MALFORMED_RETURNCODES = frozenset({31})
 
 
-def error_for_fd_returncode(
-    returncode: int | None, message: str
-) -> PddlSolverError:
+def error_for_fd_returncode(returncode: int | None, message: str) -> PddlSolverError:
     """Map a Fast Downward exit code onto the matching typed solver error."""
     if returncode in FD_UNSOLVABLE_RETURNCODES:
         return PddlUnsolvableError(message, returncode)

@@ -17,6 +17,7 @@ Needs fast-downward on PATH (as the other planning tests do).
 import ast
 import math
 import pathlib
+import pickle
 from importlib.resources import as_file, files
 
 import dsg_pddl.domains
@@ -186,6 +187,15 @@ def test_no_stops_on_the_way():
 def test_missing_symbol_is_reported():
     with pytest.raises(MissingSymbolError):
         _grounded(grid_dsg(), "(visited-object o99)")
+
+
+def test_missing_symbol_error_survives_a_copy_and_stays_a_value_error():
+    with pytest.raises(ValueError) as err:
+        _grounded(grid_dsg(), "(visited-object o99)")
+    clone = pickle.loads(pickle.dumps(err.value))
+    assert isinstance(clone, MissingSymbolError)
+    assert [m.name for m in clone.missing] == ["o99"]
+    assert str(clone) == str(err.value) and "could not be read" in str(clone)
 
 
 # ---------------------------------------------------------------------------

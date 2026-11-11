@@ -28,6 +28,7 @@ from dsg_pddl.dsg_pddl_grounding import (
     symbol_connectivity_to_pddl,
 )
 from dsg_pddl.grounding_errors import (
+    GoalSymbolNotInMapError,
     MissingSymbol,
     MissingSymbolError,
     kind_hint_for_symbol,
@@ -162,9 +163,11 @@ def check_goal_symbols(goal_string, arg_types, robots, symbols):
         hint = ""
         if any(m.startswith("r") for m in missing):
             hint = f" (regions in it: {', '.join(regions) or 'none'})"
-        raise ValueError(
-            f"The goal could not be read: it names {', '.join(missing)}, which "
-            f"the scene graph does not have{hint}"
+        raise GoalSymbolNotInMapError(
+            [MissingSymbol(m, kind_hint_for_symbol(m)) for m in missing],
+            goal_string,
+            detail=f"The goal could not be read: it names {', '.join(missing)}, "
+            f"which the scene graph does not have{hint}",
         )
 
 
