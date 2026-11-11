@@ -28,7 +28,7 @@ from rclpy.qos import (
     QoSReliabilityPolicy,
 )
 from robot_executor_interface_ros.action_descriptions_ros import to_msg, to_viz_msg
-from robot_executor_msgs.msg import ActionResultMsg, ActionSequenceMsg
+from robot_executor_msgs.msg import ActionSequenceMsg
 from robot_vocalizer.plan_vocalizer import PlanVocalizer
 from ros_system_monitor_msgs.msg import NodeInfoMsg
 from spark_config import Config, config_field, register_config
@@ -38,6 +38,14 @@ from tf2_ros.transform_listener import TransformListener
 from visualization_msgs.msg import MarkerArray
 
 from omniplanner_ros.ros_logging import setup_ros_log_forwarding
+
+try:
+    from robot_executor_msgs.msg import ActionResultMsg
+except ImportError:  # spot_tools without the per-action result channel (spot_tools#59)
+    ActionResultMsg = None
+
+# plans whose per-action results are kept per robot
+MAX_RESULT_PLANS = 20
 
 logging.basicConfig(level=logging.INFO, force=True)
 logger = logging.getLogger(__name__)
@@ -97,6 +105,8 @@ class RobotPlanningAdaptor:
     # sent another type used to add a second publisher of a different type on the
     # same topic, which zenoh tolerates and Fast DDS refuses (the node died).
     PLAN_MSG = ActionSequenceMsg
+    # executors that publish ActionResultMsg; PhoenixPlanningAdaptor turns it off
+    PUBLISHES_ACTION_RESULTS = True
 
     def __init__(self, config, node=None, tf_buffer=None, qos_profile=None):
         self.tf_buffer = tf_buffer
@@ -116,15 +126,22 @@ class RobotPlanningAdaptor:
         # was heartbeats). ``action_results`` keeps the received results keyed
         # by plan_id, in arrival order, for planner-side consumers.
         self.action_results = {}
-        result_topic = getattr(config, "action_result_topic", "") or (
-            f"/{self.name}/spot_executor/action_result"
-        )
-        self.action_result_sub = node.create_subscription(
-            ActionResultMsg,
-            result_topic,
-            self._on_action_result,
-            10,
-        )
+        self.action_result_sub = None
+        if ActionResultMsg is None:
+            self.ros_logger.warning(
+                f"[{self.name}] robot_executor_msgs has no ActionResultMsg: "
+                "per-action results are off"
+            )
+        elif self.PUBLISHES_ACTION_RESULTS:
+            result_topic = getattr(config, "action_result_topic", "") or (
+                f"/{self.name}/spot_executor/action_result"
+            )
+            self.action_result_sub = node.create_subscription(
+                ActionResultMsg,
+                result_topic,
+                self._on_action_result,
+                10,
+            )
 
     def _on_action_result(self, msg):
         self.ros_logger.info(
@@ -133,6 +150,8 @@ class RobotPlanningAdaptor:
             + (f" ({msg.detail})" if msg.detail else "")
         )
         self.action_results.setdefault(msg.plan_id, []).append(msg)
+        while len(self.action_results) > MAX_RESULT_PLANS:
+            self.action_results.pop(next(iter(self.action_results)))
 
     @property
     def plan_topic(self):
@@ -186,6 +205,8 @@ class RobotConfig(Config):
 
 class PhoenixPlanningAdaptor(RobotPlanningAdaptor):
     PLAN_MSG = Path
+    # Huskies run no spot_executor
+    PUBLISHES_ACTION_RESULTS = False
 
     def __init__(self, config, **data):
         # a Path plan is latest-only, as before (depth 1, whatever qos_profile says)
