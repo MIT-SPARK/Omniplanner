@@ -46,6 +46,11 @@ def _extract_visited_pois_from_pipeline(plans):
             rn = inner.remap_name_to_outer(sym[1])
             if rn in result:
                 result[rn].add(sym[-1])
+        # a goal-relevant plan's goto is a whole route: add the places it passes
+        for robot, places in (getattr(plan, "traversed", None) or {}).items():
+            rn = inner.remap_name_to_outer(robot)
+            if rn in result:
+                result[rn] |= places
         return result
 
     if isinstance(inner, PddlPlan) and inner.symbolic_actions:
@@ -67,6 +72,8 @@ class MultiRobotPddlPlannerRos:
             with open(str(path), "r") as fo:
                 # Currently, we have a fixed domain. In the future, could make adjustments based on goal message?
                 self.domain = MultiRobotPddlDomain(fo.read())
+        # How much of the scene graph goes into the problem (see PddlConfig).
+        self.domain.scene_scope = config.scene_scope
 
     def get_plan_callback(self):
         # TODO: topic name should depend on the config (i.e. what domain is specified)
@@ -93,6 +100,10 @@ class MultiRobotPddlPlannerRos:
 @dataclass
 class MultiRobotPddlConfig(sc.Config):
     domain_name: str = None
+    # "goal_relevant" (default): only the goal's points of interest, joined by
+    # shortest paths in metres -- plans in well under a second on large fused
+    # maps. "full": every place, object and region (the encoding before this).
+    scene_scope: str = "goal_relevant"
 
 
 class MultiRobotPddlConstrainedPlannerRos(MultiRobotPddlPlannerRos):

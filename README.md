@@ -341,6 +341,28 @@ export ADT4_FD_OVERALL_TIME_LIMIT=60s
 ros2 launch ...
 ```
 
+## Fast Downward grounding and time limits
+
+PDDL planners default to `scene_scope: goal_relevant`, which encodes goal
+symbols and representative region places instead of the whole scene graph.
+Set `scene_scope: full` in the planner plugin configuration to use the legacy
+encoding. Quantified goals (`forall` / `exists`) automatically use the full
+encoding so pruning cannot change which objects their variables range over.
+
+Translation and ordinary greedy search have **no default time limit**. Set
+`OMNIPLANNER_FD_TRANSLATE_TIME_LIMIT` and/or `OMNIPLANNER_FD_SEARCH_TIME_LIMIT`
+to opt into phase limits (seconds; `0` or an empty value disables the limit).
+`ADT4_FD_OVERALL_TIME_LIMIT` sets Fast Downward's overall limit for each
+invocation; it is not a shared budget across retries.
+
+Goal-relevant multi-robot problems first use a short anytime search
+(`OMNIPLANNER_FD_ANYTIME_S`, default `1` second; `0` selects greedy directly).
+If it times out before finding a plan, the planner retries greedy, reusing the
+translated task when available and applying the optional limits above.
+Out-of-memory failures are reported without retrying. A plan already found
+before a resource limit is reached is retained. Explicit `ADT4_FD_ALIAS` or
+`ADT4_FD_SEARCH` overrides select the search instead of the anytime search.
+
 
 ## Notes
 
