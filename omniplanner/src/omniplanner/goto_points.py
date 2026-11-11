@@ -1,4 +1,5 @@
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, List, overload
 
@@ -46,11 +47,16 @@ class GotoPointsGoal:
 def ground_problem(
     domain: GotoPointsDomain,
     dsg: DynamicSceneGraph,
-    robot_states: dict,
+    robot_states: Mapping,
     goal: GotoPointsGoal,
     feedback: Any = None,
 ) -> RobotWrapper[GroundedGotoPointsProblem]:
     start = robot_states[goal.robot_id]
+    if start is None:
+        raise RuntimeError(
+            f"Cannot plan for robot '{goal.robot_id}': no transform available "
+            "(is the robot online and publishing TF?)"
+        )
 
     def get_loc(symbol):
         node = dsg.find_node(str_to_ns_value(symbol))

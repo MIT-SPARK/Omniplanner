@@ -1,4 +1,6 @@
 import logging
+import os
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
@@ -12,19 +14,49 @@ from dsg_pddl.pddl_grounding import (
     PddlProblem,
     PddlSymbol,
 )
-from dsg_pddl.pddl_utils import extract_facts, lisp_string_to_ast, pddl_char_to_dsg_char
+from dsg_pddl.pddl_utils import (
+    extract_facts,
+    lisp_string_to_ast,
+    pddl_symbol_to_node_symbol,
+)
 from omniplanner.omniplanner import RobotWrapper
 from omniplanner.tsp import LayerPlanner
 
 logger = logging.getLogger(__name__)
 
+# How much of the scene graph to encode into the PDDL problem.
+#   "goal_relevant" (default): only symbols referenced by the grounded goal,
+#       their DSG containers, the robot start, and pairwise navigation distances
+#       among them. Keeps the Fast Downward translation/instantiation tiny.
+#   "full": legacy behavior -- encode every object/place/region in the scene.
+# Default chosen per-domain in ground_problem; this env var overrides it.
+DEFAULT_SCENE_SCOPE = os.getenv("OMNIPLANNER_SCENE_SCOPE", "goal_relevant")
+
+# Max representative places to include per goal-referenced region (a region goal
+# only needs to visit one of its places; a few gives the planner some slack).
+GOAL_RELEVANT_MAX_REGION_PLACES = int(
+    os.getenv("OMNIPLANNER_MAX_REGION_PLACES", "3")
+)
+
 
 def generate_symbol_connectivity(G, symbols):
     layer_planner = LayerPlanner(G, spark_dsg.DsgLayers.MESH_PLACES)
 
+    # De-duplicate by pddl symbol name: a goal that mentions the same object
+    # twice (legal PDDL — e.g. two plan stages resolving to one instance)
+    # otherwise emits each connectivity pair twice, and Fast Downward's
+    # translator hard-errors on "PNE distance(a, b) ... specified twice in
+    # initial state specification".
+    seen = set()
+    unique_symbols = []
+    for s in symbols:
+        if s.symbol not in seen:
+            seen.add(s.symbol)
+            unique_symbols.append(s)
+
     connections = []
-    for si in symbols:
-        for sj in symbols:
+    for si in unique_symbols:
+        for sj in unique_symbols:
             if si <= sj:
                 continue
 
@@ -40,6 +72,15 @@ def symbol_connectivity_to_pddl(connectivity):
     for info_s, info_t, dist in connectivity:
         s = info_s.symbol
         t = info_t.symbol
+        # A disconnected pair (no path in the place graph) comes back as inf
+        # from LayerPlanner.get_shortest_distance. Emitting a fabricated
+        # connected/distance fact would both crash int(inf) and lie about
+        # reachability, so skip the pair: the POI stays reachable via any other
+        # finite connection, and a truly isolated POI becomes correctly
+        # unreachable.
+        if not np.isfinite(dist):
+            logger.warning("Skipping disconnected POI pair %s <-> %s (inf distance)", s, t)
+            continue
         d = int(dist)
 
         connected = ("connected", s, t)
@@ -345,7 +386,19 @@ def extract_symbols_of_interest(G, pddl_goal):
     place_symbols = [PddlSymbol(f[1], "place", []) for f in place_facts]
     object_symbols = [PddlSymbol(f[1], "object", []) for f in object_facts]
 
-    return place_symbols + object_symbols
+    # De-duplicate by symbol name (order-preserving): a goal may legally
+    # mention the same object twice — e.g. "(and (visited-object o9)
+    # (visited-object o9))" when two plan stages resolve to one instance —
+    # but downstream every symbol becomes an :objects declaration and a
+    # connectivity-matrix row, and Fast Downward's translator hard-errors on
+    # the duplicated "PNE distance(a, b) specified twice" init facts.
+    seen = set()
+    unique = []
+    for s in place_symbols + object_symbols:
+        if s.symbol not in seen:
+            seen.add(s.symbol)
+            unique.append(s)
+    return unique
 
 
 def simplify(pddl):
@@ -357,12 +410,7 @@ def add_symbol_positions(G, symbols):
         if s.position is not None:
             continue
         else:
-            pddl_symbol_char = s.symbol[0]
-            dsg_symbol_char = pddl_char_to_dsg_char(pddl_symbol_char)
-            ns = spark_dsg.NodeSymbol(dsg_symbol_char, int(s.symbol[1:]))
-            if not G.has_node(ns):
-                # open-vocab regions use a lowercase r prefix
-                ns = spark_dsg.NodeSymbol(pddl_symbol_char, int(s.symbol[1:]))
+            ns = pddl_symbol_to_node_symbol(G, s.symbol)
             # A copy: the attribute array is a view into the graph's storage.
             position = np.array(G.get_node(ns).attributes.position[:2])
             if position is None:
@@ -374,6 +422,11 @@ def add_symbol_positions(G, symbols):
 def normalize_symbols(symbols):
     for s in symbols:
         s.symbol = normalize_symbol(s)
+
+
+def normalized(symbols):
+    normalize_symbols(symbols)
+    return symbols
 
 
 def normalize_symbol(symbol):
@@ -394,6 +447,258 @@ def generate_objects(symbols):
             type_dict["region"].append(s.symbol)
 
     return type_dict
+
+
+# PDDL tokens that are NOT scene symbols: logical operators, type names,
+# predicate/function names from the rearrangement domains.
+_NON_SYMBOL_TOKENS = {
+    "and", "or", "not", "imply", "when", "exists", "forall", "=", "-",
+    "increase", "decrease",
+    "region", "place", "dsg_object", "point-of-interest", "object",
+    "at-poi", "connected", "suspicious", "at-object", "at-place", "in-region",
+    "holding", "hand-full", "object-in-place", "place-in-region",
+    "visited-poi", "visited-place", "visited-object", "visited-region",
+    "safe", "distance", "total-cost",
+}
+
+
+def goal_requires_full_scene(goal_string):
+    """Quantifiers range over the full map, so named-symbol pruning is unsound.
+
+    In particular, dropping unnamed objects makes a universal visit goal
+    vacuously true. Keep the full encoding for both universal and existential
+    goals so their variable bindings retain the original object universe.
+    """
+
+    def quantified(node):
+        return isinstance(node, (tuple, list)) and bool(node) and (
+            node[0] in ("forall", "exists")
+            or any(quantified(child) for child in node)
+        )
+
+    return quantified(lisp_string_to_ast(goal_string))
+
+
+def collect_goal_symbol_names(ast):
+    """Return the set of scene-symbol names referenced anywhere in a goal AST.
+
+    Walks the parsed goal and collects leaf tokens that are not logical
+    operators, type names, predicate/function names, or quantifier variables
+    (``?x``). Works for ground goals (the usual LLM output) as well as goals
+    that mix predicates and concrete symbols.
+    """
+    names = set()
+
+    def walk(node):
+        if isinstance(node, (tuple, list)):
+            for child in node:
+                walk(child)
+        elif isinstance(node, str):
+            tok = node.lower()
+            if tok in _NON_SYMBOL_TOKENS or tok.startswith("?"):
+                return
+            names.add(tok)
+
+    walk(ast)
+    return names
+
+
+def could_name_a_scene_symbol(token):
+    """Whether a token collected from a goal could name a scene-graph symbol.
+
+    Goal symbol collection keeps every leaf that isn't a known operator, type or
+    predicate name, so it also hands back numeric literals and arithmetic or
+    comparison operators. PDDL names must start with a letter, so anything else
+    is not a symbol.
+    """
+    return bool(token) and token[0].isalpha()
+
+
+def get_places_layer(G):
+    try:
+        return G.get_layer(spark_dsg.DsgLayers.MESH_PLACES)
+    except Exception:
+        return G.get_layer(20)
+
+
+def generate_goal_relevant_pddl(
+    G,
+    raw_pddl_goal_string,
+    initial_position,
+    problem_name,
+    problem_domain,
+    max_region_places=GOAL_RELEVANT_MAX_REGION_PLACES,
+):
+    """Build a PDDL problem containing only goal-relevant symbols.
+
+    Instead of encoding the whole scene graph, this includes the robot start,
+    the objects/places/regions named by the grounded goal, the current place of
+    each referenced object (so it can be picked), and a few representative
+    places per referenced region (so it can be visited). Navigation distances
+    are computed pairwise among just these POIs over the full places graph, so a
+    single ``goto-poi`` hop represents a full multi-hop traversal whose waypoints
+    are expanded later at plan-compile time.
+    """
+    parsed_pddl_goal = lisp_string_to_ast(raw_pddl_goal_string)
+    goal_pddl = simplify(parsed_pddl_goal)
+    referenced = collect_goal_symbol_names(parsed_pddl_goal)
+
+    all_symbols = extract_all_symbols(G)
+    normalize_symbols(all_symbols)
+    by_name = {s.symbol: s for s in all_symbols}
+
+    # One LayerPlanner over the full places graph, then restricted so that
+    # every nearest-place snap lands in the component reachable from the
+    # robot start: saved DSGs contain island place components, and snapping
+    # an object (or the distance matrix's anchors) to one silently drops its
+    # connectivity facts below -- a disconnected, unsolvable problem for a
+    # physically reachable goal (motion-tier v1, floor3 s71 NL).
+    layer_planner = LayerPlanner(
+        G, spark_dsg.DsgLayers.MESH_PLACES
+    ).restricted_to_component(np.asarray(initial_position))
+    reachable_place_values = set(layer_planner.node_ids)
+
+    # Cache place symbol/position arrays for nearest-place lookups, limited
+    # to the same reachable component the planner snaps to.
+    places_layer = get_places_layer(G)
+    place_syms = []
+    place_pos = []
+    for node in places_layer.nodes:
+        if node.id.value not in reachable_place_values:
+            continue
+        place_syms.append(normalize_symbol(node.id.str(True)))
+        place_pos.append(node.attributes.position[:2])
+    place_pos = np.array(place_pos) if place_pos else np.zeros((0, 2))
+    place_sym_to_pos = dict(zip(place_syms, place_pos))
+
+    start_symbol = PddlSymbol(
+        "pstart", "place", ["at-poi"], position=initial_position
+    )
+    selected = {"pstart": start_symbol}
+    object_current_place = {}
+    region_membership = []  # (place_symbol, region_symbol)
+
+    # region -> member places, built lazily only if a region is referenced.
+    region_to_places = None
+
+    def obj_position(obj_sym):
+        return G.get_node(pddl_symbol_to_node_symbol(G, obj_sym)).attributes.position[:2]
+
+    for name in referenced:
+        sym = by_name.get(name)
+        if sym is None:
+            logger.warning(
+                "Goal references symbol '%s' not present in the scene graph; "
+                "skipping it during grounding.",
+                name,
+            )
+            continue
+        selected.setdefault(name, sym)
+
+        if sym.layer == "object":
+            if len(place_syms) == 0:
+                continue
+            opos = obj_position(name)
+            idx = int(np.argmin(np.linalg.norm(place_pos - opos, axis=1)))
+            pcur = place_syms[idx]
+            object_current_place[name] = pcur
+            selected.setdefault(pcur, by_name[pcur])
+        elif sym.layer == "region":
+            if region_to_places is None:
+                region_to_places = {}
+                for fact in generate_place_containment(G):
+                    _, p, r = fact
+                    region_to_places.setdefault(r, []).append(p)
+            # Region centroid for member ranking (room node position);
+            # falls back to the robot start when the room can't be found.
+            region_centroid = initial_position
+            for node in G.get_layer(spark_dsg.DsgLayers.ROOMS).nodes:
+                if normalize_symbol(node.id.str(True)) == name:
+                    region_centroid = np.array(node.attributes.position[:2])
+                    break
+            members = region_to_places.get(name, [])
+            valid_members = []
+            for p in members:
+                if p not in by_name:
+                    logger.warning(
+                        "Region '%s' contains place '%s' from "
+                        "generate_place_containment, but no scene symbol "
+                        "named '%s' exists (place-layer index mismatch?); "
+                        "skipping it.",
+                        name,
+                        p,
+                        p,
+                    )
+                    continue
+                if p not in place_sym_to_pos:
+                    # place_sym_to_pos only holds places in the component
+                    # reachable from the robot start (see above). A region
+                    # that also contains an island place used to KeyError in
+                    # the ranking key below and kill grounding outright.
+                    # An unreachable representative place is useless anyway --
+                    # the connectivity facts for it would be dropped -- so
+                    # drop it here and rank only what the robot can reach.
+                    logger.debug(
+                        "Region '%s' contains place '%s' outside the "
+                        "component reachable from the robot start; it "
+                        "cannot serve as a representative place.",
+                        name,
+                        p,
+                    )
+                    continue
+                valid_members.append(p)
+            # Rank members by distance to the REGION centroid, not the robot
+            # start: hydra's member places cluster at the capture circle's
+            # rim on the robot's entry side, and robot-start ranking (plus
+            # FD's min-cost place choice) targets that rim -- the executor's
+            # release slop (~2 m measured) then drops the object OUTSIDE the
+            # region. Centroid ranking keeps the representative places in
+            # the region's middle (exploration Task 9, floor3 gate 2).
+            members = sorted(
+                valid_members,
+                key=lambda p: float(
+                    np.linalg.norm(place_sym_to_pos[p] - region_centroid)
+                ),
+            )[:max_region_places]
+            for p in members:
+                selected.setdefault(p, by_name[p])
+                region_membership.append((p, name))
+
+    add_symbol_positions(G, list(selected.values()))
+
+    # Build connectivity over POIs (places + objects), reusing the
+    # component-restricted LayerPlanner so every anchor is reachable.
+    pois = [s for s in selected.values() if s.layer in ("place", "object")]
+    init = [("=", ("total-cost",), 0), ("at-poi", start_symbol.symbol)]
+    if len(pois) > 1:
+        D = layer_planner.external_distance_matrix([p.position for p in pois])
+        for i in range(len(pois)):
+            for j in range(i + 1, len(pois)):
+                d = D[i, j]
+                if not np.isfinite(d):
+                    continue
+                s = pois[i].symbol
+                t = pois[j].symbol
+                di = int(d)
+                init.append(("connected", s, t))
+                init.append(("=", ("distance", s, t), di))
+                init.append(("=", ("distance", t, s), di))
+
+    for o, p in object_current_place.items():
+        init.append(("object-in-place", o, p))
+    for p, r in region_membership:
+        init.append(("place-in-region", p, r))
+
+    problem = PddlProblem(
+        name=problem_name,
+        domain=problem_domain,
+        objects=generate_objects(list(selected.values())),
+        initial_facts=init,
+        goal=goal_pddl,
+        optimizing=True,
+    )
+
+    return problem.to_string(), list(selected.values())
 
 
 def generate_inspection_pddl(G, raw_pddl_goal_string, initial_position):
@@ -434,24 +739,36 @@ def extract_all_symbols(G):
     except Exception:
         places_layer = G.get_layer(20)
 
-    place_symbols = []
-    for node in places_layer.nodes:
-        place_symbols.append(PddlSymbol(node.id.str(True), "place", []))
+    # Positions come from the node itself: looking a lowercased PDDL name back
+    # up in the graph guesses the prefix's case, and a wrong guess failed the
+    # whole plan ("missing node 'R(0)'") for a goal that named no region.
+    def symbol(node, layer):
+        position = np.array(node.attributes.position[:2], dtype=float)
+        return PddlSymbol(node.id.str(True), layer, [], position=position)
 
-    region_symbols = []
-    for node in G.get_layer(spark_dsg.DsgLayers.ROOMS).nodes:
-        region_symbols.append(PddlSymbol(node.id.str(True), "region", []))
-
-    object_symbols = []
-    for node in G.get_layer(spark_dsg.DsgLayers.OBJECTS).nodes:
-        object_symbols.append(PddlSymbol(node.id.str(True), "object", []))
+    place_symbols = [symbol(n, "place") for n in places_layer.nodes]
+    region_symbols = [
+        symbol(n, "region") for n in G.get_layer(spark_dsg.DsgLayers.ROOMS).nodes
+    ]
+    object_symbols = [
+        symbol(n, "object") for n in G.get_layer(spark_dsg.DsgLayers.OBJECTS).nodes
+    ]
 
     return place_symbols + object_symbols + region_symbols
 
 
-def generate_rearrangement_pddl(G, raw_pddl_goal_string, initial_position):
+def generate_rearrangement_pddl(
+    G, raw_pddl_goal_string, initial_position, scene_scope=DEFAULT_SCENE_SCOPE
+):
     problem_name = "object-rearrangement-domain"
     problem_domain = "object-rearrangement-domain"
+
+    if scene_scope == "goal_relevant" and not goal_requires_full_scene(
+        raw_pddl_goal_string
+    ):
+        return generate_goal_relevant_pddl(
+            G, raw_pddl_goal_string, initial_position, problem_name, problem_domain
+        )
 
     parsed_pddl_goal = lisp_string_to_ast(raw_pddl_goal_string)
 
@@ -484,9 +801,18 @@ def generate_rearrangement_pddl(G, raw_pddl_goal_string, initial_position):
     return problem.to_string(), symbols_of_interest
 
 
-def generate_region_pddl(G, raw_pddl_goal_string, initial_position):
+def generate_region_pddl(
+    G, raw_pddl_goal_string, initial_position, scene_scope=DEFAULT_SCENE_SCOPE
+):
     problem_name = "region-object-rearrangement-domain"
     problem_domain = "region-object-rearrangement-domain"
+
+    if scene_scope == "goal_relevant" and not goal_requires_full_scene(
+        raw_pddl_goal_string
+    ):
+        return generate_goal_relevant_pddl(
+            G, raw_pddl_goal_string, initial_position, problem_name, problem_domain
+        )
 
     parsed_pddl_goal = lisp_string_to_ast(raw_pddl_goal_string)
 
@@ -522,26 +848,39 @@ def generate_region_pddl(G, raw_pddl_goal_string, initial_position):
 def ground_problem(
     domain: PddlDomain,
     dsg: spark_dsg.DynamicSceneGraph,
-    robot_states: dict,
+    robot_states: Mapping,
     goal: PddlGoal,
     feedback: Any = None,
 ) -> RobotWrapper[GroundedPddlProblem]:
     logger.info(f"Grounding PDDL Problem {domain.domain_name}")
 
-    start = robot_states[goal.robot_id][:2]
+    robot_pose = robot_states[goal.robot_id]
+    if robot_pose is None:
+        raise RuntimeError(
+            f"Cannot plan for robot '{goal.robot_id}': no transform available "
+            "(is the robot online and publishing TF?)"
+        )
+    start = robot_pose[:2]
+
+    # How much of the scene graph to encode (see DEFAULT_SCENE_SCOPE). The
+    # domain may carry a config-provided scope; otherwise fall back to default.
+    scene_scope = getattr(domain, "scene_scope", None) or DEFAULT_SCENE_SCOPE
 
     # TODO: TBD whether we want to check the domain here and choose how
     # to instantiate the PDDL problem, or if that should be in a separately
     # ground_problem function.
     match domain.domain_name:
         case "goto-object-domain":
+            # Inspection grounding is already goal-relevant by construction.
             pddl_problem, symbols = generate_inspection_pddl(dsg, goal.pddl_goal, start)
         case "object-rearrangement-domain":
             pddl_problem, symbols = generate_rearrangement_pddl(
-                dsg, goal.pddl_goal, start
+                dsg, goal.pddl_goal, start, scene_scope=scene_scope
             )
         case "region-object-rearrangement-domain":
-            pddl_problem, symbols = generate_region_pddl(dsg, goal.pddl_goal, start)
+            pddl_problem, symbols = generate_region_pddl(
+                dsg, goal.pddl_goal, start, scene_scope=scene_scope
+            )
         case _:
             raise NotImplementedError(
                 f"I don't know how to ground a domain of type {domain.domain_name}!"

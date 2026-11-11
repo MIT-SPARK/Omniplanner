@@ -63,3 +63,31 @@ def pddl_char_to_dsg_char(c):
             return "P"
         case _:
             return c
+
+
+# Regions are R(i) in Hydra's rooms layer but r(i) in hydra_multi's open-vocabulary
+# regions (offline fusion); a PDDL region symbol names whichever one the graph has.
+REGION_DSG_CHARS = ("R", "r")
+
+
+def pddl_symbol_to_node_symbol(G, pddl_symbol: str):
+    """The scene-graph node a PDDL symbol (``o12``, ``p3``, ``r0``) names in ``G``.
+
+    Regions are normalized to the graph at planning time: ``r0`` is ``R(0)`` if the
+    graph has it, else ``r(0)``. Raises ValueError for a token that is not a symbol.
+    """
+    import spark_dsg
+
+    c, index = pddl_symbol[0], int(pddl_symbol[1:])
+    ns = spark_dsg.NodeSymbol(pddl_char_to_dsg_char(c), index)
+    if c == "r" and G is not None and not G.has_node(ns):
+        for alt in REGION_DSG_CHARS:
+            alt_ns = spark_dsg.NodeSymbol(alt, index)
+            if G.has_node(alt_ns):
+                return alt_ns
+    return ns
+
+
+def dsg_char_to_pddl_char(c: str) -> str:
+    """Inverse of pddl_char_to_dsg_char. 'O' -> 'o', 'P' -> 'p', 'R' -> 'r'."""
+    return c.lower()

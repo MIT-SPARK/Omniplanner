@@ -52,7 +52,7 @@ def _plan(G, goal, start_xy, state):
     )
     plugin._node = NS(
         robot_adaptors={ROBOT: NS(robot_type="simulated-spot")},
-        world_state_for=lambda _goal: state,
+        world_state_for=lambda _goal, **_: state,
     )
     msg = ConstrainedPddlGoalMsg()
     msg.goal.robot_id, msg.goal.pddl_goal = ROBOT, goal

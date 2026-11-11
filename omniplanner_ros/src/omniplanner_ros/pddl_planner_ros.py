@@ -261,6 +261,10 @@ class PddlPlannerRos:
                 # Currently, we have a fixed domain. In the future, could make adjustments based on goal message?
                 self.domain = PddlDomain(fo.read())
 
+        # Controls how much of the scene graph is encoded into the PDDL problem
+        # ("goal_relevant" prunes to goal-referenced symbols; "full" is legacy).
+        self.domain.scene_scope = config.scene_scope
+
     def get_plan_callback(self):
         # TODO: topic name should depend on the config (i.e. what domain is specified)
         return PddlGoalMsg, "pddl_goal", self.pddl_callback
@@ -284,3 +288,6 @@ class PddlPlannerRos:
 @dataclass
 class PddlConfig(sc.Config):
     domain_name: str = None
+    # "goal_relevant" (default): encode only goal-referenced symbols + containers
+    # + robot start, for fast planning. "full": encode the whole scene graph.
+    scene_scope: str = "goal_relevant"

@@ -1,6 +1,7 @@
 import ast
 import logging
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -77,7 +78,7 @@ class LanguageGoal:
 def ground_problem(
     domain: LanguageDomain,
     dsg: Any,
-    robot_states: dict,
+    robot_states: Mapping,
     goal: LanguageGoal,
     feedback: Any = None,
 ):

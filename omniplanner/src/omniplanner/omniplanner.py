@@ -1,9 +1,11 @@
 import logging
+import time
 from collections import UserDict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Callable, List, overload
 
-from dsg_pddl.pddl_utils import pddl_char_to_dsg_char
+from dsg_pddl.pddl_utils import pddl_char_to_dsg_char, pddl_symbol_to_node_symbol
 from plum import dispatch
 from spark_dsg import NodeSymbol
 
@@ -42,7 +44,7 @@ class ExecutionInterface:
 class PlanRequest:
     domain: PlanningDomain
     goal: PlanningGoal
-    robot_states: dict
+    robot_states: Mapping
 
 
 @dataclass
@@ -148,8 +150,11 @@ def fmap(fn: Callable, multi_robot_wrapper: MultiRobotWrapper):
     )
 
 
-def string_as_nodesymbol(string):
+def string_as_nodesymbol(string, G=None):
+    """The node a PDDL symbol names (in ``G``, when given: regions follow the graph)."""
     try:
+        if G is not None:
+            return pddl_symbol_to_node_symbol(G, string)
         c = pddl_char_to_dsg_char(string[0])
         return NodeSymbol(c, int(string[1:]))
     except Exception:
@@ -196,7 +201,7 @@ class DsgContextProvider(dict):
         self.dsg = dsg
 
     def __getitem__(self, key):
-        ns = string_as_nodesymbol(key)
+        ns = string_as_nodesymbol(key, self.dsg)
         symbol_info = {}
         if ns is not None:
             node = self.dsg.find_node(ns)
@@ -227,7 +232,7 @@ class DsgContextProvider(dict):
         if dict.__contains__(self, key) and len(dict.__getitem__(self, key)) > 0:
             return True
 
-        ns = string_as_nodesymbol(key)
+        ns = string_as_nodesymbol(key, self.dsg)
         if ns is None:
             return False
         return self.dsg.find_node(ns) is not None
@@ -266,6 +271,7 @@ def make_plan(grounded_problem: Functor, map_context: Any):
 @overload
 @dispatch
 def full_planning_pipeline(plan_request: PlanRequest, map_context: Any, feedback=None):
+    ground_start = time.perf_counter()
     grounded_problem = ground_problem(
         plan_request.domain,
         map_context,
@@ -273,14 +279,16 @@ def full_planning_pipeline(plan_request: PlanRequest, map_context: Any, feedback
         plan_request.goal,
         feedback,
     )
-    logger.debug("Grounded Problem")
+    logger.info("ground_problem took %.3f s", time.perf_counter() - ground_start)
 
     # TODO: it would be nice if we could incorporate additional symbol context
     # added during grounding...
 
     dsg_context = DsgContextProvider(map_context)
     contextualized_problem = SymbolicContext(dsg_context, grounded_problem)
+    plan_start = time.perf_counter()
     plan = make_plan(contextualized_problem, map_context)
+    logger.info("make_plan took %.3f s", time.perf_counter() - plan_start)
     logger.debug(f"Made plan {plan}")
     return plan
 
