@@ -641,7 +641,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 self.world_tracker.reset()
                 self.get_logger().info(
                     "New mission: forgot earlier visits and inspections "
-                    "(holding is kept)"
+                    "(holding, and who put each object down, are kept)"
                 )
             state = self.world_tracker.snapshot(dsg)
         busy = unavailable_robots(constraints, state, goal_tokens(pddl_goal))

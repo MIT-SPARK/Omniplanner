@@ -109,6 +109,8 @@ def test_tracker_from_action_reports():
     t.reset()
     s = t.snapshot(G)
     assert s.holding == {} and not s.visited and not s.inspected
+    # o4 stays where ROBOT put it: a finished placing goal sent again holds.
+    assert s.placed_by == {ROBOT: {"o4"}}
 
 
 @needs_map

@@ -46,7 +46,8 @@ MAP_METADATA_KEY = "heracles"
 BUSY_ROBOTS = "busy-robots"
 # A goal the goal manager sends when every robot is idle starts a new mission:
 # (new-mission). Earlier missions' visits and inspections are forgotten, so a
-# goal sent again after it finished is planned again; holding is kept.
+# goal sent again after it finished is planned again; holding, and who put each
+# object down, are kept.
 NEW_MISSION = "new-mission"
 
 
@@ -243,13 +244,14 @@ class WorldStateTracker:
         self._disagreements: Set[tuple] = set()
 
     def reset(self):
-        """Forget mission progress (visits, inspections). Holding is physical
-        state and survives: a new mission does not empty anybody's gripper."""
+        """Forget mission progress (visits, inspections). Holding and who put
+        an object down are physical state and survive: a new mission does not
+        empty anybody's gripper, and an object stays where its robot left it
+        (a later pick forgets that, and the planners also check its place)."""
         self.visited.clear()
         self.inspected.clear()
         self.visited_by.clear()
         self.inspected_by.clear()
-        self.placed_by.clear()
 
     def record(
         self,
