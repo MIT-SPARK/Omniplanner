@@ -21,6 +21,7 @@ import spark_dsg
 from dsg_pddl.dsg_pddl_grounding_multirobot import (
     FORBIDDEN_RADIUS_ENV,
     _forbidden_radius_m,
+    region_core,
 )
 from dsg_pddl.pddl_utils import lisp_string_to_ast
 from plum import dispatch
@@ -1234,29 +1235,6 @@ EXPLORE_SPACING_ENV = "OMNIPLANNER_GRSTAPS_EXPLORE_SPACING_M"
 EXPLORE_MAX_ENV = "OMNIPLANNER_GRSTAPS_EXPLORE_MAX"
 DEFAULT_EXPLORE_SPACING_M = 8.0
 DEFAULT_EXPLORE_MAX = 15
-
-# A region visit must reach its core: the members this close to the region's
-# centre, as a fraction of members (0.5 = the inner half). Grown regions on
-# fused maps sprawl (Penn's "loading dock" r6 reaches 83 m from its centre, up
-# to a robot's start), so "the member nearest the robot" alone can make a visit
-# a 2 m step that never goes near the place. 1.0 = any member counts.
-REGION_CORE_FRACTION = 0.5
-
-
-def _region_core_fraction():
-    try:
-        f = float(os.getenv("OMNIPLANNER_REGION_CORE_FRACTION", REGION_CORE_FRACTION))
-    except ValueError:
-        return REGION_CORE_FRACTION
-    return min(max(f, 0.0), 1.0)
-
-
-def region_core(members, xy, centre, fraction=None):
-    """The members of a region a visit may end at: the ``fraction`` nearest its
-    centre (at least one)."""
-    fraction = _region_core_fraction() if fraction is None else fraction
-    ranked = sorted(members, key=lambda p: float(np.linalg.norm(xy[p] - centre)))
-    return ranked[: max(1, int(np.ceil(fraction * len(ranked))))]
 
 
 def _env_number(name, default, cast=float, minimum=None):
