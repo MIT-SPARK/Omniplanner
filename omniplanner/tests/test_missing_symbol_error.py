@@ -13,16 +13,10 @@ def minimal_dsg():
     """Create a minimal DSG with one object node O(1)."""
     G = spark_dsg.DynamicSceneGraph()
 
-    # Create an object layer and add a node
-    G.create_layer(spark_dsg.DsgLayers.OBJECTS)
-
-    # Create a node with position
-    node = spark_dsg.Node(
-        node_id=spark_dsg.NodeSymbol("O", 1),
-        layer=spark_dsg.DsgLayers.OBJECTS,
-        attributes=spark_dsg.NodeAttributes(position=np.array([1.0, 2.0, 0.0]))
-    )
-    G.insert_node(node)
+    # Create an object node with position
+    attrs = spark_dsg.ObjectNodeAttributes()
+    attrs.position = np.array([1.0, 2.0, 0.0])
+    G.add_node(spark_dsg.DsgLayers.OBJECTS, spark_dsg.NodeSymbol("O", 1), attrs)
 
     return G
 
