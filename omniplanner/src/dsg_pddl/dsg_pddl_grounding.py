@@ -535,6 +535,30 @@ def could_name_a_scene_symbol(token):
     return bool(token) and token[0].isalpha()
 
 
+def raise_if_goal_names_missing_symbols(parsed_goal, declared, raw_pddl_goal_string):
+    """Raise MissingSymbolError for every goal symbol that is not declared.
+
+    The full-scene encoders declare every scene symbol (plus ``pstart``), so a
+    goal name outside ``declared`` would reach Fast Downward as an undeclared
+    object (rc 31). Raise the same error the goal-relevant encoder raises for
+    it instead, so both scene scopes fail the same way.
+    """
+    missing = sorted(
+        name
+        for name in collect_goal_symbol_names(parsed_goal)
+        if name not in declared and could_name_a_scene_symbol(name)
+    )
+    if not missing:
+        return
+    logger.warning(
+        "Goal references symbols not present in the scene graph: %s", missing
+    )
+    raise MissingSymbolError(
+        [MissingSymbol(name, kind_hint_for_symbol(name)) for name in missing],
+        raw_pddl_goal_string,
+    )
+
+
 def get_places_layer(G):
     try:
         return G.get_layer(spark_dsg.DsgLayers.MESH_PLACES)
@@ -831,6 +855,11 @@ def generate_rearrangement_pddl(
         "pstart", "place", ["at-poi"], position=initial_position
     )
     symbols_of_interest = [start_place_symbol] + symbols
+    raise_if_goal_names_missing_symbols(
+        parsed_pddl_goal,
+        {s.symbol for s in symbols_of_interest},
+        raw_pddl_goal_string,
+    )
 
     add_symbol_positions(G, symbols_of_interest)
 
@@ -874,6 +903,11 @@ def generate_region_pddl(
         "pstart", "place", ["at-poi"], position=initial_position
     )
     symbols_of_interest = [start_place_symbol] + symbols
+    raise_if_goal_names_missing_symbols(
+        parsed_pddl_goal,
+        {s.symbol for s in symbols_of_interest},
+        raw_pddl_goal_string,
+    )
 
     add_symbol_positions(G, symbols_of_interest)
 

@@ -32,6 +32,8 @@ import dsg_pddl.domains  # noqa: E402
 from dsg_pddl.dsg_pddl_grounding import (  # noqa: E402
     could_name_a_scene_symbol,
     generate_goal_relevant_pddl,
+    generate_rearrangement_pddl,
+    generate_region_pddl,
     ground_problem,
 )
 from dsg_pddl.dsg_pddl_planning import make_plan  # noqa: E402
@@ -142,6 +144,42 @@ def test_kind_hint_heuristic_unknown_leading_char():
     with pytest.raises(MissingSymbolError) as exc_info:
         _ground("(and (visited-object zzz1))")
     assert [(m.name, m.kind_hint) for m in exc_info.value.missing] == [("zzz1", "")]
+
+
+# -- the full-scene encoders fail the same way ---------------------------------
+
+FULL_ENCODERS = [generate_rearrangement_pddl, generate_region_pddl]
+
+
+@pytest.mark.parametrize("encoder", FULL_ENCODERS)
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "(and (visited-object o42))",
+        "(and (visited-object o42) (visited-place p99))",
+        "(and (visited-object o0) (visited-object zzz1) (< (total-cost) 100))",
+    ],
+)
+def test_full_scene_encoders_report_the_same_missing_symbols(encoder, goal):
+    with pytest.raises(MissingSymbolError) as relevant:
+        _ground(goal)
+    with pytest.raises(MissingSymbolError) as full:
+        encoder(build_test_dsg(), goal, np.array([0.0, 0.0]), scene_scope="full")
+    assert [(m.name, m.kind_hint) for m in full.value.missing] == [
+        (m.name, m.kind_hint) for m in relevant.value.missing
+    ]
+    assert full.value.goal == goal
+
+
+@pytest.mark.parametrize("encoder", FULL_ENCODERS)
+@pytest.mark.parametrize(
+    "goal", ["(and (at-poi pstart))", "(and (visited-object o0) (< (total-cost) 100))"]
+)
+def test_full_scene_encoders_accept_declared_names(encoder, goal):
+    problem_str, _ = encoder(
+        build_test_dsg(), goal, np.array([0.0, 0.0]), scene_scope="full"
+    )
+    assert "(:goal" in problem_str
 
 
 # -- containment: names that are NOT scene symbols must not be flagged --------
