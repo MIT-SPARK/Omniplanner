@@ -30,6 +30,7 @@ from omniplanner.omniplanner import (
     PlanningDomain,
     RobotWrapper,
 )
+from omniplanner.world_state import unavailable_robots
 
 logger = logging.getLogger(__name__)
 
@@ -547,6 +548,9 @@ _BOUND_PREDS = {
     "visited-poi-by": "visit",
     "inspected-by": "inspect",
 }
+# (object-placed-by ?r ?o ?p): ?r itself relocates ?o to ?p. A relocation
+# like object-in-place, pinned to that robot.
+_PLACED_BY = "object-placed-by"
 
 # Region goals, the multirobot FD domain's vocabulary again. A region is a set
 # of places, which no single ITAGS task can stand for (a task is one vertex),
@@ -626,6 +630,19 @@ def parse_goal_targets(pddl_goal: str):
             if node[1] not in robots:
                 robots.append(node[1])
             return
+        if head == _PLACED_BY:
+            if negated:
+                raise ValueError(f"Unsupported negative GRSTAPS-X goal: {head}")
+            if len(node) != 4 or not all(isinstance(s, str) for s in node[1:]):
+                raise ValueError(f"Invalid arguments for GRSTAPS-X predicate {head!r}")
+            robot, obj, place = node[1:]
+            if obj not in found["manipulate"]:
+                found["manipulate"].append(obj)
+            found["destinations"][obj] = place
+            robots = found["bound"].setdefault("manipulate", {}).setdefault(obj, [])
+            if robot not in robots:
+                robots.append(robot)
+            return
         if head in _REGION_PREDS or head in _REGION_BOUND_PREDS:
             if negated:
                 raise ValueError(f"Unsupported negative GRSTAPS-X goal: {head}")
@@ -650,7 +667,8 @@ def parse_goal_targets(pddl_goal: str):
             raise ValueError(
                 f"Unsupported GRSTAPS-X goal predicate {head!r}; use visited-*, "
                 "visited-*-by, visited-region(-by), explored-region(-by), safe, "
-                "inspected-by, (not (suspicious ...)), or object-in-place. Final "
+                "inspected-by, (not (suspicious ...)), object-in-place or "
+                "object-placed-by. Final "
                 "poses, pick-and-hold and disjunctions are not implemented."
             )
         arity = 3 if head == "object-in-place" else 2
@@ -797,8 +815,11 @@ def enumerate_tasks(
             robots=robots,
         )
 
+    bound_manipulations = bound.get("manipulate", {})
     for sym in goal.manipulate_points or []:
         dest = (getattr(goal, "manipulate_destinations", None) or {}).get(sym.lower())
+        movers = bound_manipulations.get(sym.lower(), [])
+        by = f" by {', '.join(movers)}" if movers else ""
         if atomic_manipulation:
             # One task from "lift it" to "set it down". The scheduler already
             # gives a robot one task at a time, so making the carry atomic is
@@ -806,25 +827,28 @@ def enumerate_tasks(
             # split into pick and place, a robot can pick a second object
             # before putting the first down.
             first = add(
-                f"relocate-object {sym.lower()} :: relocate",
+                f"relocate-object {sym.lower()} :: relocate{by}",
                 _traits(MANIP),
                 durations["pick-object"] + durations["place-object"],
                 sym,
                 end=dest,
+                robots=movers,
             )
         else:
             first = add(
-                f"pick-object {sym.lower()} :: pick",
+                f"pick-object {sym.lower()} :: pick{by}",
                 _traits(MANIP),
                 durations["pick-object"],
                 sym,
+                robots=movers,
             )
             place = add(
-                f"place-object {sym.lower()} :: place",
+                f"place-object {sym.lower()} :: place{by}",
                 _traits(MANIP),
                 durations["place-object"],
                 sym,
                 end=dest,
+                robots=movers,
             )
             precedence.append([first, place])
         # An inspection of the same symbol gates the manipulation, matching the
@@ -1491,26 +1515,62 @@ def expand_regions(goal, dsg, graph, symbol_of_vertex, starts, fleet=None):
     )
 
 
+def _named_robots(goal):
+    """Robots the goal names for a task (the -by forms)."""
+    return {
+        r.lower()
+        for bound in (goal.robot_bound or {}, goal.region_bound or {})
+        for targets in bound.values()
+        for robots in targets.values()
+        for r in robots
+    }
+
+
+def _busy_robots(goal):
+    """Robots an additional task leaves alone (see world_state.BUSY_ROBOTS)."""
+    return unavailable_robots(
+        getattr(goal, "constraints", None),
+        getattr(goal, "world_state", None),
+        _named_robots(goal),
+    )
+
+
+def _unplannable(robot_id, goal, domain):
+    """Why robot_id's platform cannot run a GRSTAPS-X plan, or None."""
+    robot_type = str((getattr(goal, "robot_types", None) or {}).get(robot_id, ""))
+    robot_type = robot_type.strip().lower()
+    if robot_type in UNPLANNABLE_ROBOT_TYPES and robot_id not in (
+        domain.robot_species or {}
+    ):
+        reason = UNPLANNABLE_ROBOT_TYPES[robot_type]
+        return f"a {robot_type} cannot execute a GRSTAPS-X plan, since {reason}"
+    return None
+
+
 def _fleet_names(robot_states, goal, domain, quiet=False):
-    """Robots that can take part: a pose, and an executor that runs these plans."""
+    """Robots that can take part: a pose, and an executor that runs these plans,
+    and not busy with the current mission when the goal is an additional task."""
     names = []
+    busy = _busy_robots(goal)
     for robot_id, robot_pose in robot_states.items():
         if robot_pose is None:
             if not quiet:
                 logger.warning("Skipping robot %s: no pose available", robot_id)
             continue
-        robot_type = str((getattr(goal, "robot_types", None) or {}).get(robot_id, ""))
-        robot_type = robot_type.strip().lower()
-        if robot_type in UNPLANNABLE_ROBOT_TYPES and robot_id not in (
-            domain.robot_species or {}
-        ):
+        if robot_id.lower() in busy:
+            if not quiet:
+                logger.info(
+                    "Skipping robot %s: busy, and this is an additional task", robot_id
+                )
+            continue
+        why = _unplannable(robot_id, goal, domain)
+        if why:
             if not quiet:
                 logger.warning(
-                    "Skipping robot %s: a %s cannot execute a GRSTAPS-X plan, since %s. "
+                    "Skipping robot %s: %s. "
                     "Set robot_species for it to plan with it anyway.",
                     robot_id,
-                    robot_type,
-                    UNPLANNABLE_ROBOT_TYPES[robot_type],
+                    why,
                 )
             continue
         names.append(robot_id)
@@ -1557,11 +1617,22 @@ def residual_goal(goal, dsg):
     inspected = set(state.inspected)
     dests = dict(goal.manipulate_destinations or {})
     held, manipulate, done = {}, [], []
+    movers = (goal.robot_bound or {}).get("manipulate", {})
+    placed_by = getattr(state, "placed_by", None) or {}
+
+    def placed_by_right_robot(obj):
+        robots = movers.get(obj)
+        return not robots or any(obj in placed_by.get(r, ()) for r in robots)
+
     for obj in goal.manipulate_points:
         holder = state.holder_of(obj)
         if holder is not None:
             held.setdefault(holder, []).append((obj, dests.pop(obj, None)))
-        elif obj in dests and _nearest_place(dsg, obj) == dests[obj]:
+        elif (
+            obj in dests
+            and _nearest_place(dsg, obj) == dests[obj]
+            and placed_by_right_robot(obj)
+        ):
             done.append(f"relocate {obj}")
             dests.pop(obj)
         else:
@@ -1577,6 +1648,12 @@ def residual_goal(goal, dsg):
     }
     bound = {}
     for kind, targets in (goal.robot_bound or {}).items():
+        if kind == "manipulate":
+            # Pinned relocations follow their object: held, done or still to do.
+            left = {s: rs for s, rs in targets.items() if s in manipulate}
+            if left:
+                bound[kind] = left
+            continue
         for sym, robots in targets.items():
             left = [r for r in robots if sym not in by_robot[kind].get(r, ())]
             done += [f"{kind} {sym} by {r}" for r in robots if r not in left]
@@ -1874,7 +1951,14 @@ def ground_problem(
     for robot, objects in held.items():
         name = next((r for r in robot_states if r.lower() == robot), None)
         if name is None or robot_states.get(name) is None:
-            raise ValueError(f"{robot} holds {[o for o, _ in objects]} but has no pose")
+            # One robot out of touch must not stop the whole fleet: its objects
+            # stay out of this plan, and are planned once it is back.
+            logger.error(
+                "%s holds %s but has no pose; leaving them out of this plan",
+                robot,
+                [o for o, _ in objects],
+            )
+            continue
         prefix[name], start_after_prefix[name] = _carry_prefix(
             dsg, graph, vertices, robot_states[name], objects
         )
@@ -1891,8 +1975,15 @@ def ground_problem(
             "Nothing left to schedule%s",
             f"; carrying held objects first: {sorted(prefix)}" if prefix else "",
         )
+        fleet_names = _fleet_names(robot_states, goal, domain, quiet=True)
+        if not fleet_names:
+            # There is no robot to give an empty plan to; wrapping the goal's
+            # own robot_id (a base station, e.g. willow) fails in compile_plan.
+            raise ValueError(
+                "goal already satisfied: nothing to do (and no robot is online)"
+            )
         return _wrap(
-            _fleet_names(robot_states, goal, domain, quiet=True),
+            fleet_names,
             GroundedGrstapsProblem(
                 scenario_dir="",
                 domain=domain,
@@ -1984,7 +2075,25 @@ def ground_problem(
         fleet.append((robot_id, v))
 
     if not fleet:
-        raise ValueError("No robot in robot_states has a pose; nothing to plan for.")
+        busy = sorted(_busy_robots(goal) & {r.lower() for r in robot_states})
+        if busy:
+            raise ValueError(
+                f"every robot that could do this is busy ({', '.join(busy)}); "
+                "name one in the goal to interrupt it"
+            )
+        left_out = {
+            r: why
+            for r, pose in robot_states.items()
+            if pose is not None and (why := _unplannable(r, goal, domain))
+        }
+        if left_out:
+            raise ValueError(
+                "no robot online can run this plan: "
+                + "; ".join(f"{r} is online, but {w}" for r, w in left_out.items())
+            )
+        raise ValueError(
+            "No robot in robot_states has a pose (no robot is online); nothing to plan for."
+        )
 
     # A task pinned to a robot that is not planning cannot be given to anyone
     # else, so say why rather than plan without it.
@@ -2000,6 +2109,8 @@ def ground_problem(
         why = [
             f"{r} has no pose (its map->base_link transform is missing)"
             if r in known and robot_states[known[r]] is None
+            else f"{r} cannot take it: {_unplannable(known[r], goal, domain)}"
+            if r in known and _unplannable(known[r], goal, domain)
             else f"{r} is not a robot this planner can use"
             if r in known
             else f"{r} is not a known robot (known: {', '.join(sorted(known))})"

@@ -251,6 +251,12 @@ def compile_grstaps_plan(plan: GrstapsPlan, plan_id, robot_name, frame_id):
     for leg, task in _agent_steps(plan, robot_name):
         task_id = str(task.get("id")) if task.get("id") is not None else ""
         travel = None
+        if leg is not None and len(leg) == 1:
+            # The task is where the robot stands: the solver's degenerate leg.
+            # The executor's planners need two points, and the Follow is kept
+            # because a visit's gate rides on it.
+            start = leg[0] if at is None else np.asarray(at, dtype=float)[:2]
+            leg = np.vstack([start, leg])
         if leg is not None and len(leg):
             travel = Follow(frame=frame_id, path2d=leg)
             actions.append(travel)
@@ -389,7 +395,9 @@ class GrstapsRos:
             robot_id=msg.goal.robot_id,
             constraints=persistent + per_msg,
             world_state=(
-                world_state_for(msg.goal.pddl_goal) if world_state_for else None
+                world_state_for(msg.goal.pddl_goal, constraints=persistent + per_msg)
+                if world_state_for
+                else None
             ),
         )
         return self._request(goal, robot_poses)
