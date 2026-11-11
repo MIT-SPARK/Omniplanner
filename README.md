@@ -98,11 +98,13 @@ an aerial navigation or execution stack.
 | `(visited-object-by hamilton o8)` / `(visited-place-by hamilton t299)` | A visit only that robot may do; requires `entry: itags` |
 | `(inspected-by hamilton o4)` | A coalition inspection whose team includes that robot; requires `entry: itags` |
 | `(object-in-place o4 t598)` | Atomic relocation by a manipulator; requires `entry: itags` |
+| `(holding hamilton o4)` | That robot picks the object up and still holds it when the plan ends: a `Pick` with no `Place`, and nothing else for that robot in this plan; requires `entry: itags` |
 | `(visited-region r3)` / `(visited-region-by hamilton r3)` | One visit at a place in the region's core (its inner half, as on the fast-downward path), the core place nearest the robots that may take it; requires `entry: itags` |
 | `(explored-region r3)` / `(explored-region-by hamilton r3)` | Visits at coverage waypoints over the region, split between robots by the allocator (or all pinned to that robot); requires `entry: itags` |
 | `[["before", "o4", "o8"]]` | Every task for `o4` must finish before any task for `o8`; ITAGS only |
 | `[["forbidden-poi", "o5"]]` | Isolate graph vertices within the configured path-distance radius |
 | `[["forbidden-edge", "t3", "t4"]]` | Remove the undirected edge between the snapped endpoints |
+| `[["use-robots", "euclid", "hamilton"]]` | Only these robots take tasks; the rest of the fleet gets an empty plan and stops |
 
 Example: move an object, then visit another:
 
@@ -131,6 +133,24 @@ to that robot (or include it in the inspection team). Unpinned tasks are left
 to the allocator. A goal that pins work to a robot with no pose fails and says
 so; the robots then stop, as for any goal that cannot be planned.
 
+**use-robots.** The constraint the fast-downward path reads: robots it does not
+name are left out of the solve and get an empty plan, so they stop. Naming a
+robot that is not in the fleet, or naming only robots that cannot take part (no
+pose, busy, or a platform GRSTAPS-X does not plan for, such as a husky), is a
+planning error, as is a `-by` or `holding` robot outside the set.
+
+**holding.** `(holding r o)` becomes one pick task, `pick-object o :: hold by r`,
+pinned to `r` by its identity trait and, when `o` is also to be inspected,
+ordered after the inspection. For that plan `r`'s species carries *only* its
+identity trait, so the pick is the one task it can serve: it cannot join an
+inspection or take a visit, and it ends the plan holding the object (the
+executor runs the same `Pick` as for a fast-downward holding goal). The holder
+must have a manipulator (`spot_arm`); a husky is refused. Two holding goals for
+one robot, a holding robot also named in a `-by` goal, and holding an object
+that is also to be placed are refused. On replanning, a robot that already
+holds its object gets no pick and still takes no other task; an object in
+another robot's hand is an error.
+
 **Region goals.** An ITAGS task stands at one graph vertex, so a region (a ROOMS
 node, whose places come from the same `place-in-region` facts fast-downward
 uses) is expanded into place visits before tasks are enumerated
@@ -148,7 +168,7 @@ The goal manager cannot judge region goals (it has no membership), so it always
 replans them.
 
 **Goal-language limits:** this is a restricted PDDL adapter. Disjunctions (`or`),
-robot-specific final poses (`at-*`), pick-and-hold (`holding`), unknown predicates,
+robot-specific final poses (`at-*`), unknown predicates,
 and negative goals other than `(not (suspicious ...))` are rejected. The GRSTAPS
 agent prompt uses the supported forms above. Inspection commands a gaze; it
 does not itself prove an object is safe. See [remaining work](docs/grstaps-roadmap.md).
@@ -215,7 +235,7 @@ planners:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `entry` | `pddl` | `itags` sends tasks and ordering straight to the solver; needed for `before`, relocation destinations and `-by` |
+| `entry` | `pddl` | `itags` sends tasks and ordering straight to the solver; needed for `before`, relocation destinations, `-by` and `holding` |
 | `run_mode` | `docker` | `native` runs the local `itags` binary (required by `entry: itags`) |
 | `robot_type_species` | `{}` | `{robot_type: species}` for the whole fleet, read from `omniplanner_plugins.yaml`'s `robot_type` |
 | `robot_species` | `{}` | `{robot_name: species}` for one robot; wins over the type |

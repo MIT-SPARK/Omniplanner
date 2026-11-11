@@ -21,6 +21,8 @@ import spark_dsg
 from dsg_pddl.dsg_pddl_grounding_multirobot import (
     FORBIDDEN_RADIUS_ENV,
     _forbidden_radius_m,
+    _unknown_robots,
+    assigned_robots,
     region_core,
 )
 from dsg_pddl.pddl_utils import lisp_string_to_ast
@@ -426,6 +428,12 @@ class GrstapsGoal:
     # places are the mesh places inside it. The console's operator-drawn
     # mission areas (area1, area2, ...) arrive this way.
     region_polygons: Dict[str, List[List[float]]] = field(default_factory=dict)
+    # (holding ?r ?o) goals, {robot -> object}: the robot picks the object up
+    # and still holds it when the plan ends, so it does nothing else in this
+    # plan. holding_done lists the robots already holding theirs (residual_goal):
+    # no pick is planned for them, and they still take no other task.
+    holding: Dict[str, str] = field(default_factory=dict)
+    holding_done: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -450,6 +458,10 @@ class GroundedGrstapsProblem:
     # goal a place visit stands for (expand_regions), so a plan can say
     # "explore r6 (3/9)" rather than name a bare mesh place.
     region_of: Dict[str, dict] = field(default_factory=dict)
+    # {robot -> object} for the holding goals the solver plans a pick for: the
+    # solution is checked to give each of these robots that pick and nothing
+    # else.
+    holders: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -534,8 +546,7 @@ _GOAL_PREDS = {
     # inspect removes suspicion; `safe` is the same idea stated positively
     "safe": ("inspect", -1),
     "suspicious": ("inspect", -1),  # only meaningful under (not ...)
-    # pick leaves the robot holding; place puts the object somewhere
-    "holding": ("manipulate", -1),
+    # place puts the object somewhere; (holding ?r ?o) is parsed on its own
     "object-in-place": ("manipulate", 1),  # (object-in-place ?o ?p) -- ?o
 }
 
@@ -552,6 +563,9 @@ _BOUND_PREDS = {
 # (object-placed-by ?r ?o ?p): ?r itself relocates ?o to ?p. A relocation
 # like object-in-place, pinned to that robot.
 _PLACED_BY = "object-placed-by"
+# (holding ?r ?o): ?r picks ?o up and still holds it when the plan ends. Always
+# names its robot -- the domain has no robot-free holding.
+_HOLDING = "holding"
 
 # Region goals, the multirobot FD domain's vocabulary again. A region is a set
 # of places, which no single ITAGS task can stand for (a task is one vertex),
@@ -594,6 +608,8 @@ def parse_goal_targets(pddl_goal: str):
         # {"visit"|"explore" -> {region -> [robots]}}
         "regions": {"visit": [], "explore": []},
         "region_bound": {},
+        # {robot -> object it holds when the plan ends}, from (holding ?r ?o)
+        "holding": {},
     }
 
     def walk(node, negated=False):
@@ -644,6 +660,30 @@ def parse_goal_targets(pddl_goal: str):
             if robot not in robots:
                 robots.append(robot)
             return
+        if head == _HOLDING:
+            if negated:
+                raise ValueError(f"Unsupported negative GRSTAPS-X goal: {head}")
+            if len(node) != 3 or not all(isinstance(s, str) for s in node[1:]):
+                raise ValueError(
+                    "Invalid arguments for GRSTAPS-X predicate 'holding'; use "
+                    "(holding <robot> <object>)"
+                )
+            robot, obj = node[1], node[2]
+            r, o = robot.lower(), obj.lower()
+            held = found["holding"]
+            if r in held and held[r] != o:
+                raise ValueError(
+                    f"Two holding goals for {robot} ({held[r]} and {o}): a robot "
+                    "can hold only one object at a time"
+                )
+            other = next((x for x, y in held.items() if y == o and x != r), None)
+            if other is not None:
+                raise ValueError(
+                    f"Two robots asked to hold {obj} ({other} and {robot}): only "
+                    "one can"
+                )
+            held[r] = o
+            return
         if head in _REGION_PREDS or head in _REGION_BOUND_PREDS:
             if negated:
                 raise ValueError(f"Unsupported negative GRSTAPS-X goal: {head}")
@@ -664,13 +704,13 @@ def parse_goal_targets(pddl_goal: str):
                     robots.append(node[1])
             return
         entry = _GOAL_PREDS.get(head)
-        if entry is None or head in ("at-place", "at-object", "holding"):
+        if entry is None or head in ("at-place", "at-object"):
             raise ValueError(
                 f"Unsupported GRSTAPS-X goal predicate {head!r}; use visited-*, "
                 "visited-*-by, visited-region(-by), explored-region(-by), safe, "
-                "inspected-by, (not (suspicious ...)), object-in-place or "
-                "object-placed-by. Final "
-                "poses, pick-and-hold and disjunctions are not implemented."
+                "inspected-by, (not (suspicious ...)), object-in-place, "
+                "object-placed-by or holding. Final "
+                "poses and disjunctions are not implemented."
             )
         arity = 3 if head == "object-in-place" else 2
         if len(node) != arity or not all(isinstance(s, str) for s in node[1:]):
@@ -709,6 +749,9 @@ def _visit_targets(pddl_goal: str):
         for s in found[kind] + list(found["bound"].get(kind, {})):
             if s not in out:
                 out.append(s)
+    for s in found["holding"].values():
+        if s not in out:
+            out.append(s)
     return out
 
 
@@ -773,6 +816,10 @@ def enumerate_tasks(
     inspect_set = {s.lower() for s in (goal.inspect_points or [])}
     inspect_set |= set(bound.get("inspect", {}))
     manipulate_set = {s.lower() for s in (goal.manipulate_points or [])}
+    holding = {
+        r.lower(): s.lower() for r, s in (getattr(goal, "holding", None) or {}).items()
+    }
+    manipulate_set |= set(holding.values())
     bound_visits = bound.get("visit", {})
 
     for sym in goal.goal_points or []:
@@ -857,6 +904,26 @@ def enumerate_tasks(
         for prior in of_symbol.get(sym.lower(), []):
             if tasks[prior]["name"].startswith("inspect-object"):
                 precedence.append([prior, first])
+
+    # (holding r o): r picks o up and keeps it -- a pick with no place. The task
+    # demands r's identity trait and nothing else, and grounding gives r a
+    # species carrying only that identity (see ground_problem): r can take this
+    # task and no other, and no other robot can take this one.
+    done = {r.lower() for r in getattr(goal, "holding_done", None) or ()}
+    for robot, sym in holding.items():
+        if robot in done:
+            continue  # already in its hand
+        pick = add(
+            f"pick-object {sym} :: hold by {robot}",
+            [0] * TRAIT_DIM,
+            durations["pick-object"],
+            sym,
+            robots=[robot],
+        )
+        # Look before grabbing, as for a relocation.
+        for prior in of_symbol.get(sym, [])[:-1]:
+            if tasks[prior]["name"].startswith("inspect-object"):
+                precedence.append([prior, pick])
 
     return tasks, of_symbol, precedence
 
@@ -1493,8 +1560,8 @@ def expand_regions(goal, dsg, graph, symbol_of_vertex, starts, fleet=None):
     )
 
 
-def _named_robots(goal):
-    """Robots the goal names for a task (the -by forms)."""
+def _bound_robots(goal):
+    """Robots the -by forms name for a task."""
     return {
         r.lower()
         for bound in (goal.robot_bound or {}, goal.region_bound or {})
@@ -1502,6 +1569,88 @@ def _named_robots(goal):
         for robots in targets.values()
         for r in robots
     }
+
+
+def _holding_robots(goal):
+    """Robots a (holding ?r ?o) goal names."""
+    return {r.lower() for r in getattr(goal, "holding", None) or {}}
+
+
+def _named_robots(goal):
+    """Robots the goal names for a task (the -by forms and holding)."""
+    return _bound_robots(goal) | _holding_robots(goal)
+
+
+def _use_robots(goal, robot_states):
+    """Robots a use-robots constraint limits the plan to (lowercase), or None.
+
+    The same constraint the fast-downward grounder reads (assigned_robots);
+    naming a robot that does not exist is an error, in its words.
+    """
+    allowed = assigned_robots(getattr(goal, "constraints", None))
+    if allowed is None:
+        return None
+    by_lower = {r.lower(): r for r in robot_states}
+    unknown = sorted(allowed - set(by_lower))
+    if unknown:
+        raise ValueError(_unknown_robots(unknown, robot_states))
+    return allowed
+
+
+def _robot_type(goal, robot):
+    types = {str(k).lower(): v for k, v in (goal.robot_types or {}).items()}
+    return str(types.get(robot.lower(), "") or "").strip().lower()
+
+
+def _check_named_robots(goal, domain, allowed):
+    """Refuse goals whose robot names contradict each other, before planning.
+
+    A -by or holding robot must be one use-robots allows; a holding robot does
+    nothing else in this plan, so it may not also be named for another task;
+    and it has to be able to pick the object up.
+    """
+    holding = goal.holding or {}
+    if allowed is not None:
+        outside = sorted(_named_robots(goal) - allowed)
+        if outside:
+            raise ValueError(
+                f"The goal assigns work to {', '.join(outside)}, but use-robots "
+                f"limits the plan to {', '.join(sorted(allowed))}"
+            )
+    for robot in sorted(_holding_robots(goal) & _bound_robots(goal)):
+        raise ValueError(
+            f"{robot} must end the plan holding {holding[robot]}, so it can do "
+            "nothing else in this plan, but the goal also names it for another "
+            "task (a -by goal); give that task to another robot or drop one of "
+            "the two"
+        )
+    manipulated = {s.lower() for s in goal.manipulate_points or []}
+    state = getattr(goal, "world_state", None)
+    cannot = {r.lower() for r in getattr(state, "cannot_manipulate", None) or ()}
+    for robot, obj in sorted(holding.items()):
+        if obj in manipulated:
+            raise ValueError(
+                f"{obj} cannot both stay in {robot}'s hand and be put down "
+                "somewhere (object-in-place / object-placed-by)"
+            )
+        robot_type = _robot_type(goal, robot)
+        if robot_type == "husky" or robot in cannot:
+            raise ValueError(
+                f"{robot} is a {robot_type or 'robot'} with no arm: it cannot "
+                f"pick {obj} up, so it cannot hold it"
+            )
+        species = species_for(
+            robot_type,
+            domain.robot_species,
+            next((r for r in goal.robot_types or {} if r.lower() == robot), robot),
+            domain.robot_type_species,
+        )
+        if not SPECIES[species]["traits"][MANIP]:
+            raise ValueError(
+                f"{robot} ({robot_type or 'unknown type'}, planned as {species}) "
+                f"has no manipulator, so it cannot pick {obj} up; set "
+                "robot_species for it (e.g. spot_arm) if it has an arm"
+            )
 
 
 def _busy_robots(goal):
@@ -1637,6 +1786,20 @@ def residual_goal(goal, dsg):
             done += [f"{kind} {sym} by {r}" for r in robots if r not in left]
             if left:
                 bound.setdefault(kind, {})[sym] = left
+    # A holding goal is done once that robot has the object in hand. It still
+    # holds it, so it still takes no other task (holding_done).
+    holding_done = []
+    for robot, obj in (getattr(goal, "holding", None) or {}).items():
+        holder = state.holder_of(obj)
+        if holder is None:
+            continue
+        if holder.lower() != robot.lower():
+            raise ValueError(
+                f"(holding {robot} {obj}): {obj} is in {holder}'s hand. Have "
+                f"{holder} put it down first, or ask for (holding {holder} {obj})"
+            )
+        holding_done.append(robot)
+        done.append(f"hold {obj} by {robot}")
     dropped = done or held
     if dropped:
         logger.info(
@@ -1660,6 +1823,7 @@ def residual_goal(goal, dsg):
             manipulate_destinations=dests,
             extra_precedence=extra,
             robot_bound=bound,
+            holding_done=holding_done,
         ),
         held,
     )
@@ -1827,11 +1991,12 @@ def ground_problem(
         or goal.region_visits
         or goal.region_explores
         or goal.region_bound
+        or goal.holding
         or any(getattr(c, "predicate", None) == "before" for c in goal.constraints)
     ):
         raise ValueError(
-            "Relocation destinations, explicit ordering, robot-pinned tasks and "
-            "region goals require entry='itags'"
+            "Relocation destinations, explicit ordering, robot-pinned tasks, "
+            "holding goals and region goals require entry='itags'"
         )
     # Match PDDL's case-insensitive symbols and avoid duplicate scheduled tasks.
     goal = replace(
@@ -1860,7 +2025,15 @@ def ground_problem(
             }
             for kind, targets in (goal.region_bound or {}).items()
         },
+        holding={r.lower(): o.lower() for r, o in (goal.holding or {}).items()},
     )
+    # use-robots: only these robots take tasks; the rest of the fleet gets an
+    # empty plan, as on the fast-downward path. None when every robot may.
+    allowed = _use_robots(goal, robot_states)
+    _check_named_robots(goal, domain, allowed)
+
+    def may_plan(robot_id):
+        return allowed is None or robot_id.lower() in allowed
 
     graph, vertices, _, symbol_of_vertex = _mesh_place_graph(dsg)
     if not vertices:
@@ -1909,7 +2082,13 @@ def ground_problem(
     # Region goals become place visits before anything counts tasks; this also
     # drops what the mission already did of them, so it needs the pruned graph
     # (reachability) and runs ahead of residual_goal.
-    fleet_names = _fleet_names(robot_states, goal, domain, quiet=True)
+    fleet_names = [
+        r for r in _fleet_names(robot_states, goal, domain, quiet=True) if may_plan(r)
+    ]
+    # A holding robot takes no visit, so it does not decide where one goes.
+    region_pool = [
+        r for r in fleet_names if r.lower() not in _holding_robots(goal)
+    ] or fleet_names
     goal, region_of, places_of = expand_regions(
         goal,
         dsg,
@@ -1921,7 +2100,7 @@ def ground_problem(
             )
             for r in fleet_names
         },
-        fleet_names,
+        region_pool,
     )
     goal, held = residual_goal(goal, dsg)
 
@@ -1946,6 +2125,7 @@ def ground_problem(
         or goal.inspect_points
         or goal.manipulate_points
         or goal.robot_bound
+        or set(goal.holding) - set(goal.holding_done)
     ):
         # Nothing left for the solver -- it rejects an empty task list -- so
         # the plan is just the carries, or nothing at all for an achieved goal.
@@ -2007,6 +2187,7 @@ def ground_problem(
         + list(getattr(goal, "inspect_points", None) or [])
         + list((getattr(goal, "manipulate_destinations", None) or {}).values())
         + [sym for targets in goal.robot_bound.values() for sym in targets]
+        + [o for r, o in goal.holding.items() if r not in goal.holding_done]
     ):
         if s.lower() not in _seen_lower:
             _seen_lower.add(s.lower())
@@ -2039,8 +2220,13 @@ def ground_problem(
 
     # Every robot with a pose joins the fleet, so GRSTAPS-X can actually
     # allocate. Robots without one are skipped rather than failing the request.
-    fleet = []
+    # Robots use-robots leaves out, and those already holding what a holding
+    # goal asks for, stay out of the solve and get an empty plan (idle).
+    fleet, idle = [], []
     for robot_id in _fleet_names(robot_states, goal, domain):
+        if not may_plan(robot_id) or robot_id.lower() in goal.holding_done:
+            idle.append(robot_id)
+            continue
         robot_pose = robot_states[robot_id]
         # A robot carrying a held object starts its schedule where it puts it
         # down: the carry runs before anything the solver gives it.
@@ -2052,12 +2238,37 @@ def ground_problem(
         nodes[f"_start_{v['id']}"] = {"x": v["x"], "y": v["y"], "id": v["id"]}
         fleet.append((robot_id, v))
 
+    if not fleet and allowed is not None:
+        known = {r.lower(): r for r in robot_states}
+        busy = _busy_robots(goal)
+        why = []
+        for r in sorted(allowed):
+            name = known[r]
+            if robot_states[name] is None:
+                why.append(f"{r} has no pose")
+            elif r in busy:
+                why.append(f"{r} is busy, and this is an additional task")
+            elif _unplannable(name, goal, domain):
+                why.append(f"{r}: {_unplannable(name, goal, domain)}")
+            elif r in goal.holding_done:
+                why.append(f"{r} already holds {goal.holding[r]} and keeps it")
+        raise ValueError(
+            f"use-robots names {sorted(allowed)}, but none of them can take "
+            f"part: {'; '.join(why)}; robots with a pose: "
+            f"{sorted(r for r, p in robot_states.items() if p is not None)}"
+        )
     if not fleet:
         busy = sorted(_busy_robots(goal) & {r.lower() for r in robot_states})
         if busy:
             raise ValueError(
                 f"every robot that could do this is busy ({', '.join(busy)}); "
                 "name one in the goal to interrupt it"
+            )
+        keeping = [r for r in goal.holding_done if r in {x.lower() for x in idle}]
+        if keeping:
+            raise ValueError(
+                f"{', '.join(keeping)} already hold(s) what the goal asks and "
+                "must keep it, and no other robot online can take the rest"
             )
         left_out = {
             r: why
@@ -2075,12 +2286,13 @@ def ground_problem(
 
     # A task pinned to a robot that is not planning cannot be given to anyone
     # else, so say why rather than plan without it.
+    holders = {r: o for r, o in goal.holding.items() if r not in set(goal.holding_done)}
     named = {
         r
         for targets in goal.robot_bound.values()
         for rs in targets.values()
         for r in rs
-    }
+    } | set(holders)
     absent = sorted(named - {robot_id.lower() for robot_id, _ in fleet})
     if absent:
         known = {r.lower(): r for r in robot_states}
@@ -2178,13 +2390,22 @@ def ground_problem(
         ", ".join(f"{r}={s}" for r, s in sorted(robot_species.items())),
     )
     # Species: what each robot supplies. With pinned tasks every robot gets
-    # its own, its platform's traits plus its identity trait.
+    # its own, its platform's traits plus its identity trait. A robot that must
+    # end the plan holding an object supplies ONLY its identity: its pick task
+    # demands nothing more, and every other task demands a capability it then
+    # lacks, so the allocator cannot give it anything else.
     species_traits = {}
     for robot_id, kind in list(robot_species.items()):
         traits = _pad(SPECIES[kind]["traits"], width)
         if identity:
+            if robot_id.lower() in holders:
+                traits = [0] * width
             traits[identity[robot_id.lower()]] = 1
-            robot_species[robot_id] = f"{kind}@{robot_id}"
+            robot_species[robot_id] = (
+                f"{kind}-holding@{robot_id}"
+                if robot_id.lower() in holders
+                else f"{kind}@{robot_id}"
+            )
         species_traits[robot_species[robot_id]] = (kind, traits)
     used = sorted(species_traits)
 
@@ -2319,6 +2540,16 @@ def ground_problem(
         )
         if not tasks:
             raise ValueError("No tasks to allocate; nothing to plan for.")
+        if holders and all(r.lower() in holders for r, _ in fleet):
+            rest = [t["name"] for t in tasks if ":: hold by " not in t["name"]]
+            if rest:
+                raise ValueError(
+                    f"{', '.join(sorted(holders))} must end the plan holding "
+                    f"{', '.join(holders[r] for r in sorted(holders))} and so can "
+                    "do nothing else, and no other robot "
+                    + ("that use-robots allows " if allowed is not None else "")
+                    + f"is available for the rest: {', '.join(rest)}"
+                )
         if len(tasks) > max_tasks():
             raise ValueError(
                 f"The goal makes {len(tasks)} GRSTAPS-X tasks, more than it can allocate "
@@ -2410,8 +2641,15 @@ def ground_problem(
         motion_graph=graph,
         prefix=prefix,
         region_of=region_of,
+        holders=holders,
     )
-    return _wrap([robot_id for robot_id, _ in fleet], grounded, goal.robot_id)
+    if idle:
+        logger.info(
+            "Not planning for %s (use-robots, or already holding); they get an "
+            "empty plan",
+            ", ".join(idle),
+        )
+    return _wrap([robot_id for robot_id, _ in fleet] + idle, grounded, goal.robot_id)
 
 
 # The solver parameters omniplanner runs with: GRSTAPS-X's wpc_spread scenario,
@@ -2695,6 +2933,29 @@ def _itags_progress(problem: GroundedGrstapsProblem):
         return None
 
 
+def _check_holders(holders, agents, by_id):
+    """A holding robot's schedule must be exactly its pick: nothing after it.
+
+    Grounding makes that the only task the robot's traits can serve, so this
+    never fires on a correct allocation; it stops a plan that would have the
+    robot do something else with the object in hand from reaching it.
+    """
+    for agent in agents:
+        robot = str(agent.get("name", "")).lower()
+        if robot not in holders:
+            continue
+        names = [
+            (by_id.get(i) or {}).get("name", "?")
+            for i in agent.get("individual_plan") or []
+        ]
+        want = f"pick-object {holders[robot]} :: hold by {robot}"
+        if names != [want]:
+            raise Exception(
+                f"GRSTAPS-X gave {robot}, which must end holding {holders[robot]}, "
+                f"the schedule {names}; expected only [{want!r}]"
+            )
+
+
 @dispatch
 def make_plan(problem: GroundedGrstapsProblem, map_context: Any) -> GrstapsPlan:
     if problem.nothing_to_solve:
@@ -2771,6 +3032,7 @@ def make_plan(problem: GroundedGrstapsProblem, map_context: Any) -> GrstapsPlan:
         )
     symbol_of_vertex = problem.symbol_of_vertex
     by_id = {t.get("id"): t for t in tasks}
+    _check_holders(problem.holders, agents, by_id)
     for a in agents:
         legs = a.get("transitions") or []
         n_pts = sum(len(tr.get("path") or []) for tr in legs)
