@@ -31,6 +31,14 @@ from dsg_pddl.pddl_grounding import ConstraintFact, MultiRobotPddlDomain, PddlGo
 
 from omniplanner.world_state import WorldState
 
+
+@pytest.fixture(autouse=True)
+def _objects_start_suspicious(monkeypatch):
+    """These missions were written for the inspect-before-pick rule (every object
+    starts suspicious); the default is now objects start safe (see
+    test_pick_needs_no_inspect_by_default)."""
+    monkeypatch.setenv("OMNIPLANNER_OBJECTS_SUSPICIOUS", "1")
+
 DOMAIN = "RegionObjectRearrangementDomain_MultiRobot_FD_Explore.pddl"
 NX, NY = 10, 6  # grid of places, 1 m apart
 
@@ -669,3 +677,12 @@ def test_quantified_goals_keep_the_full_object_universe(quantifier):
         assert targets <= visited
     else:
         assert targets & visited
+
+
+@pytest.mark.parametrize("scope", ["goal_relevant", "full"])
+def test_pick_needs_no_inspect_by_default(scope, monkeypatch):
+    # objects start safe: a pick plan goes from reaching the object to the grasp
+    monkeypatch.delenv("OMNIPLANNER_OBJECTS_SUSPICIOUS", raising=False)
+    plan = _plan(grid_dsg(), "(holding euclid o0)", scope=scope)
+    acts = [a[0] for a in plan.symbolic_actions]
+    assert "pick-object" in acts and "inspect" not in acts

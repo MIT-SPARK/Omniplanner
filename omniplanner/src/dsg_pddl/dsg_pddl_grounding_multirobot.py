@@ -53,6 +53,26 @@ from omniplanner.world_state import goal_tokens, unavailable_robots
 logger = logging.getLogger(__name__)
 
 
+# Objects that start "suspicious" (pick-object needs (safe ?o) = not suspicious, so a
+# suspicious object must be inspected before it is picked). Every object starts safe:
+# a pick plan goes straight from reaching the object to the grasp, without a gaze.
+# Set OMNIPLANNER_OBJECTS_SUSPICIOUS=1 for the old rule (every object not yet inspected
+# in this mission starts suspicious).
+def initial_suspicious_facts(symbols, world_state):
+    if os.environ.get("OMNIPLANNER_OBJECTS_SUSPICIOUS", "0").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return []
+    inspected = world_state.inspected if world_state is not None else set()
+    return [
+        ("suspicious", s.symbol)
+        for s in symbols
+        if s.layer == "object" and s.symbol not in inspected
+    ]
+
+
 def assigned_robots(constraints):
     """Robots a ``use-robots`` constraint limits the plan to, or None for any.
 
@@ -638,12 +658,9 @@ def generate_multirobot_region_pddl(
         raw_pddl_goal_string, robot_ids, world_state
     )
 
-    # Every object starts suspicious, except those the mission already inspected.
-    object_symbols = [s for s in symbols_of_interest if s.layer == "object"]
-    inspected = world_state.inspected if world_state is not None else set()
-    init_facts_tuples += [
-        ("suspicious", o.symbol) for o in object_symbols if o.symbol not in inspected
-    ]
+    # Objects start safe (no "suspicious" facts): picking one does not need an
+    # inspect first. See initial_suspicious_facts.
+    init_facts_tuples += initial_suspicious_facts(symbols_of_interest, world_state)
     if world_state is not None:
         init_facts_tuples = apply_world_state(
             init_facts_tuples, world_state, symbols_of_interest, robot_ids
@@ -1071,12 +1088,7 @@ def generate_goal_relevant_multirobot_pddl(
         symbols.append(
             PddlSymbol(rid, "robot", [], position=np.array(robot_states[rid][:2]))
         )
-    inspected = world_state.inspected if world_state is not None else set()
-    init += [
-        ("suspicious", s.symbol)
-        for s in symbols
-        if s.layer == "object" and s.symbol not in inspected
-    ]
+    init += initial_suspicious_facts(symbols, world_state)
     if world_state is not None:
         init = apply_world_state(init, world_state, symbols, robot_ids)
 
