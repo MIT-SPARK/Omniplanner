@@ -600,3 +600,40 @@ def test_a_new_mission_forgets_visits_but_not_holding():
     )
     assert state.visited == set()
     assert node.world_tracker._reported_holding == {"testbot_a": {"o2"}}
+
+
+# ---------- robot-scoped goals: use-robots leaves the rest of the fleet alone ----------
+
+
+def _use(*robots):
+    return [NS(predicate="use-robots", symbols=list(robots))]
+
+
+def test_a_use_robots_goal_sends_nothing_to_the_others_and_puts_nothing_down():
+    """2026-11-11 (b): a goal for one robot made the carrying robot put its
+    object down where it stood."""
+    node = _mid_carry()
+    state = node.world_state_for(
+        "(at-place testhusky t3)", constraints=_use("testhusky")
+    )
+    assert state.holding == {"testbot_a": ["o58"]}  # still in its hand
+    out = node.finalize_plans(
+        {
+            "testbot_a": ActionSequence("r7", "testbot_a", []),
+            "testhusky": _path((3, 0)),
+        },
+        node.f_poses,
+    )
+    assert list(out) == ["testhusky"]  # no empty plan, no put-down
+    assert node._plan_ids["testbot_a"] == "carry"  # its carry goes on, watched
+    assert not any("interrupting" in m for m in _warnings(node))
+
+
+def test_a_use_robots_robot_holding_what_the_goal_wants_is_planned_with_it():
+    node = _mid_carry()
+    state = node.world_state_for(
+        "(object-in-place o58 t1)", constraints=_use("testbot_a")
+    )
+    assert state.holding == {"testbot_a": ["o58"]}
+    assert node._pending_release == {}
+    assert node._pending_busy == {"testbot_b", "testhusky"}
