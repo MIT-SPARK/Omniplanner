@@ -38,6 +38,22 @@ def domain(scope):
     return d
 
 
+def first_agent_position(G):
+    """Position of the first agent (keyframe) node of the map.
+
+    Agents live in the non-zero partitions of the agents layer (one per robot
+    prefix, e.g. 'a', 'b'); partition 0 of that layer holds the objects.
+    """
+    agents = spark_dsg.DsgLayers.name_to_layer_id("AGENTS").layer
+    for key in sorted(G.layer_keys, key=lambda k: (k.layer, k.partition)):
+        if key.layer != agents or key.partition == 0:
+            continue
+        for node in G.get_layer(key.layer, key.partition).nodes:
+            attrs = node.attributes  # keep it alive while copying its position
+            return np.array(attrs.position, dtype=float)
+    raise SystemExit("the map has no agent nodes; pass --start X Y")
+
+
 def reachable_objects(G, start):
     planner = LayerPlanner(G, spark_dsg.DsgLayers.MESH_PLACES).restricted_to_component(
         start
@@ -78,8 +94,7 @@ def main():
     if a.start:
         start = np.array(a.start)
     else:
-        agent = next(iter(G.get_layer(spark_dsg.DsgLayers.AGENTS, "a").nodes))
-        start = np.asarray(agent.attributes.position)[:2]
+        start = first_agent_position(G)[:2]
     robots = {"hamilton": start, "euclid": start + 0.1}
     objects = reachable_objects(G, start)
     rng = random.Random(0)
