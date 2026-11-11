@@ -314,9 +314,9 @@ class OmniPlannerRos(Node):
 
     def hb_callback(self):
         with (
-            self.last_dsg_time_lock
-            and self.current_planner_lock
-            and self.plan_time_start_lock
+            self.last_dsg_time_lock,
+            self.current_planner_lock,
+            self.plan_time_start_lock,
         ):
             dsg_age = time.time() - self.last_dsg_time
             have_recent_dsg = dsg_age < 15
@@ -372,7 +372,7 @@ class OmniPlannerRos(Node):
                 plan_goal(msg, superseded=lambda: number != self.goal_count)
 
         def done_planning():
-            with self.current_planner_lock and self.plan_time_start_lock:
+            with self.current_planner_lock, self.plan_time_start_lock:
                 self.current_planner = None
                 self.plan_time_start = None
 
@@ -386,7 +386,7 @@ class OmniPlannerRos(Node):
                 self.get_logger().error("Got plan request, but no DSG!")
                 return
 
-            with self.current_planner_lock and self.plan_time_start_lock:
+            with self.current_planner_lock, self.plan_time_start_lock:
                 self.current_planner = name
                 self.plan_time_start = time.time()
 
