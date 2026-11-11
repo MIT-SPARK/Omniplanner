@@ -57,6 +57,9 @@ adds:
   names it. Without that constraint a goal is a repair of the mission, and
   any robot may be interrupted; one holding an object still places it or
   puts it down first.
+* robot-scoped goals: a goal with a ``use-robots`` constraint is planned for
+  those robots only, and every other robot is left alone the same way: no
+  plan (not even an empty one), and what it holds is not put down.
 
 This module does **not** override ``register_plugin`` or duplicate the
 plan-handling logic in ``OmniPlannerRos``; the plugin-side ``pddl_callback``
@@ -72,6 +75,7 @@ import uuid
 import numpy as np
 import rclpy
 import spark_dsg
+from dsg_pddl.dsg_pddl_grounding_multirobot import assigned_robots
 from dsg_pddl.pddl_grounding import ConstraintFact
 from heracles_ros_interfaces.msg import SceneChangeMsg
 from nav_msgs.msg import Path
@@ -646,15 +650,26 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 )
             state = self.world_tracker.snapshot(dsg)
         busy = unavailable_robots(constraints, state, goal_tokens(pddl_goal))
-        planning, release = split_held(state, kept_objects(pddl_goal))
+        # A use-robots goal is theirs alone: the rest of the fleet is left
+        # alone, and keeps holding what it holds.
+        assigned = assigned_robots(constraints)
+        outside = set()
+        if assigned is not None:
+            outside = {
+                r.lower() for r in (getattr(self, "robot_adaptors", None) or {})
+            } - assigned
+        kept = kept_objects(pddl_goal) | {
+            o for r in outside for o in state.holding.get(r, [])
+        }
+        planning, release = split_held(state, kept)
         planning.cannot_manipulate = {
             r
             for r in (getattr(self, "robot_adaptors", None) or {})
             if self._is_path_robot(r)
         }
-        release = {r: objs for r, objs in release.items() if r not in busy}
+        release = {r: objs for r, objs in release.items() if r not in busy | outside}
         self._pending_release = release
-        self._pending_busy = busy
+        self._pending_busy = busy | outside
         self._planning_goal = pddl_goal
         additional = busy_robots(constraints) is not None
         self.get_logger().info(
@@ -666,6 +681,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 if additional
                 else ""
             )
+            + (f"; use-robots: leaving {sorted(outside)} alone" if outside else "")
         )
         return planning
 
@@ -720,14 +736,16 @@ class OmniPlannerRepairRos(OmniPlannerRos):
 
     def _leave_busy_alone(self, plan_dict):
         """An additional task sends a busy robot nothing, not even an empty
-        plan, which would preempt what it is doing."""
+        plan, which would preempt what it is doing; nor does a goal send
+        anything to a robot its use-robots leaves out."""
         busy, self._pending_busy = self._pending_busy, set()
         left = sorted(r for r in plan_dict if r.lower() in busy)
         self._left_alone = set(left)
         if not left:
             return plan_dict
         self.get_logger().info(
-            f"additional task: not sending {', '.join(left)} anything (busy)"
+            f"not sending {', '.join(left)} anything (busy, or not one of the "
+            "goal's use-robots)"
         )
         return {r: p for r, p in plan_dict.items() if r.lower() not in busy}
 

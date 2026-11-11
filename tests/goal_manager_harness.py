@@ -70,12 +70,16 @@ class Harness:
 
     # ------------- inputs -------------
 
-    def goal(self, text, robot_id="willow", forbidden=()):
+    def goal(self, text, robot_id="willow", forbidden=(), use=()):
         msg = ConstrainedPddlGoalMsg()
         msg.goal.robot_id, msg.goal.pddl_goal = robot_id, text
         msg.constraints = [
             ConstraintFact(predicate="forbidden-poi", symbols=[s]) for s in forbidden
         ]
+        if use:
+            msg.constraints.append(
+                ConstraintFact(predicate="use-robots", symbols=list(use))
+            )
         return msg
 
     def send(self, text, **kw):
@@ -120,4 +124,9 @@ class Harness:
     def busy(self, msg):
         return [
             list(c.symbols) for c in msg.constraints if c.predicate == "busy-robots"
+        ]
+
+    def use(self, msg):
+        return [
+            s for c in msg.constraints if c.predicate == "use-robots" for s in c.symbols
         ]

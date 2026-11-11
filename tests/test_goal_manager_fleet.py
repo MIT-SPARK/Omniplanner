@@ -149,11 +149,15 @@ def test_an_additional_task_lists_the_busy_robots(h):
     assert "(visited-object o9)" in h.node._mission
 
 
-def test_an_additional_task_naming_a_busy_robot_leaves_it_off_the_list(h):
+def test_a_goal_naming_a_busy_robot_is_planned_for_that_robot_only(h):
+    """A goal naming a robot is that robot's: only it is planned for and
+    paused; the others carry on."""
     _three_robot_mission(h)
     h.send("(visited-object-by hamilton o9)")
     (sent,) = h.goals
-    assert h.busy(sent) == [["euclid", "hilbert"]]
+    assert h.busy(sent) == []
+    assert h.use(sent) == ["hamilton"]
+    assert h.sent == [("hamilton", "pause")]
 
 
 def test_a_stalled_robot_is_reported_once(h):
