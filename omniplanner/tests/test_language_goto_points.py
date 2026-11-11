@@ -56,3 +56,41 @@ def test_named_robot_is_matched_as_whole_word(command, named):
     goal = LanguageGoal(robot_id="euclid", command=command)
     out = _assign_to_addressed_robot({"apollo": "g"}, goal)
     assert out == ({"apollo": "g"} if named else {"euclid": "g"})
+
+
+class _FailingLLM:
+    def request_plan_specification(self, instruction, dsg):
+        raise AssertionError("the LLM must not be called")
+
+
+@pytest.mark.parametrize("domain_type", ["Pddl", "goto_points"])
+def test_unknown_addressed_robot_fails_before_planning(domain_type):
+    domain = LanguageDomain(domain_type=domain_type, llm_interface=_FailingLLM())
+    goal = LanguageGoal(robot_id="eucld", command="O(1)")
+    with pytest.raises(ValueError, match="unknown robot 'eucld'.*euclid, hamilton"):
+        ground_problem(domain, None, {"euclid": None, "hamilton": None}, goal)
+
+
+def test_goto_points_needs_a_robot():
+    domain = LanguageDomain(domain_type="goto_points")
+    goal = LanguageGoal(robot_id="", command="O(1)")
+    with pytest.raises(ValueError, match="needs a robot_id"):
+        ground_problem(domain, None, {"euclid": None}, goal)
+
+
+def test_team_goal_without_robot_id_skips_the_hint():
+    """An empty robot_id (e.g. the panel's "Any robot") is not checked or
+    hinted; the LLM's split is used as-is."""
+    seen = []
+
+    class _LLM:
+        response_history = []
+
+        def request_plan_specification(self, instruction, dsg):
+            seen.append(instruction)
+            return "{}"
+
+    domain = LanguageDomain(domain_type="Pddl", llm_interface=_LLM())
+    goal = LanguageGoal(robot_id="", command="inspect every sign")
+    assert ground_problem(domain, None, {"euclid": None}, goal) == []
+    assert seen == ["inspect every sign"]

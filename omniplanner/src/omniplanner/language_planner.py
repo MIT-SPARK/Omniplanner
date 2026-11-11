@@ -34,6 +34,16 @@ def _names_robot(command: str, robot: str) -> bool:
     return re.search(rf"\b{re.escape(robot.lower())}\b", command.lower()) is not None
 
 
+def _check_known_robot(robot_id: str, robot_states: dict) -> None:
+    """Fail early if the goal is addressed to a robot the planner doesn't know
+    (``robot_states`` has an entry per configured robot, even without a pose)."""
+    if robot_id and robot_id not in robot_states:
+        known = ", ".join(sorted(robot_states)) or "none"
+        raise ValueError(
+            f"Language goal addressed to unknown robot {robot_id!r} (known: {known})"
+        )
+
+
 def _assign_to_addressed_robot(goal_dict, goal):
     """If the operator addressed one robot and the LLM gave the whole goal to a
     single *different* robot the command never mentions, give it back."""
@@ -81,6 +91,9 @@ def ground_problem(
                 f"got {bad or goal.command!r}; use domain_type 'Pddl' (or 'default') "
                 "for natural-language commands"
             )
+        if not goal.robot_id:
+            raise ValueError("domain_type 'goto_points' needs a robot_id")
+        _check_known_robot(goal.robot_id, robot_states)
         language_grounded_goal = GotoPointsGoal(
             goal_points=points, robot_id=goal.robot_id
         )
@@ -89,6 +102,7 @@ def ground_problem(
             problem_type, dsg, robot_states, language_grounded_goal, feedback
         )
     elif domain.domain_type == "Pddl":
+        _check_known_robot(goal.robot_id, robot_states)
         # Query the LLM & Parse the response
         instruction = goal.command
         if goal.robot_id:
