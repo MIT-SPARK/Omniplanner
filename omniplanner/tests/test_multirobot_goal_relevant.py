@@ -472,6 +472,40 @@ def test_object_the_robots_cannot_reach_is_not_snapped_to_their_side():
         make_plan(grounded, G)
 
 
+def test_failed_plan_carries_fast_downward_account():
+    """The operator sees why Fast Downward found no plan, not only its exit code."""
+    G = grid_dsg()
+    _add_place(G, 100, (40.0, 0.0))
+    _add_object(G, 9, (40.1, 0.0))
+    grounded = _grounded(
+        G, "(visited-object o9)", robots={"hamilton": np.array([0.0, 0.0])}
+    )
+    with pytest.raises(Exception) as err:
+        make_plan(grounded, G)
+    assert "[Fast Downward: the goal is unreachable from the start" in str(err.value)
+    assert err.value.fd_digest and isinstance(err.value.fd_log, list)
+    assert err.value.problem_file.endswith(".pddl")
+
+
+def test_fast_downward_digest():
+    from dsg_pddl.pddl_planning import fd_digest
+
+    killed = "Completing instantiation... 21651110 total queue pushes\ntranslate exit code: -9\nINFO     Planner time: 61.38s"
+    assert fd_digest(killed) == (
+        "translate killed (exit -9: time or memory limit); 21651110 queue pushes; 61.4 s"
+    )
+    timeout = (
+        "Translator operators: 14190\nTranslator facts: 300\n[t=0.9s, 30284 KB] f = 64, 6091 expanded\n"
+        "Peak memory: 30688 KB\nTime limit has been reached.\nsearch exit code: 23"
+    )
+    assert fd_digest(timeout) == (
+        "search time limit reached; 14190 operators, 300 facts; 6091 states expanded; peak 29 MB"
+    )
+    assert fd_digest("") == ""
+    anytime = "Solution found!\nPlan cost: 9\nCompletely explored state space -- no solution!\nSearch stopped without finding a solution."
+    assert fd_digest(anytime) == "solution found (no better plan in the search space)"
+
+
 def test_a_held_object_is_put_down_before_the_next_pick():
     G = grid_dsg()
     held = WorldState(holding={"hamilton": ["o3"]})

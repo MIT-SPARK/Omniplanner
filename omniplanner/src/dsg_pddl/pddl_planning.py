@@ -2,12 +2,14 @@ import glob
 import logging
 import math
 import os
+import re
 import subprocess
 import tempfile
 import time
 import uuid
 from datetime import datetime
 
+from dsg_pddl.grounding_errors import error_for_fd_returncode
 from dsg_pddl.pddl_grounding import GroundedPddlProblem
 from dsg_pddl.pddl_utils import lisp_string_to_ast
 
@@ -33,6 +35,97 @@ ANYTIME_FD_SEARCH = (
     "lazy_wastar([hff, hcea], preferred=[hff, hcea], w=1)"
     "], repeat_last=true, continue_on_fail=true)))"
 )
+
+
+# Lines of Fast Downward output kept on a failure (PddlSolverError.fd_log).
+FD_LOG_TAIL = 40
+
+_FD_SIGNALS = (
+    (
+        re.compile(r"No relaxed solution"),
+        "the goal is unreachable from the start (no relaxed solution)",
+    ),
+    (re.compile(r"Completely explored state space"), "explored every state: no plan"),
+    (
+        re.compile(r"Search stopped without finding a solution"),
+        "search stopped without a plan",
+    ),
+    (re.compile(r"Time limit has been reached"), "search time limit reached"),
+    (re.compile(r"Memory limit has been reached"), "memory limit reached"),
+    (re.compile(r"Solution found"), "solution found"),
+)
+
+
+def fd_digest(output: str) -> str:
+    """One line on what Fast Downward did: where it stopped and how big the task was.
+
+    e.g. "translate killed (exit -9: time or memory limit) after 61.4 s; 21651110
+    queue pushes" or "search time limit reached; 2112 operators, 410 facts;
+    6091 states expanded; peak 30 MB".
+    """
+    if not output:
+        return ""
+    parts = []
+    m = re.search(r"translate exit code: (-?\d+)", output)
+    if m and m.group(1) != "0":
+        code = int(m.group(1))
+        parts.append(
+            f"translate killed (exit {code}: time or memory limit)"
+            if code < 0
+            else f"translate exit {code}"
+        )
+    for pattern, text in _FD_SIGNALS:
+        if pattern.search(output):
+            parts.append(text)
+    if _FD_SIGNALS[0][1] in parts:  # proved unreachable: the search lines say the same
+        parts = [p for p in parts if p not in (_FD_SIGNALS[1][1], _FD_SIGNALS[2][1])]
+    if _FD_SIGNALS[5][1] in parts:
+        # an anytime search that found a plan and then ran out of states found
+        # nothing better: the last plan is the best it can find
+        exhausted = _FD_SIGNALS[1][1] in parts
+        parts = [p for p in parts if p not in (_FD_SIGNALS[1][1], _FD_SIGNALS[2][1])]
+        if exhausted:
+            parts[parts.index(_FD_SIGNALS[5][1])] = (
+                "solution found (no better plan in the search space)"
+            )
+    for line in output.splitlines():  # the translator's own errors
+        if re.match(r"\s*(Error|error:|Undefined|.*Exception)", line):
+            parts.append(line.strip()[:160])
+            break
+    size = []
+    for key, label in (
+        ("operators", "operators"),
+        ("facts", "facts"),
+        ("axioms", "axioms"),
+    ):
+        m = re.search(rf"Translator {key}: (\d+)", output)
+        if m:
+            size.append(f"{m.group(1)} {label}")
+    if size:
+        parts.append(", ".join(size))
+    pushes = re.findall(r"(\d+) total queue pushes", output)
+    if pushes and not size:  # killed while instantiating: how far it got
+        parts.append(f"{pushes[-1]} queue pushes")
+    expanded = re.findall(r"(\d+) expanded", output)
+    if expanded:
+        parts.append(f"{expanded[-1]} states expanded")
+    m = re.findall(r"Peak memory: (\d+) KB", output)
+    if m:
+        parts.append(f"peak {int(m[-1]) // 1024} MB")
+    m = re.findall(r"Planner time: ([\d.]+)s", output)
+    if m:
+        parts.append(f"{float(m[-1]):.1f} s")
+    return "; ".join(parts)
+
+
+def _log_tail(output: str, n: int = FD_LOG_TAIL) -> list[str]:
+    """The last ``n`` lines of Fast Downward's output, without its driver's INFO chatter."""
+    lines = [
+        line
+        for line in output.splitlines()
+        if line.strip() and not line.startswith("INFO ")
+    ]
+    return lines[-n:]
 
 
 def _best_plan_file(plan_fn):
@@ -240,9 +333,38 @@ def solve_pddl(problem: GroundedPddlProblem):
             )
             logger.warning("fast-downward stdout:\n%s", proc.stdout)
             logger.warning("fast-downward stderr:\n%s", proc.stderr)
-            with open(debug_fn, "w") as fo:
-                fo.write(problem.problem_str)
-            raise Exception(failure_reason(proc.returncode, problem))
+            try:
+                with open(debug_fn, "w") as fo:
+                    fo.write(problem.problem_str)
+            except OSError as e:
+                # An unwritable dump path must not mask the real failure with
+                # an OSError -- callers triage on the typed error below.
+                logger.warning(f"Could not write {debug_fn}: {e}")
+            # Triage the FD exit code so a caller can distinguish "no plan
+            # exists" from "the problem file is malformed" from "we ran out of
+            # time". Unknown codes stay a plain PddlSolverError. The message is
+            # the operator-facing failure_reason (uses the grounder's
+            # failure_hint when present); the debug path is logged above.
+            # Fast Downward's own account goes along: a digest in the message
+            # (it reaches the operator, e.g. on plan_failed) and the log tail
+            # and problem file on the error, for consoles that show them.
+            output = (proc.stdout or "") + (proc.stderr or "")
+            digest = fd_digest(output)
+            reason = failure_reason(proc.returncode, problem)
+            err = error_for_fd_returncode(
+                proc.returncode,
+                f"{reason} [Fast Downward: {digest}]" if digest else reason,
+            )
+            err.fd_digest = digest
+            err.fd_log = _log_tail(output)
+            err.problem_file = debug_problem_fn
+            raise err
+        # what the search did, for callers that report it
+        problem.fd_stats = {
+            "seconds": round(time.perf_counter() - fd_start, 3),
+            "plans": len(glob.glob(plan_fn + ".*")) or 1,
+            "digest": fd_digest((proc.stdout or "") + (proc.stderr or "")),
+        }
 
     plan = [lisp_string_to_ast(line) for line in lines[:-1]]
     return plan
