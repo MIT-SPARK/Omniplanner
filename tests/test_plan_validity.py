@@ -432,3 +432,19 @@ def test_grstaps_plans_are_judged_like_fast_downward_plans():
     assert [sym for sym, _ in moved] == ["o4"]
     route = route_places(plans, lambda xy: f"p{int(xy[0])}")
     assert route["euler"] and route["hilbert"]  # both robots' legs are watched
+
+
+def test_a_grstaps_task_where_the_robot_stands_gets_a_two_point_follow():
+    """The solver gives a task at the robot's own spot a one-point leg; the
+    executor's planners need two points, so the follow starts where the robot
+    is. Found in a local GRSTAPS-X run: two visits at one place."""
+    pytest = __import__("pytest")
+    gr = pytest.importorskip("omniplanner_ros.grstaps_planner_ros")
+    plan = _grstaps_fleet_plan()
+    plan.agents[1]["individual_plan"] = [2, 2]
+    plan.agents[1]["transitions"].append({"path": [{"x": 9, "y": 9}]})
+    follows = [
+        a.path2d for a in gr.compile_grstaps_plan(plan, "p", "euler", "map").actions
+    ]
+    assert [len(p) for p in follows] == [2, 2]
+    assert follows[1].tolist() == [[9.0, 9.0], [9.0, 9.0]]
