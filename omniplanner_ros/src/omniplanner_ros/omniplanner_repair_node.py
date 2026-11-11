@@ -70,6 +70,12 @@ from std_srvs.srv import Trigger
 from omniplanner_ros.omniplanner_node import OmniPlannerRos
 
 
+
+def plan_ids(plan_dict):
+    """{robot: plan_id} of compiled plans. A phoenix (husky) plan is a
+    nav_msgs/Path, which has no plan_id: it maps to ""."""
+    return {r: getattr(p, "plan_id", "") or "" for r, p in plan_dict.items()}
+
 class OmniPlannerRepairRos(OmniPlannerRos):
     """OmniPlannerRos plus persistent constraints and mission state."""
 
@@ -409,7 +415,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             self._route = route_places(
                 plan_dict, self._place_finder(self._current_dsg())
             )
-            self._plan_ids = {r: p.plan_id for r, p in plan_dict.items()}
+            self._plan_ids = plan_ids(plan_dict)
             self._actions_done = {}
             self._route_version = self._map_version()
         for robot in self._plan_robots:
@@ -425,7 +431,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         release, self._pending_release = self._pending_release, {}
         if not release:
             return plan_dict
-        plan_id = next((p.plan_id for p in plan_dict.values()), "")
+        plan_id = next((i for i in plan_ids(plan_dict).values() if i), "")
         for robot, objects in release.items():
             name = next((n for n in self.robot_adaptors if n.lower() == robot), robot)
             pose = robot_poses.get(name)
