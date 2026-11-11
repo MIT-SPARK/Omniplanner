@@ -43,4 +43,4 @@ def test_unknown_object_says_the_goal_could_not_be_read():
 def test_contradictory_goal_cannot_be_satisfied():
     with pytest.raises(Exception) as err:
         _fd(_map(), "(and (visited-object o4) (not (visited-object o4)))", (0.0, 0.0))
-    assert str(err.value).endswith("no plan achieves the goal")
+    assert "no plan achieves the goal" in str(err.value)

@@ -7,6 +7,11 @@ import numpy as np
 import spark_dsg
 from plum import dispatch
 
+from dsg_pddl.grounding_errors import (
+    MissingSymbol,
+    MissingSymbolError,
+    kind_hint_for_symbol,
+)
 from dsg_pddl.pddl_grounding import (
     GroundedPddlProblem,
     PddlDomain,
@@ -409,13 +414,28 @@ def add_symbol_positions(G, symbols):
     for s in symbols:
         if s.position is not None:
             continue
-        else:
-            ns = pddl_symbol_to_node_symbol(G, s.symbol)
+        ns = pddl_symbol_to_node_symbol(G, s.symbol)
+        dsg_symbol_char, index = ns.category, ns.category_id
+        try:
+            node = G.get_node(ns)
             # A copy: the attribute array is a view into the graph's storage.
-            position = np.array(G.get_node(ns).attributes.position[:2])
-            if position is None:
-                raise Exception(f"Could not find node {ns} in DSG")
-            s.position = position
+            position = np.array(node.attributes.position[:2])
+        except Exception as e:
+            raise MissingSymbolError(
+                symbol=ns,
+                pddl_symbol=s.symbol,
+                dsg_char=dsg_symbol_char,
+                index=index,
+                original=e,
+            ) from e
+        if position is None:
+            raise MissingSymbolError(
+                symbol=ns,
+                pddl_symbol=s.symbol,
+                dsg_char=dsg_symbol_char,
+                index=index,
+            )
+        s.position = position
     return symbols
 
 
@@ -515,6 +535,30 @@ def could_name_a_scene_symbol(token):
     return bool(token) and token[0].isalpha()
 
 
+def raise_if_goal_names_missing_symbols(parsed_goal, declared, raw_pddl_goal_string):
+    """Raise MissingSymbolError for every goal symbol that is not declared.
+
+    The full-scene encoders declare every scene symbol (plus ``pstart``), so a
+    goal name outside ``declared`` would reach Fast Downward as an undeclared
+    object (rc 31). Raise the same error the goal-relevant encoder raises for
+    it instead, so both scene scopes fail the same way.
+    """
+    missing = sorted(
+        name
+        for name in collect_goal_symbol_names(parsed_goal)
+        if name not in declared and could_name_a_scene_symbol(name)
+    )
+    if not missing:
+        return
+    logger.warning(
+        "Goal references symbols not present in the scene graph: %s", missing
+    )
+    raise MissingSymbolError(
+        [MissingSymbol(name, kind_hint_for_symbol(name)) for name in missing],
+        raw_pddl_goal_string,
+    )
+
+
 def get_places_layer(G):
     try:
         return G.get_layer(spark_dsg.DsgLayers.MESH_PLACES)
@@ -585,14 +629,35 @@ def generate_goal_relevant_pddl(
     def obj_position(obj_sym):
         return G.get_node(pddl_symbol_to_node_symbol(G, obj_sym)).attributes.position[:2]
 
+    # Names already declared in the problem independently of the scene graph --
+    # i.e. the robot start place "pstart", which goes into (:objects) and
+    # (:init) below, so a goal like "(and (at-poi pstart))" ("return to start")
+    # is well-formed even though no scene symbol is named pstart. Snapshotted
+    # before the loop on purpose: every name added to `selected` inside the loop
+    # came from `by_name`, so checking membership live would be equivalent but
+    # order-dependent, and `referenced` is a set with nondeterministic order.
+    predeclared = frozenset(selected)
+
+    missing = []
+
     for name in referenced:
         sym = by_name.get(name)
         if sym is None:
+            if name in predeclared or not could_name_a_scene_symbol(name):
+                # Declared regardless of the scene graph (pstart), or not a
+                # symbol at all (numeric literal / operator from a metric
+                # constraint): neither is a grounding failure.
+                continue
+            # Do NOT skip: the name stays in the goal string, so Fast Downward
+            # would die on the undeclared object (rc 31). Collect every
+            # unresolved name and report them together below, so a caller can
+            # tell "this symbol isn't in the scene graph yet" (go explore) from
+            # "this goal is unachievable".
             logger.warning(
-                "Goal references symbol '%s' not present in the scene graph; "
-                "skipping it during grounding.",
+                "Goal references symbol '%s' not present in the scene graph.",
                 name,
             )
+            missing.append(MissingSymbol(name, kind_hint_for_symbol(name)))
             continue
         selected.setdefault(name, sym)
 
@@ -664,6 +729,12 @@ def generate_goal_relevant_pddl(
             for p in members:
                 selected.setdefault(p, by_name[p])
                 region_membership.append((p, name))
+
+    if missing:
+        # sorted for a deterministic report (`referenced` is a set)
+        raise MissingSymbolError(
+            sorted(missing, key=lambda m: m.name), raw_pddl_goal_string
+        )
 
     add_symbol_positions(G, list(selected.values()))
 
@@ -784,6 +855,11 @@ def generate_rearrangement_pddl(
         "pstart", "place", ["at-poi"], position=initial_position
     )
     symbols_of_interest = [start_place_symbol] + symbols
+    raise_if_goal_names_missing_symbols(
+        parsed_pddl_goal,
+        {s.symbol for s in symbols_of_interest},
+        raw_pddl_goal_string,
+    )
 
     add_symbol_positions(G, symbols_of_interest)
 
@@ -827,6 +903,11 @@ def generate_region_pddl(
         "pstart", "place", ["at-poi"], position=initial_position
     )
     symbols_of_interest = [start_place_symbol] + symbols
+    raise_if_goal_names_missing_symbols(
+        parsed_pddl_goal,
+        {s.symbol for s in symbols_of_interest},
+        raw_pddl_goal_string,
+    )
 
     add_symbol_positions(G, symbols_of_interest)
 
