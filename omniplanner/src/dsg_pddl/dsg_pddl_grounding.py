@@ -462,6 +462,23 @@ _NON_SYMBOL_TOKENS = {
 }
 
 
+def goal_requires_full_scene(goal_string):
+    """Quantifiers range over the full map, so named-symbol pruning is unsound.
+
+    In particular, dropping unnamed objects makes a universal visit goal
+    vacuously true. Keep the full encoding for both universal and existential
+    goals so their variable bindings retain the original object universe.
+    """
+
+    def quantified(node):
+        return isinstance(node, (tuple, list)) and bool(node) and (
+            node[0] in ("forall", "exists")
+            or any(quantified(child) for child in node)
+        )
+
+    return quantified(lisp_string_to_ast(goal_string))
+
+
 def collect_goal_symbol_names(ast):
     """Return the set of scene-symbol names referenced anywhere in a goal AST.
 
@@ -746,7 +763,9 @@ def generate_rearrangement_pddl(
     problem_name = "object-rearrangement-domain"
     problem_domain = "object-rearrangement-domain"
 
-    if scene_scope == "goal_relevant":
+    if scene_scope == "goal_relevant" and not goal_requires_full_scene(
+        raw_pddl_goal_string
+    ):
         return generate_goal_relevant_pddl(
             G, raw_pddl_goal_string, initial_position, problem_name, problem_domain
         )
@@ -788,7 +807,9 @@ def generate_region_pddl(
     problem_name = "region-object-rearrangement-domain"
     problem_domain = "region-object-rearrangement-domain"
 
-    if scene_scope == "goal_relevant":
+    if scene_scope == "goal_relevant" and not goal_requires_full_scene(
+        raw_pddl_goal_string
+    ):
         return generate_goal_relevant_pddl(
             G, raw_pddl_goal_string, initial_position, problem_name, problem_domain
         )

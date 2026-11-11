@@ -13,12 +13,6 @@ from dsg_pddl.pddl_utils import lisp_string_to_ast
 
 logger = logging.getLogger(__name__)
 
-# Hard wall-clock limits (seconds) passed to Fast Downward so a pathological
-# problem can't hang the planner. None disables a limit. Overridable via env.
-FD_SEARCH_TIME_LIMIT = os.getenv("OMNIPLANNER_FD_SEARCH_TIME_LIMIT", "60")
-FD_TRANSLATE_TIME_LIMIT = os.getenv("OMNIPLANNER_FD_TRANSLATE_TIME_LIMIT", "60")
-
-
 DEFAULT_FD_SEARCH = (
     "let(hff, ff(), let(hcea, cea(), lazy_greedy([hff, hcea], preferred=[hff, hcea])))"
 )
@@ -43,9 +37,7 @@ ANYTIME_FD_SEARCH = (
 
 def _best_plan_file(plan_fn):
     """The last (cheapest) plan an anytime search wrote: plan, or plan.1, plan.2, ..."""
-    numbered = sorted(
-        glob.glob(plan_fn + ".*"), key=lambda f: int(f.rsplit(".", 1)[1])
-    )
+    numbered = sorted(glob.glob(plan_fn + ".*"), key=lambda f: int(f.rsplit(".", 1)[1]))
     if numbered:
         return numbered[-1]
     return plan_fn if os.path.exists(plan_fn) else None
@@ -101,6 +93,11 @@ def solve_pddl(problem: GroundedPddlProblem):
                                      Takes precedence over ADT4_FD_SEARCH when set.
         ADT4_FD_SEARCH             - raw value passed after `--search`.
         ADT4_FD_OVERALL_TIME_LIMIT - value passed via `--overall-time-limit`.
+        OMNIPLANNER_FD_TRANSLATE_TIME_LIMIT - optional translation limit.
+        OMNIPLANNER_FD_SEARCH_TIME_LIMIT - optional greedy-search limit.
+    Translation and greedy search are unlimited unless configured (0 or an
+    empty value disables either phase limit). Goal-relevant problems may use
+    a short anytime search first, then retry greedy if no plan was found.
     When unset, the historical lazy-greedy(ff + cea) search is used.
     """
     with tempfile.TemporaryDirectory() as tmpdirname:
@@ -138,6 +135,10 @@ def solve_pddl(problem: GroundedPddlProblem):
         fd_alias = os.getenv("ADT4_FD_ALIAS", "").strip()
         fd_search = os.getenv("ADT4_FD_SEARCH", "").strip()
         fd_time_limit = os.getenv("ADT4_FD_OVERALL_TIME_LIMIT", "").strip()
+        translate_time_limit = os.getenv(
+            "OMNIPLANNER_FD_TRANSLATE_TIME_LIMIT", ""
+        ).strip()
+        search_time_limit = os.getenv("OMNIPLANNER_FD_SEARCH_TIME_LIMIT", "").strip()
         # an explicit alias / search from the environment wins over anytime search
         anytime_s = getattr(problem, "anytime_search_s", 0.0) or 0.0
         anytime = anytime_s > 0 and not fd_alias and not fd_search
@@ -145,8 +146,8 @@ def solve_pddl(problem: GroundedPddlProblem):
         def fd_command(search, search_time_limit, inputs=None):
             """``inputs``: a translated task ([output.sas]) runs the search alone."""
             command = ["fast-downward"]
-            if inputs is None and FD_TRANSLATE_TIME_LIMIT not in (None, "", "0"):
-                command += ["--translate-time-limit", str(FD_TRANSLATE_TIME_LIMIT)]
+            if inputs is None and translate_time_limit not in (None, "", "0"):
+                command += ["--translate-time-limit", str(translate_time_limit)]
             if search_time_limit not in (None, "", "0"):
                 command += ["--search-time-limit", str(search_time_limit)]
             command += ["--plan-file", plan_fn]
@@ -165,7 +166,7 @@ def solve_pddl(problem: GroundedPddlProblem):
             # FD deletes output.sas after a run; keep it for the greedy retry below
             command.insert(1, "--keep-sas-file")
         else:
-            command = fd_command(fd_search or DEFAULT_FD_SEARCH, FD_SEARCH_TIME_LIMIT)
+            command = fd_command(fd_search or DEFAULT_FD_SEARCH, search_time_limit)
 
         logger.info(f"Calling: {command}")
         fd_start = time.perf_counter()
@@ -184,9 +185,7 @@ def solve_pddl(problem: GroundedPddlProblem):
         # somewhere writable and isolated. Verified: identical domain+problem
         # solves in ~0.13 s from a writable CWD but reproduces the exact
         # FileNotFoundError from a non-writable one.
-        proc = subprocess.run(
-            command, capture_output=True, text=True, cwd=tmpdirname
-        )
+        proc = subprocess.run(command, capture_output=True, text=True, cwd=tmpdirname)
         fd_elapsed = time.perf_counter() - fd_start
         logger.info(
             f"fast-downward finished in {fd_elapsed:.3f}s (return code {proc.returncode})"
@@ -196,12 +195,13 @@ def solve_pddl(problem: GroundedPddlProblem):
             logger.debug("fast-downward stderr:\n%s", proc.stderr)
 
         # An anytime search that ran out of its budget before a first plan (or
-        # failed for a reason other than proving the problem unsolvable) gets
-        # the plain greedy search with the usual limits.
+        # failed for a reason other than unsolvable/bad input/out of memory)
+        # gets the plain greedy search. A memory failure is terminal: another
+        # translation/search can exhaust the same machine again.
         if (
             anytime
             and _best_plan_file(plan_fn) is None
-            and proc.returncode not in FD_UNSOLVABLE + FD_BAD_INPUT
+            and proc.returncode not in FD_UNSOLVABLE + FD_BAD_INPUT + FD_OUT_OF_MEMORY
         ):
             # the first run's translation (output.sas in the cwd) is reused: on
             # big problems translating is most of the time (Penn, 98 goals: 12 s)
@@ -218,7 +218,7 @@ def solve_pddl(problem: GroundedPddlProblem):
             # the translator's part only: the failed search's lines would read as this run's
             translate_out = (proc.stdout or "").split("translate exit code: 0", 1)[0]
             proc = subprocess.run(
-                fd_command(DEFAULT_FD_SEARCH, FD_SEARCH_TIME_LIMIT, inputs),
+                fd_command(DEFAULT_FD_SEARCH, search_time_limit, inputs),
                 capture_output=True,
                 text=True,
                 cwd=tmpdirname,

@@ -557,3 +557,19 @@ def test_traversed_places_reach_the_goal_manager():
     wrapper.set_name_remap("hamilton", "hamilton")
     visited = extract(wrapper)["hamilton"]
     assert "o0" in visited and f"t{idx[(0, 2)]}" in visited
+
+
+@pytest.mark.parametrize("quantifier", ["forall", "exists"])
+def test_quantified_goals_keep_the_full_object_universe(quantifier):
+    G = grid_dsg()
+    goal = f"({quantifier} (?o - dsg_object) (visited-object ?o))"
+    relevant = _grounded(G, goal)
+    full = _grounded(G, goal, scope="full")
+    assert relevant.symbols.keys() == full.symbols.keys()
+    plan = make_plan(relevant, G)
+    targets = {s.symbol for s in relevant.symbols.values() if s.layer == "object"}
+    visited = _visits(plan)
+    if quantifier == "forall":
+        assert targets <= visited
+    else:
+        assert targets & visited

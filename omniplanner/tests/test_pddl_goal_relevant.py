@@ -103,6 +103,20 @@ def test_full_scope_still_plans():
     assert "goto-poi" in actions
 
 
+def test_quantified_goal_keeps_unnamed_objects():
+    goal = "(forall (?o - dsg_object) (visited-object ?o))"
+    G, relevant = _ground(
+        _load_domain("RegionObjectRearrangementDomain.pddl", "goal_relevant"), goal
+    )
+    _, full = _ground(
+        _load_domain("RegionObjectRearrangementDomain.pddl", "full"), goal
+    )
+    assert relevant.symbols.keys() == full.symbols.keys()
+    plan = make_plan(relevant, G)
+    visited = {a[-1] for a in plan.symbolic_actions if a[0] == "goto-poi"}
+    assert {"o0", "o1"} <= visited
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):
@@ -114,4 +128,3 @@ if __name__ == "__main__":
                 failures += 1
                 print(f"FAIL  {name}: {e!r}")
     sys.exit(1 if failures else 0)
-

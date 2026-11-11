@@ -21,6 +21,7 @@ from dsg_pddl.dsg_pddl_grounding import (
     generate_object_containment,
     generate_objects,
     generate_place_containment,
+    goal_requires_full_scene,
     implicit_edges_from_layers,
     normalize_symbols,
     normalized,
@@ -1094,6 +1095,7 @@ def ground_problem(
 
         case "region-object-rearrangement-domain-multirobot-fd" if (
             scene_scope == "goal_relevant"
+            and not goal_requires_full_scene(goal.pddl_goal)
         ):
             pddl_problem, symbols, failure_hint, layer_planner = (
                 generate_goal_relevant_multirobot_pddl(
