@@ -4,6 +4,7 @@ last transforms fleetlink keeps for hours, and goals that already hold.
 No ROS graph: the tf buffer, clock and publishers are faked.
 """
 
+import json
 import threading
 from types import SimpleNamespace as NS
 
@@ -132,7 +133,7 @@ def test_no_age_limit_takes_any_pose():
 
 def _planning_node(monkeypatch, plan_dict):
     node = N.__new__(N)
-    sent = {"plans": [], "failed": [], "robots": []}
+    sent = {"plans": [], "failed": [], "robots": [], "status": []}
     handlers = []
     node.__dict__.update(
         goal_count=0,
@@ -153,6 +154,7 @@ def _planning_node(monkeypatch, plan_dict):
         },
         plan_failed_pub=NS(publish=lambda m: sent["failed"].append(m.data)),
         plan_robots_pub=NS(publish=lambda m: sent["robots"].append(m.data)),
+        plan_status_pub=NS(publish=lambda m: sent["status"].append(json.loads(m.data))),
         compiled_plan_viz_pub=NS(publish=lambda m: None),
     )
     node.get_logger = lambda: NS(info=print, warning=print, error=print)
@@ -207,3 +209,66 @@ def test_no_robot_at_all_is_a_failure_not_a_published_plan(monkeypatch):
     assert sent["failed"] == [
         "multi_robot_pddl_constrained: no robot is online to plan for"
     ]
+
+
+def _status(sent):
+    (st,) = sent["status"]
+    assert st.pop("t") > 0
+    return st
+
+
+def test_plan_status_reports_success(monkeypatch):
+    handle, sent = _planning_node(
+        monkeypatch,
+        {
+            "testbot_a": ActionSequence(
+                "p", "testbot_a", [Follow("map", np.zeros((2, 2)))]
+            )
+        },
+    )
+    handle(NS(robot_id="testbot_a"))
+    assert _status(sent) == {
+        "plugin": "multi_robot_pddl_constrained",
+        "robot": "testbot_a",
+        "ok": True,
+        "error": "",
+    }
+
+
+def test_plan_status_reports_a_goal_that_already_holds(monkeypatch):
+    handle, sent = _planning_node(
+        monkeypatch, {"testbot_a": ActionSequence("p", "testbot_a", [])}
+    )
+    handle(NS())
+    st = _status(sent)
+    assert st["ok"] is False and st["robot"] == ""
+    assert st["error"] == "goal already satisfied: nothing to do"
+
+
+def test_plan_status_reports_no_robot_online(monkeypatch):
+    handle, sent = _planning_node(monkeypatch, {})
+    handle(NS())
+    assert _status(sent)["error"] == "no robot is online to plan for"
+
+
+def test_plan_status_reports_a_planner_exception(monkeypatch):
+    handle, sent = _planning_node(monkeypatch, {"testbot_a": Path()})
+
+    def boom(*a):
+        raise ValueError("no connectivity left in the problem")
+
+    monkeypatch.setattr(node_mod, "full_planning_pipeline", boom)
+    handle(NS())
+    assert _status(sent)["error"] == "no connectivity left in the problem"
+
+
+def test_plan_status_reports_a_missing_scene_graph(monkeypatch):
+    handle, sent = _planning_node(monkeypatch, {"testbot_a": Path()})
+    # the registered closure reads the node's dsg_last
+    handle.__closure__  # noqa: B018
+    return_node = [
+        c.cell_contents for c in handle.__closure__ if isinstance(c.cell_contents, N)
+    ][0]
+    return_node.dsg_last = None
+    handle(NS())
+    assert _status(sent)["error"] == "no scene graph received yet"
