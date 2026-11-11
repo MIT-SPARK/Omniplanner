@@ -331,6 +331,10 @@ class OmniPlannerRos(Node):
         # robot stays paused with nothing coming.
         self.plan_failed_pub = self.create_publisher(String, "~/plan_failed", 10)
 
+        # One JSON String per handled goal ({plugin, robot, ok, error, t}), for
+        # UIs that report planning failures and refusals to the operator.
+        self.plan_status_pub = self.create_publisher(String, "~/plan_status", 10)
+
         # Which robots the latest plan gave actions to (JSON list), so the goal
         # manager can pause them for the next goal without being told names.
         self.plan_robots_pub = self.create_publisher(
@@ -487,6 +491,16 @@ class OmniPlannerRos(Node):
         self._pose_status[name] = why
         return pose
 
+    def publish_plan_status(self, plugin, msg, ok, error=""):
+        status = {
+            "plugin": plugin,
+            "robot": getattr(msg, "robot_id", "") or "",
+            "ok": ok,
+            "error": error,
+            "t": time.time(),
+        }
+        self.plan_status_pub.publish(String(data=json.dumps(status)))
+
     def register_plugin(self, name, plugin):
         self.get_logger().info(f"Registering subscription plugin {name}")
         msg_type, topic, callback = plugin.get_plan_callback()
@@ -514,6 +528,9 @@ class OmniPlannerRos(Node):
 
             if self.dsg_last is None:
                 self.get_logger().error("Got plan request, but no DSG!")
+                self.publish_plan_status(
+                    name, msg, False, "no scene graph received yet"
+                )
                 return
 
             with self.current_planner_lock, self.plan_time_start_lock:
@@ -557,6 +574,7 @@ class OmniPlannerRos(Node):
                 # A newer goal is already waiting; this failure no longer matters.
                 if not superseded():
                     self.plan_failed_pub.publish(String(data=f"{name}: {exc}"))
+                    self.publish_plan_status(name, msg, False, str(exc))
                 return
 
             if superseded():
@@ -574,6 +592,7 @@ class OmniPlannerRos(Node):
                 )
                 done_planning()
                 self.plan_failed_pub.publish(String(data=f"{name}: {reason}"))
+                self.publish_plan_status(name, msg, False, reason)
                 return
 
             for robot_name, compiled_plan in plan_dict.items():
@@ -600,6 +619,7 @@ class OmniPlannerRos(Node):
 
             done_planning()
             self.get_logger().info("Published Plan")
+            self.publish_plan_status(name, msg, True)
 
         resolved_topic_name = name + "/" + topic
         self.get_logger().info(
