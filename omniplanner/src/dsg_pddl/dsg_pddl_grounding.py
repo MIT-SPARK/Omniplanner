@@ -7,6 +7,7 @@ import numpy as np
 import spark_dsg
 from plum import dispatch
 
+from dsg_pddl.grounding_errors import MissingSymbolError
 from dsg_pddl.pddl_grounding import (
     GroundedPddlProblem,
     PddlDomain,
@@ -409,13 +410,28 @@ def add_symbol_positions(G, symbols):
     for s in symbols:
         if s.position is not None:
             continue
-        else:
-            ns = pddl_symbol_to_node_symbol(G, s.symbol)
+        ns = pddl_symbol_to_node_symbol(G, s.symbol)
+        dsg_symbol_char, index = ns.category, ns.category_id
+        try:
+            node = G.get_node(ns)
             # A copy: the attribute array is a view into the graph's storage.
-            position = np.array(G.get_node(ns).attributes.position[:2])
-            if position is None:
-                raise Exception(f"Could not find node {ns} in DSG")
-            s.position = position
+            position = np.array(node.attributes.position[:2])
+        except Exception as e:
+            raise MissingSymbolError(
+                symbol=ns,
+                pddl_symbol=s.symbol,
+                dsg_char=dsg_symbol_char,
+                index=index,
+                original=e,
+            ) from e
+        if position is None:
+            raise MissingSymbolError(
+                symbol=ns,
+                pddl_symbol=s.symbol,
+                dsg_char=dsg_symbol_char,
+                index=index,
+            )
+        s.position = position
     return symbols
 
 
