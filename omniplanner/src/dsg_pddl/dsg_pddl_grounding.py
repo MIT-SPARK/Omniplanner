@@ -457,6 +457,7 @@ _NON_SYMBOL_TOKENS = {
     "region", "place", "dsg_object", "point-of-interest", "object",
     "at-poi", "connected", "suspicious", "at-object", "at-place", "in-region",
     "holding", "hand-full", "object-in-place", "place-in-region",
+    "object-in-region",
     "visited-poi", "visited-place", "visited-object", "visited-region",
     "safe", "distance", "total-cost",
 }
