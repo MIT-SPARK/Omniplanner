@@ -41,9 +41,15 @@ ANYTIME_FD_SEARCH = (
 FD_LOG_TAIL = 40
 
 _FD_SIGNALS = (
-    (re.compile(r"No relaxed solution"), "the goal is unreachable from the start (no relaxed solution)"),
+    (
+        re.compile(r"No relaxed solution"),
+        "the goal is unreachable from the start (no relaxed solution)",
+    ),
     (re.compile(r"Completely explored state space"), "explored every state: no plan"),
-    (re.compile(r"Search stopped without finding a solution"), "search stopped without a plan"),
+    (
+        re.compile(r"Search stopped without finding a solution"),
+        "search stopped without a plan",
+    ),
     (re.compile(r"Time limit has been reached"), "search time limit reached"),
     (re.compile(r"Memory limit has been reached"), "memory limit reached"),
     (re.compile(r"Solution found"), "solution found"),
@@ -64,7 +70,9 @@ def fd_digest(output: str) -> str:
     if m and m.group(1) != "0":
         code = int(m.group(1))
         parts.append(
-            f"translate killed (exit {code}: time or memory limit)" if code < 0 else f"translate exit {code}"
+            f"translate killed (exit {code}: time or memory limit)"
+            if code < 0
+            else f"translate exit {code}"
         )
     for pattern, text in _FD_SIGNALS:
         if pattern.search(output):
@@ -77,13 +85,19 @@ def fd_digest(output: str) -> str:
         exhausted = _FD_SIGNALS[1][1] in parts
         parts = [p for p in parts if p not in (_FD_SIGNALS[1][1], _FD_SIGNALS[2][1])]
         if exhausted:
-            parts[parts.index(_FD_SIGNALS[5][1])] = "solution found (no better plan in the search space)"
+            parts[parts.index(_FD_SIGNALS[5][1])] = (
+                "solution found (no better plan in the search space)"
+            )
     for line in output.splitlines():  # the translator's own errors
         if re.match(r"\s*(Error|error:|Undefined|.*Exception)", line):
             parts.append(line.strip()[:160])
             break
     size = []
-    for key, label in (("operators", "operators"), ("facts", "facts"), ("axioms", "axioms")):
+    for key, label in (
+        ("operators", "operators"),
+        ("facts", "facts"),
+        ("axioms", "axioms"),
+    ):
         m = re.search(rf"Translator {key}: (\d+)", output)
         if m:
             size.append(f"{m.group(1)} {label}")
@@ -106,7 +120,11 @@ def fd_digest(output: str) -> str:
 
 def _log_tail(output: str, n: int = FD_LOG_TAIL) -> list[str]:
     """The last ``n`` lines of Fast Downward's output, without its driver's INFO chatter."""
-    lines = [line for line in output.splitlines() if line.strip() and not line.startswith("INFO ")]
+    lines = [
+        line
+        for line in output.splitlines()
+        if line.strip() and not line.startswith("INFO ")
+    ]
     return lines[-n:]
 
 
