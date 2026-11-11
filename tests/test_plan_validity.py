@@ -143,6 +143,17 @@ def _node(map_version=99):
         _replan_pub=NS(publish=published.append),
         _current_dsg=lambda: None,
         _map_version=lambda: map_version,
+        _map_state=lambda: ("", map_version),
+        _announced=set(),
+        _pending_epoch="",
+        _pending_busy=set(),
+        _left_alone=set(),
+        _running_plans={},
+        _dispatched={},
+        _path_status_pubs={},
+        robot_adaptors={},
+        dsg_frame="map",
+        get_clock=lambda: NS(now=lambda: NS(nanoseconds=0)),
         create_publisher=lambda _type, topic, _qos: NS(
             topic=topic, publish=lambda m, t=topic: paused.append((t, m.data))
         ),
@@ -162,6 +173,11 @@ def _node(map_version=99):
         "_pause_pub_for",
         "finalize_plans",
         "_put_down_first",
+        "_leave_busy_alone",
+        "_keep_carrying",
+        "_is_path_robot",
+        "_watch_progress",
+        "_now_s",
     ):
         setattr(node, name, getattr(N, name).__get__(node))
     node.paused = paused

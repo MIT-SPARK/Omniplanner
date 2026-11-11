@@ -2,132 +2,98 @@
 stops them when planning fails."""
 
 import json
-from types import SimpleNamespace as NS
 
-from std_msgs.msg import String
+import pytest
 
-from omniplanner_msgs.msg import ConstrainedPddlGoalMsg, ConstraintFact
-from omniplanner_ros.goal_manager_node import GoalManager
+pytest.importorskip("robot_executor_msgs.msg")
 
-
-def _manager():
-    sent = []  # (robot, verb)
-    gm = NS(
-        _plan_robots=set(),
-        _paused=set(),
-        _executor_cmd=lambda robot, verb: sent.append((robot, verb)),
-        get_logger=lambda: NS(info=lambda *_: None, warning=lambda *_: None),
-        _notify_operator=lambda text: None,
-        _pending_goal=None,
-        _replan_reason=None,
-        _running_constraints=frozenset(),
-        _plan_constraints=frozenset(),
-        _cache_valid=True,
-    )
-    for name in (
-        "_plan_robots_cb",
-        "_pause_executor",
-        "_resume_executor",
-        "_stop_executor",
-        "_planner_failed_cb",
-    ):
-        setattr(gm, name, getattr(GoalManager, name).__get__(gm))
-    return gm, sent
+from goal_manager_harness import Harness  # noqa: E402
+from std_msgs.msg import String  # noqa: E402
 
 
-def _plan(gm, *robots):
-    gm._plan_robots_cb(String(data=json.dumps(list(robots))))
+@pytest.fixture
+def h(tmp_path):
+    harness = Harness(tmp_path)
+    yield harness
+    harness.close()
 
 
-def test_nothing_to_pause_before_the_first_plan():
-    gm, sent = _manager()
-    gm._pause_executor()
-    gm._resume_executor()
-    assert sent == []
+def _plan(h, *robots):
+    h.node._plan_robots_cb(String(data=json.dumps(list(robots))))
 
 
-def test_pauses_and_resumes_every_robot_of_the_plan():
-    gm, sent = _manager()
-    _plan(gm, "hamilton", "euclid")
-    gm._pause_executor()
-    assert sorted(sent) == [("euclid", "pause"), ("hamilton", "pause")]
-    sent.clear()
-    gm._resume_executor()
-    assert sorted(sent) == [("euclid", "resume"), ("hamilton", "resume")]
-    sent.clear()
-    gm._resume_executor()  # nothing is paused any more
-    assert sent == []
+def test_nothing_to_pause_before_the_first_plan(h):
+    h.node._pause_executor()
+    h.node._resume_executor()
+    assert h.sent == []
 
 
-def test_new_plan_stops_a_paused_robot_it_leaves_out():
-    gm, sent = _manager()
-    _plan(gm, "hamilton", "euclid")
-    gm._pause_executor()
-    sent.clear()
-    _plan(gm, "hamilton")
+def test_pauses_and_resumes_every_robot_of_the_plan(h):
+    _plan(h, "hamilton", "euclid")
+    h.node._pause_executor()
+    assert sorted(h.sent) == [("euclid", "pause"), ("hamilton", "pause")]
+    h.sent.clear()
+    h.node._resume_executor()
+    assert sorted(h.sent) == [("euclid", "resume"), ("hamilton", "resume")]
+    h.sent.clear()
+    h.node._resume_executor()  # nothing is paused any more
+    assert h.sent == []
+
+
+def test_new_plan_stops_a_paused_robot_it_leaves_out(h):
+    _plan(h, "hamilton", "euclid")
+    h.node._pause_executor()
+    h.sent.clear()
+    _plan(h, "hamilton")
     # hamilton's new sequence preempts it; euclid's old plan is superseded.
-    assert sent == [("euclid", "stop")]
-    sent.clear()
-    gm._pause_executor()
-    assert sent == [("hamilton", "pause")]
+    assert h.sent == [("euclid", "stop")]
+    h.sent.clear()
+    h.node._pause_executor()
+    assert h.sent == [("hamilton", "pause")]
 
 
-def test_new_plan_without_a_pause_stops_nobody():
-    gm, sent = _manager()
-    _plan(gm, "hamilton", "euclid")
-    _plan(gm, "hamilton")
-    assert sent == []
+def test_new_plan_without_a_pause_stops_nobody(h):
+    _plan(h, "hamilton", "euclid")
+    _plan(h, "hamilton")
+    assert h.sent == []
 
 
-def _goal(*forbidden):
-    msg = ConstrainedPddlGoalMsg()
-    msg.goal.pddl_goal = "(visited-object o14)"
-    msg.constraints = [
-        ConstraintFact(predicate="forbidden-poi", symbols=[s]) for s in forbidden
-    ]
-    return msg
+def test_failed_goal_stops_the_plan_and_waits(h):
+    # gauss is a Husky: it cannot pause, but it is stopped.
+    _plan(h, "hamilton", "gauss")
+    h.send("(visited-object o14)")
+    assert h.sent == [("hamilton", "pause")]
+    h.sent.clear()
+    h.failed("no plan")
+    assert sorted(h.sent) == [("gauss", "stop"), ("hamilton", "stop")]
+    assert "Stopped gauss and hamilton; waiting for a new goal" in h.texts[-1]
 
 
-def test_failed_goal_stops_the_plan_and_waits():
-    gm, sent = _manager()
-    _plan(gm, "hamilton", "gauss")
-    gm._pause_executor()
-    sent.clear()
-    gm._pending_goal = _goal()
-    gm._planner_failed_cb(String(data="multi_robot_pddl_constrained: no plan"))
-    assert sorted(sent) == [("gauss", "stop"), ("hamilton", "stop")]
-    assert not gm._cache_valid
+def test_failed_goal_resumes_when_configured_to(tmp_path):
+    h = Harness(tmp_path, resume_on_plan_failure=True)
+    _plan(h, "hamilton")
+    h.send("(visited-object o14)")
+    h.sent.clear()
+    h.failed("no plan")
+    assert h.sent == [("hamilton", "resume")]
+    h.close()
 
 
-def test_failed_goal_resumes_when_configured_to():
-    gm, sent = _manager()
-    gm._resume_on_failure = True
-    _plan(gm, "hamilton")
-    gm._pause_executor()
-    sent.clear()
-    gm._pending_goal = _goal()
-    gm._planner_failed_cb(String(data="multi_robot_pddl_constrained: no plan"))
-    assert sent == [("hamilton", "resume")]
+def test_failed_goal_with_new_constraints_stops_even_when_resuming(tmp_path):
+    h = Harness(tmp_path, resume_on_plan_failure=True)
+    _plan(h, "hamilton")
+    h.send("(visited-object o14)", forbidden=["o14"])
+    h.sent.clear()
+    h.failed("no plan")
+    assert h.sent == [("hamilton", "stop")]
+    h.close()
 
 
-def test_failed_goal_with_new_constraints_stops_even_when_resuming():
-    gm, sent = _manager()
-    gm._resume_on_failure = True
-    _plan(gm, "hamilton")
-    gm._pause_executor()
-    sent.clear()
-    gm._pending_goal = _goal("o14")
-    gm._planner_failed_cb(String(data="multi_robot_pddl_constrained: no plan"))
-    assert sent == [("hamilton", "stop")]
-
-
-def test_failed_goal_with_new_constraints_stops_the_plan():
+def test_failed_goal_with_new_constraints_stops_the_plan(h):
     # "Avoid o14" could not be planned: the running plan may go through o14.
-    gm, sent = _manager()
-    _plan(gm, "hamilton")
-    gm._pause_executor()
-    sent.clear()
-    gm._pending_goal = _goal("o14")
-    gm._planner_failed_cb(String(data="multi_robot_pddl_constrained: no plan"))
-    assert sent == [("hamilton", "stop")]
-    assert not gm._cache_valid
+    _plan(h, "hamilton")
+    h.send("(visited-object o14)", forbidden=["o14"])
+    h.sent.clear()
+    h.failed("no plan")
+    assert h.sent == [("hamilton", "stop")]
+    assert "made without these constraints" in h.texts[-1]

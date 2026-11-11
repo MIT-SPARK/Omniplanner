@@ -376,6 +376,11 @@ def normalize_symbols(symbols):
         s.symbol = normalize_symbol(s)
 
 
+def normalized(symbols):
+    normalize_symbols(symbols)
+    return symbols
+
+
 def normalize_symbol(symbol):
     if isinstance(symbol, str):
         return symbol.lower()
@@ -434,17 +439,20 @@ def extract_all_symbols(G):
     except Exception:
         places_layer = G.get_layer(20)
 
-    place_symbols = []
-    for node in places_layer.nodes:
-        place_symbols.append(PddlSymbol(node.id.str(True), "place", []))
+    # Positions come from the node itself: looking a lowercased PDDL name back
+    # up in the graph guesses the prefix's case, and a wrong guess failed the
+    # whole plan ("missing node 'R(0)'") for a goal that named no region.
+    def symbol(node, layer):
+        position = np.array(node.attributes.position[:2], dtype=float)
+        return PddlSymbol(node.id.str(True), layer, [], position=position)
 
-    region_symbols = []
-    for node in G.get_layer(spark_dsg.DsgLayers.ROOMS).nodes:
-        region_symbols.append(PddlSymbol(node.id.str(True), "region", []))
-
-    object_symbols = []
-    for node in G.get_layer(spark_dsg.DsgLayers.OBJECTS).nodes:
-        object_symbols.append(PddlSymbol(node.id.str(True), "object", []))
+    place_symbols = [symbol(n, "place") for n in places_layer.nodes]
+    region_symbols = [
+        symbol(n, "region") for n in G.get_layer(spark_dsg.DsgLayers.ROOMS).nodes
+    ]
+    object_symbols = [
+        symbol(n, "object") for n in G.get_layer(spark_dsg.DsgLayers.OBJECTS).nodes
+    ]
 
     return place_symbols + object_symbols + region_symbols
 

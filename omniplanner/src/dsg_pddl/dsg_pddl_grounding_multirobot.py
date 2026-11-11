@@ -17,6 +17,7 @@ from dsg_pddl.dsg_pddl_grounding import (
     generate_place_containment,
     implicit_edges_from_layers,
     normalize_symbols,
+    normalized,
     simplify,
     symbol_connectivity_to_pddl,
 )
@@ -30,6 +31,7 @@ from dsg_pddl.pddl_grounding import (
 from dsg_pddl.pddl_utils import lisp_string_to_ast
 from omniplanner.omniplanner import MultiRobotWrapper
 from omniplanner.tsp import LayerPlanner
+from omniplanner.world_state import goal_tokens, unavailable_robots
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +51,20 @@ def assigned_robots(constraints):
     return set(names) or None
 
 
-def planning_robot_states(robot_states, constraints):
-    """The robots that may act on this goal: all with a pose, or those named."""
+def planning_robot_states(robot_states, constraints, busy=()):
+    """The robots that may act on this goal: all with a pose, or those named,
+    less the busy ones an additional task must leave alone."""
     assigned = assigned_robots(constraints)
+    unknown = sorted((assigned or set()) - set(robot_states))
+    if unknown:
+        raise ValueError(_unknown_robots(unknown, robot_states))
+    if busy:
+        robot_states = {r: p for r, p in robot_states.items() if r not in busy}
+        if not any(p is not None for p in robot_states.values()):
+            raise ValueError(
+                f"every robot that could do this is busy ({', '.join(sorted(busy))}); "
+                "name one in the goal to interrupt it"
+            )
     if assigned is None:
         return robot_states
     usable = {
@@ -66,6 +79,78 @@ def planning_robot_states(robot_states, constraints):
             f"robots with a pose: {known}"
         )
     return usable
+
+
+def _unknown_robots(names, robot_states) -> str:
+    return "; ".join(
+        f"unknown robot '{n}' (known: {', '.join(sorted(robot_states))})" for n in names
+    )
+
+
+def predicate_argument_types(domain) -> Dict[str, List[str]]:
+    """{predicate -> the type of each argument}, from the domain's :predicates."""
+    out = {}
+    for pred in getattr(domain, "predicates", ()) or ():
+        if not pred or not isinstance(pred[0], str):
+            continue
+        types, pending, i = [], 0, 1
+        while i < len(pred):
+            tok = pred[i]
+            if tok == "-" and i + 1 < len(pred):
+                types += [pred[i + 1]] * pending
+                pending, i = 0, i + 2
+                continue
+            pending += 1
+            i += 1
+        types += ["object"] * pending
+        out[pred[0]] = types
+    return out
+
+
+def check_goal_symbols(goal_string, arg_types, robots, symbols):
+    """Fail early, and say why, when a goal names a robot or symbol that does
+    not exist: fast-downward would only report it could not read the problem.
+
+    Robot arguments are checked against the whole fleet (robots), the rest
+    against the scene graph's places, objects and regions.
+    """
+    try:
+        ast = lisp_string_to_ast((goal_string or "").replace(")(", ") ("))
+    except Exception:
+        return  # fast-downward says what is wrong with it
+    known = {s.symbol for s in symbols}
+    bad_robots, missing = [], []
+
+    def walk(node):
+        if isinstance(node, str) or not node:
+            return
+        head = node[0]
+        if not isinstance(head, str) or head not in arg_types:
+            for sub in node:
+                walk(sub)
+            return
+        for arg, typ in zip(node[1:], arg_types[head]):
+            if not isinstance(arg, str) or arg.startswith("?"):
+                continue
+            arg = arg.lower()
+            if typ == "robot":
+                if arg not in robots and arg not in bad_robots:
+                    bad_robots.append(arg)
+            elif arg not in known and arg not in missing:
+                missing.append(arg)
+
+    walk(ast)
+    if bad_robots:
+        raise ValueError(_unknown_robots(bad_robots, robots))
+    if missing:
+        regions = sorted(s.symbol for s in symbols if s.layer == "region")
+        hint = ""
+        if any(m.startswith("r") for m in missing):
+            hint = f" (regions in it: {', '.join(regions) or 'none'})"
+        raise ValueError(
+            f"The goal could not be read: it names {', '.join(missing)}, which "
+            f"the scene graph does not have{hint}"
+        )
 
 
 def _extract_forbidden_sets(constraints):
@@ -408,6 +493,14 @@ def apply_world_state(init_facts, world_state, symbols, robot_ids):
         facts.append(("holding", robot, obj))
     for robot in sorted(set(held.values())):
         facts.append(("hand-full", robot))
+    # (object-placed-by r o p): what a robot put down and left where it is.
+    place_of = {
+        f[1]: f[2] for f in facts if f and f[0] == "object-in-place" and len(f) >= 3
+    }
+    for robot in robot_ids:
+        for obj in sorted(getattr(world_state, "placed_by", {}).get(robot, set())):
+            if obj in place_of:
+                facts.append(("object-placed-by", robot, obj, place_of[obj]))
     facts += [("visited-poi", s) for s in sorted(world_state.visited & known)]
     for robot in robot_ids:
         done = getattr(world_state, "visited_by", {}).get(robot, set())
@@ -422,6 +515,31 @@ def apply_world_state(init_facts, world_state, symbols, robot_ids):
             len(world_state.inspected & known),
         )
     return facts
+
+
+MANIPULATION_BY = ("object-placed-by", "inspected-by", "holding")
+
+
+def _manipulation_robots(goal_string: str) -> set:
+    """Robots a goal asks to inspect, pick or place: (object-placed-by r o p),
+    (inspected-by r o), (holding r o)."""
+    preds = "|".join(MANIPULATION_BY)
+    return set(re.findall(rf"\(\s*(?:{preds})\s+([a-z0-9_]+)", goal_string.lower()))
+
+
+def _unique_symbols(symbols):
+    """One symbol per lowercase name. A room R0 and an open-vocab region r0
+    both become r0 in PDDL, and a name declared twice breaks the problem."""
+    seen, out = set(), []
+    for s in symbols:
+        if s.symbol in seen:
+            logger.warning(
+                "Two scene graph nodes are both %s; keeping the first", s.symbol
+            )
+            continue
+        seen.add(s.symbol)
+        out.append(s)
+    return out
 
 
 def generate_multirobot_region_pddl(
@@ -440,6 +558,7 @@ def generate_multirobot_region_pddl(
     # Collect all places/objects/regions and positions
     symbols = extract_all_symbols(G)
     normalize_symbols(symbols)
+    symbols = _unique_symbols(symbols)
 
     symbols_of_interest = symbols
     for robot, initial_position in robot_states.items():
@@ -492,6 +611,19 @@ def generate_multirobot_region_pddl(
         symbols_of_interest.append(
             PddlSymbol(rid, "robot", [], position=np.array(pose[:2]))
         )
+
+    # Only robots with an arm and gaze inspect, pick and place: a Husky's plan
+    # would silently drop those actions (compile_phoenix_pddl_plan).
+    no_arm = {
+        str(r).lower() for r in getattr(world_state, "cannot_manipulate", None) or ()
+    }
+    asked = _manipulation_robots(raw_pddl_goal_string) & no_arm
+    if asked:
+        raise ValueError(
+            f"{', '.join(sorted(asked))} cannot inspect, pick or place (no arm): "
+            "name a robot that can, or leave the robot out"
+        )
+    init_facts_tuples += [("can-manipulate", r) for r in robot_ids if r not in no_arm]
 
     # Every object starts suspicious, except those the mission already inspected.
     object_symbols = [s for s in symbols_of_interest if s.layer == "object"]
@@ -547,6 +679,20 @@ def ground_problem(
     logger.warning(f"Grounding PDDL Problem {domain.domain_name}")
 
     pddl_compliant_robot_states = {k.lower(): v for k, v in robot_states.items()}
+    world_state = getattr(goal, "world_state", None)
+    check_goal_symbols(
+        goal.pddl_goal,
+        predicate_argument_types(domain),
+        pddl_compliant_robot_states,
+        _unique_symbols(normalized(extract_all_symbols(dsg))),
+    )
+    # An additional task leaves busy robots alone: no plan, not even an empty
+    # one, so whatever they are doing goes on.
+    busy = unavailable_robots(
+        goal.constraints, world_state, goal_tokens(goal.pddl_goal)
+    ) & set(pddl_compliant_robot_states)
+    if busy:
+        logger.info("Additional task: leaving busy robots alone: %s", sorted(busy))
     match domain.domain_name:
         # case "goto-object-domain-multirobot-fd":
         #     pddl_problem, symbols = generate_multirobot_inspection_pddl(
@@ -558,10 +704,23 @@ def ground_problem(
             pddl_problem, symbols, failure_hint = generate_multirobot_region_pddl(
                 dsg,
                 goal.pddl_goal,
-                planning_robot_states(pddl_compliant_robot_states, goal.constraints),
+                planning_robot_states(
+                    pddl_compliant_robot_states, goal.constraints, busy
+                ),
                 constraints=goal.constraints,
-                world_state=getattr(goal, "world_state", None),
+                world_state=world_state,
             )
+            if busy:
+                failure_hint = "; ".join(
+                    filter(
+                        None,
+                        [
+                            failure_hint,
+                            f"only free robots were planned for (busy: "
+                            f"{', '.join(sorted(busy))})",
+                        ],
+                    )
+                )
             # logger.warning(f"!!!!!!!!!!!!!!pddl_problem: {pddl_problem}")
         case _:
             raise NotImplementedError(
@@ -576,7 +735,9 @@ def ground_problem(
     # passed as part of the goal.
 
     valid_robot_names = [
-        name for name, pose in robot_states.items() if pose is not None
+        name
+        for name, pose in robot_states.items()
+        if pose is not None and name.lower() not in busy
     ]
     wrapper = MultiRobotWrapper(
         valid_robot_names,
