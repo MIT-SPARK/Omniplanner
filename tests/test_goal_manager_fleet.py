@@ -351,3 +351,13 @@ def test_asking_again_for_a_lost_robots_part_is_not_a_new_mission(h):
     (sent,) = h.goals
     assert not _new_mission(sent)
     assert sent.goal.pddl_goal == "(visited-object o2)"  # o1 stays done
+
+
+def test_a_new_map_epoch_forgets_what_was_achieved(h):
+    h.node._map_epoch_cb(String(data="e1"))
+    h.send("(visited-object o1)")
+    h.plan(euclid=("pe", 1, ["o1"]), hamilton=("ph", 1, ["o2"]))
+    h.done("euclid", "pe")
+    assert "o1" in h.node._visited()
+    h.node._map_epoch_cb(String(data="e2"))  # the database was reloaded
+    assert h.node._visited() == set() and h.node._robots == {}

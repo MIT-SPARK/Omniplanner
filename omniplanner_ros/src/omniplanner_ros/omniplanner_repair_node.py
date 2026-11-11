@@ -207,6 +207,10 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         self._settle_timer = None
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self._version_pub = self.create_publisher(Int64, "~/map_version", latched)
+        # The map's epoch, which changes when the database is reloaded: the goal
+        # manager forgets what was achieved on the old map (~/map_version only
+        # goes up, so it cannot tell a reload from an edit).
+        self._epoch_pub = self.create_publisher(String, "~/map_epoch", latched)
         self._publish_map_version()
         # A map version no scene change announced within this long is warned
         # about: some edit changed the map without telling anyone (S1).
@@ -553,6 +557,13 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         if version != self._published_version:
             self._published_version = version
             self._version_pub.publish(Int64(data=version))
+        epoch_pub = getattr(self, "_epoch_pub", None)
+        if epoch_pub is None:
+            return
+        epoch = self._map_state()[0]
+        if epoch and epoch != getattr(self, "_published_epoch", ""):
+            self._published_epoch = epoch
+            epoch_pub.publish(String(data=epoch))
 
     def _map_version(self) -> int:
         """How many times the map's (epoch, version) has changed: goes only up,

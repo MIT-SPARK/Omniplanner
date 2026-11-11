@@ -174,6 +174,7 @@ def _node(dsg=None, poses=None, adaptors=None):
     node._replan_pub = publisher(None, "~/replan_request", 10)
     node._version_pub = publisher(None, "~/map_version", 1)
     node._progress_pub = publisher(None, "~/progress_alert", 10)
+    node._epoch_pub = publisher(None, "~/map_epoch", 1)
     node._path_status_pubs = {}
     return node
 
@@ -253,6 +254,9 @@ def test_a_reload_moves_the_published_version_on_even_if_heracles_goes_back():
     sent = [m.data for m in node.f_pubs["~/map_version"].sent]
     assert sent == [1, 2, 3]  # 3, 4, then the reload's 1: still going up
     assert any("map reloaded (epoch e1 -> e2)" in m for _, m in node.f_logs)
+    # The epoch goes out too: found in the local e2e, the goal manager never
+    # heard of a reload (the version it watches only goes up).
+    assert [m.data for m in node.f_pubs["~/map_epoch"].sent] == ["e1", "e2"]
 
 
 def test_an_older_heracles_without_an_epoch_still_works():
