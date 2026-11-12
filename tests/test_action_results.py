@@ -82,7 +82,7 @@ def test_subscribes_when_available():
     if node_mod.ActionResultMsg is None:
         pytest.skip("spot_tools without ActionResultMsg")
     ad, node = _make(node_mod.RobotPlanningAdaptor)
-    assert node.subs[0][1] == "/bot/spot_executor/action_result"
+    assert node.subs[0][1] == "/bot/spot_executor_node/action_result"
 
 
 def test_import_is_optional_in_source():
