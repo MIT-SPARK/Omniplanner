@@ -1681,8 +1681,15 @@ class GoalManager(Node):
         if entry is not None and entry.status in (RUNNING, STALLED):
             out |= entry.remaining
             out |= goal_objects(entry.conjuncts)
-            out |= goal_objects(self._standing.get(robot, []))
+            out |= goal_objects(self._own(robot, self._standing.get(robot, [])))
         return out
+
+    def _own(self, robot: str, conjuncts) -> List[str]:
+        """The conjuncts this robot may do: those naming it, or no robot. A
+        goal shared by several robots lists every robot's tasks for each of
+        them; another robot's task is not this robot's work."""
+        mine = {robot, self._base_station}
+        return [c for c in conjuncts if not (goal_robots([c]) - mine)]
 
     def _robot_conjuncts(self, robot: str) -> List[str]:
         """The open conjuncts a robot is working on."""
@@ -1693,7 +1700,7 @@ class GoalManager(Node):
             mine = entry.conjuncts
         else:
             mine = []
-        return [c for c in mine if not self._is_done(c)]
+        return [c for c in self._own(robot, mine) if not self._is_done(c)]
 
     def _decide_scoped(self, d: Decision, involved: Set[str]) -> Decision:
         """Plan only for the robots the goal involves; every other robot's
