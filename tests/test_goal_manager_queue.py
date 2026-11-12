@@ -149,3 +149,48 @@ def test_the_waiting_goal_is_decided_after_the_plan_not_inside_its_callback(h):
     (_, second) = h.goals
     assert not any(c.predicate == "new-mission" for c in second.constraints)
     assert h.node._standing["euclid"] == [EUCLID]
+
+
+# ---------- a goal for one robot right after the team's goal ----------
+
+TEAM = "(and (visited-object o4) (visited-object o8))"
+
+
+def test_a_robot_goal_right_after_a_team_goal_waits_and_both_are_planned(h):
+    """Sent at once, the planner dropped the team's plan for the robot's
+    goal: nobody visited o4 and o8, and nothing said so."""
+    h.send(TEAM)
+    h.send("(at-object hamilton o3)")  # before the team's plan is back
+    assert [g.goal.pddl_goal for g in h.goals] == [TEAM]
+    assert any("waits" in m and "the team" in m for m in h.logs)
+
+    _plan(h, euclid=("pt", 2, ["o4"]), hilbert=("pt", 2, ["o8"]))
+    assert _goals(h)[-1] == ("(at-object hamilton o3)", ["hamilton"])
+    h.plan(hamilton=("ph", 1, []))
+    assert h.node._robots["euclid"].plan_id == "pt"
+    assert h.node._robots["hilbert"].plan_id == "pt"
+    assert h.node._robots["hamilton"].plan_id == "ph"
+    assert set(h.node._mission) == {
+        "(visited-object o4)",
+        "(visited-object o8)",
+        "(at-object hamilton o3)",
+    }
+
+
+def test_a_robot_goal_waiting_for_a_team_goal_is_sent_when_that_fails(h):
+    h.send(TEAM)
+    h.send(HAMILTON)
+    h.failed("Goal symbol(s) not in the DSG: o4")
+    h.node._send_queued()
+    assert _goals(h)[-1] == (HAMILTON, ["hamilton"])
+
+
+def test_a_robot_goal_during_a_scene_change_replan_goes_straight_out_as_before(h):
+    from std_msgs.msg import String
+
+    h.send(TEAM)
+    h.plan(euclid=("pt", 2, ["o4"]), hilbert=("pt", 2, ["o8"]))
+    h.node._replan_request_cb(String(data="scene changed: o4 moved 2.0 m"))
+    n = len(h.goals)
+    h.send(HAMILTON)
+    assert len(h.goals) == n + 1 and h.node._queued == []
