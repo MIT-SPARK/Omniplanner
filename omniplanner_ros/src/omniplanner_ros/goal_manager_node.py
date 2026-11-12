@@ -1320,6 +1320,15 @@ class GoalManager(Node):
         ast = _parse_goal(c)
         if ast is None or not _positive(ast):
             return False
+        if (
+            isinstance(ast, (list, tuple))
+            and len(ast) == 3
+            and str(ast[0]).endswith("-by")
+            and str(ast[0])[: -len("-by")] in _VISIT_PREDS
+        ):
+            # a visit by a named robot: done once that robot reached the POI
+            a = self._achieved.get(str(ast[2]))
+            return a is not None and a[0] == self._map_epoch and a[2] == str(ast[1])
         visited = self._visited()
         return _eval_goal_against_visited(ast, visited) is True
 
@@ -1476,9 +1485,14 @@ class GoalManager(Node):
             objs = self._robot_objects(robot) & wanted
             if objs:
                 d.conflicts[robot] = sorted(objs)
+        replanned = involved | set(d.conflicts)
         for robot, objs in sorted(d.conflicts.items()):
             for c in self._robot_conjuncts(robot):
                 if c in d.todo or c in d.dropped:
+                    continue
+                if goal_robots([c]) - replanned:
+                    # another robot's part of a shared goal (that robot is left
+                    # alone, so the planner has no such robot): not carried over
                     continue
                 if goal_objects([c], moved_only=True) & set(objs):
                     d.dropped.append(c)

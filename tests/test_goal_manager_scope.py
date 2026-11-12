@@ -400,3 +400,33 @@ def test_a_mixed_goal_is_the_teams_with_eight_robots_configured(tmp_path):
         assert _use(sent) == []
     finally:
         h.close()
+
+
+def test_replanning_another_robot_keeps_only_its_own_part_of_a_shared_goal(h):
+    """2026-11-12 Killian test: gauss and hamilton shared a goal, hamilton
+    finished its visit; a euclid-only goal for gauss's cone replanned gauss and
+    carried hamilton's visit along, with hamilton left out of the problem:
+    "goal references symbols absent from the scene graph: ['hamilton']"."""
+    h.send(
+        "(and (visited-object-by gauss o58) (visited-place-by hamilton t1472))",
+        robot_id="hamilton",
+    )
+    h.plan(hamilton=("ph", 1, ["t1472", "t1473"]), gauss=("pg", 0, ["o58", "t2181"]))
+    h.done("hamilton", "ph")
+    h.goals.clear()
+    h.sent.clear()
+
+    h.send("(holding euclid o58)", robot_id="euclid", use=["euclid"])
+    (sent,) = h.goals
+    assert _use(sent) == ["euclid", "gauss"]
+    assert sent.goal.pddl_goal == "(and (holding euclid o58) (visited-object-by gauss o58))"
+    assert "hamilton" not in sent.goal.pddl_goal
+
+
+def test_a_finished_visit_by_a_named_robot_is_done(h):
+    h.send("(visited-place-by hamilton t1472)")
+    h.plan(hamilton=("ph", 1, ["t1472"]))
+    h.done("hamilton", "ph")
+    assert h.node._is_done("(visited-place-by hamilton t1472)")
+    # another robot's visit does not count for this one
+    assert not h.node._is_done("(visited-place-by euclid t1472)")
