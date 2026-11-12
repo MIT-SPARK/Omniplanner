@@ -419,7 +419,10 @@ def test_replanning_another_robot_keeps_only_its_own_part_of_a_shared_goal(h):
     h.send("(holding euclid o58)", robot_id="euclid", use=["euclid"])
     (sent,) = h.goals
     assert _use(sent) == ["euclid", "gauss"]
-    assert sent.goal.pddl_goal == "(and (holding euclid o58) (visited-object-by gauss o58))"
+    assert (
+        sent.goal.pddl_goal
+        == "(and (holding euclid o58) (visited-object-by gauss o58))"
+    )
     assert "hamilton" not in sent.goal.pddl_goal
 
 
@@ -430,3 +433,49 @@ def test_a_finished_visit_by_a_named_robot_is_done(h):
     assert h.node._is_done("(visited-place-by hamilton t1472)")
     # another robot's visit does not count for this one
     assert not h.node._is_done("(visited-place-by euclid t1472)")
+
+
+# ---------- willow, 2026-11-12: a kept task named a robot outside use-robots ----------
+
+SHARED = "(and (visited-object-by gauss o58) (visited-place-by hamilton t1472))"
+
+
+def _gauss_and_hamilton(h):
+    h.send(SHARED, robot_id="hamilton")
+    h.plan(hamilton=("192a7f09", 1, ["t1472"]), gauss=("", 0, ["o58"]))
+    h.goals.clear()
+    h.texts.clear()
+
+
+def _sent(h):
+    (sent,) = h.goals
+    from omniplanner_ros.goal_manager_node import goal_conjuncts
+
+    return set(goal_conjuncts(sent.goal.pddl_goal)), sorted(h.use(sent))
+
+
+def test_a_conflict_keeps_only_the_tasks_of_the_robots_it_plans_for(h):
+    """(holding euclid o58) needs o58, which gauss's plan acts on, so gauss is
+    replanned too with the rest of its goal. That goal was shared with
+    hamilton: hamilton's task went along, hamilton was not in use-robots, and
+    the planner refused the goal ("symbols absent ...: ['hamilton']")."""
+    _gauss_and_hamilton(h)  # hamilton still on its way
+    h.send("(holding euclid o58)", robot_id="euclid")
+    goal, use = _sent(h)
+    assert use == ["euclid", "gauss"]
+    assert goal == {"(holding euclid o58)", "(visited-object-by gauss o58)"}
+    assert ("hamilton", "pause") not in h.sent
+    # hamilton's own task is still its own, and still in the mission
+    h.plan(euclid=("pe", 2, ["o58"]), gauss=("", 0, ["o58"]))
+    assert "(visited-place-by hamilton t1472)" in h.node._mission
+    assert h.node._robots["hamilton"].plan_id == "192a7f09"
+
+
+def test_the_willow_sequence_with_hamilton_finished_plans(h):
+    _gauss_and_hamilton(h)
+    h.done("hamilton", "192a7f09")  # hamilton reached t1472
+    h.send("(holding euclid o58)", robot_id="euclid")
+    goal, use = _sent(h)
+    assert use == ["euclid", "gauss"]
+    assert goal == {"(holding euclid o58)", "(visited-object-by gauss o58)"}
+    assert "keeping (visited-object-by gauss o58)." in h.texts[-1]
