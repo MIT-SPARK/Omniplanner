@@ -134,7 +134,7 @@ class RobotPlanningAdaptor:
             )
         elif self.PUBLISHES_ACTION_RESULTS:
             result_topic = getattr(config, "action_result_topic", "") or (
-                f"/{self.name}/spot_executor/action_result"
+                f"/{self.name}/spot_executor_node/action_result"
             )
             self.action_result_sub = node.create_subscription(
                 ActionResultMsg,
@@ -199,7 +199,7 @@ class RobotConfig(Config):
     robot_type: str = ""
     body_frame: str = ""
     # Where this robot's executor publishes ActionResultMsg. Empty ->
-    # the spot_executor convention /<robot_name>/spot_executor/action_result.
+    # the spot_executor convention /<robot_name>/spot_executor_node/action_result.
     action_result_topic: str = ""
 
 
