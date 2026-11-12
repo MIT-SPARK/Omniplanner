@@ -38,9 +38,10 @@ the last scoped goal it was given, so goals for different robots compose. A
 goal with a conjunct naming no robot (and no ``use-robots``) is the team's,
 even if other conjuncts name robots, and replaces them all. The planner
 drops a plan still being computed when a newer goal arrives, so a goal for
-other robots than the one being planned waits for that plan (or its failure,
-or ``queue_timeout_s``) and is decided then; a goal for the same robots, or
-the team's, goes straight out and replaces it, as before. If the goal moves or holds an object another
+other robots than the one being planned, or one sent while the team's goal is
+being planned, waits for that plan (or its failure, or ``queue_timeout_s``)
+and is decided then; a goal for the same robots, or the team's, goes straight
+out and replaces it, as before. If the goal moves or holds an object another
 robot holds or its plan acts on, that robot is replanned too, with the rest of
 its goal, and the operator is told. Where a robot is or what it holds (at-*,
 in-region, holding) is never remembered as done: it stops holding when the
@@ -1348,12 +1349,16 @@ class GoalManager(Node):
         self._forward_for_replanning(msg, decision)
 
     def _queue_behind_pending(self, msg: ConstrainedPddlGoalMsg) -> bool:
-        """Hold a robot-scoped goal while a goal for other robots is being
-        planned: sent now, the planner would drop that plan for this goal.
-        A goal for the same robots, or the team's, replaces what is being
-        planned and is not held. The newest goal waiting for a robot wins."""
+        """Hold a robot-scoped goal while a goal for other robots, or the
+        team's goal, is being planned: sent now, the planner would drop that
+        plan for this goal. A goal for the same robots, or the team's,
+        replaces what is being planned and is not held; nor is a goal that
+        arrives during a replan the planner asked for (a new instruction
+        supersedes it, as before). The newest goal waiting for a robot wins."""
         pending = self._pending
-        if self._queue_timeout_s <= 0 or pending is None or pending.kind != SCOPED:
+        if self._queue_timeout_s <= 0 or pending is None:
+            return False
+        if pending.kind != SCOPED and self._replan_reason is not None:
             return False
         scope = self._goal_scope(msg, goal_conjuncts(msg.goal.pddl_goal))
         if not scope or scope & set(pending.robots):
@@ -1362,7 +1367,8 @@ class GoalManager(Node):
         self._queued.append((scope, msg))
         self.get_logger().info(
             f"{self._describe(msg)} waits for the plan of "
-            f"{self._describe(pending.msg)}, which is for {_names(pending.robots)}: "
+            f"{self._describe(pending.msg)}, which is for "
+            f"{_names(pending.robots) or 'the team'}: "
             f"the planner takes one goal at a time ({len(self._queued)} waiting)"
         )
         return True
@@ -1385,7 +1391,7 @@ class GoalManager(Node):
         self._notify_operator(
             f"No answer from the planner for {self._describe(pending.msg)} after "
             f"{waited:.0f} s; planning the next goal now. If "
-            f"{_names(pending.robots)} got no plan, send that goal again."
+            f"{_names(pending.robots) or 'the team'} got no plan, send that goal again."
         )
         self._pending = None
         self._send_queued()
