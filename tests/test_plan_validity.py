@@ -149,6 +149,7 @@ def _node(map_version=99):
         _pending_busy=set(),
         _left_alone=set(),
         _running_plans={},
+        _plan_goals={},
         _dispatched={},
         _path_status_pubs={},
         robot_adaptors={},
@@ -177,6 +178,7 @@ def _node(map_version=99):
         "_keep_carrying",
         "_is_path_robot",
         "_watch_progress",
+        "_plan_over",
         "_now_s",
     ):
         setattr(node, name, getattr(N, name).__get__(node))

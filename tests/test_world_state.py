@@ -233,7 +233,7 @@ def _repair_node_stub(holding, dsg=None):
     node._path_status_pubs = {}
     node.create_publisher = lambda *_: NS(publish=lambda *_: None)
     node._left_alone, node._running_plans, node._actions_done = set(), {}, {}
-    node._active_goal = ""
+    node._active_goal, node._plan_goals = "", {}
     node.get_clock = lambda: NS(now=lambda: NS(nanoseconds=0))
     node.get_logger = lambda: NS(
         info=lambda *_: None, warning=lambda *_: None, error=lambda *_: None

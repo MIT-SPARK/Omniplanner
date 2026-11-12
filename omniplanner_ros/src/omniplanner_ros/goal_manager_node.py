@@ -36,11 +36,24 @@ robot-scoped unless it names the whole fleet: it goes to the planner with
 robot's plan, standing goal and held objects are left alone. Each robot keeps
 the last scoped goal it was given, so goals for different robots compose. A
 goal with a conjunct naming no robot (and no ``use-robots``) is the team's,
-even if other conjuncts name robots, and replaces them all. If the goal moves or holds an object another
+even if other conjuncts name robots, and replaces them all. The planner
+drops a plan still being computed when a newer goal arrives, so a goal for
+other robots than the one being planned waits for that plan (or its failure,
+or ``queue_timeout_s``) and is decided then; a goal for the same robots, or
+the team's, goes straight out and replaces it, as before. If the goal moves or holds an object another
 robot holds or its plan acts on, that robot is replanned too, with the rest of
 its goal, and the operator is told. Where a robot is or what it holds (at-*,
 in-region, holding) is never remembered as done: it stops holding when the
 robot moves.
+
+A replan the planner asks for (the scene changed, a pick failed) re-sends what
+is left of the running mission, never the last goal sent: with no mission
+running there is nothing to replan. A robot's own tasks (conjuncts naming only
+it) leave the mission when it gets a new goal, finishes its plan or is stopped,
+and a failed goal that stops every robot ends the mission. When the reason says
+objects were removed, the plain tasks on them are dropped, the operator is told
+which, and the rest is replanned; if nothing would be left the replan goes out
+whole and fails as before.
 
 A pause reaches a robot on another topic than its plan (over fleetlink it is
 retried for up to its ttl), so one sent before a new plan can arrive after it
@@ -72,6 +85,7 @@ import rclpy
 import yaml
 from dsg_pddl.pddl_utils import lisp_string_to_ast
 from nav_msgs.msg import Path
+from omniplanner.plan_validity import removed_symbols
 from omniplanner_msgs.msg import ConstrainedPddlGoalMsg, ConstraintFact
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile
@@ -534,6 +548,14 @@ class GoalManager(Node):
         self._running_goal = None
         self._pending_goal = None
         self._pending: Optional[Pending] = None
+        # Robot-scoped goals waiting for the pending goal, which is for other
+        # robots: [(robots, goal)]. The planner would drop the pending plan
+        # for a newer goal. Zero sends every goal straight on, as before.
+        self._queued: List[Tuple[Set[str], ConstrainedPddlGoalMsg]] = []
+        self.declare_parameter("queue_timeout_s", 60.0)
+        self._queue_timeout_s = float(
+            self.get_parameter("queue_timeout_s").value or 0.0
+        )
         # What a goal that cannot be planned does to the running plan: by
         # default the robots stop and wait for the next goal. The operator
         # asked for something else, so carrying on with the superseded plan
@@ -612,6 +634,10 @@ class GoalManager(Node):
             period = min(period, max(self._progress_timeout_s / 4, 0.5))
         self._watchdog = self.create_timer(period, self._watchdog_cb)
         self._unpause_timer = self.create_timer(0.5, self._unpause_tick)
+        # On a timer, not in the callback that settles the pending goal: the
+        # plan's action sequences may be handled after its plan_robots, and
+        # the waiting goal must be decided knowing who just got a plan.
+        self._queue_timer = self.create_timer(0.5, self._send_queued)
 
         self.get_logger().info(
             f"goal_manager up on {self._base_station or 'this host'}; "
@@ -798,7 +824,10 @@ class GoalManager(Node):
             entry = RobotPlan(since=self._now(), stamp=self._stamp)
             self._robots[robot] = entry
         entry.coverage = pois
-        goal = self._pending.conjuncts if self._pending else self._mission
+        pending = self._pending
+        # A pending goal for other robots says nothing about this robot's plan.
+        mine = pending is not None and (not pending.robots or robot in pending.robots)
+        goal = pending.conjuncts if mine else self._mission
         entry.conjuncts = [
             c for c in goal if _eval_goal_against_visited(_parse_goal(c.lower()), pois)
         ]
@@ -882,7 +911,7 @@ class GoalManager(Node):
         achieved, and its entry is cleared. Other robots' entries stay."""
         entry = self._robots.pop(robot)
         entry.status = DONE
-        self._standing.pop(robot, None)
+        self._release(robot)
         for poi in entry.coverage | entry.reached:
             self._achieved[poi] = (*self._stamp, robot)
         self._plan_robots.discard(robot)
@@ -893,6 +922,34 @@ class GoalManager(Node):
             f"{why}: achieved {sorted(entry.coverage | entry.reached)}"
             + (f"; done {done}" if done else ""),
         )
+
+    def _bound_to(self, robots: Set[str]) -> Set[str]:
+        """The mission's conjuncts that name only these robots (a -by,
+        holding or at-* form): their own tasks, which no other robot can do."""
+        own = {self._base_station}
+        return {
+            c
+            for c in self._mission
+            if (named := goal_robots([c]) - own) and named <= robots
+        }
+
+    def _forget(self, conjuncts) -> None:
+        """Take conjuncts out of the mission and of every robot's goal."""
+        gone = set(conjuncts)
+        self._mission = [c for c in self._mission if c not in gone]
+        self._standing = {
+            r: kept
+            for r, cs in self._standing.items()
+            if (kept := [c for c in cs if c not in gone])
+        }
+
+    def _release(self, robot: str) -> None:
+        """The robot's plan is over (finished or stopped): its own tasks, and
+        the conjuncts of its robot-scoped goal that no other robot has, leave
+        the mission, so a later replan does not plan them again."""
+        mine = set(self._standing.pop(robot, []))
+        mine -= {c for cs in self._standing.values() for c in cs}
+        self._forget(mine | self._bound_to({robot}))
 
     def _lose(self, robot: str, status: str, why: str) -> None:
         """The robot will not finish its plan: only its conjuncts are open again."""
@@ -923,6 +980,7 @@ class GoalManager(Node):
         if not self._platforms or len(self._robot_subs) < len(self._platforms):
             self._discover_robots()
         self._check_progress()
+        self._check_queue()
 
     def _check_progress(self) -> None:
         """A robot that got a plan and reports no action for it (P11)."""
@@ -1057,8 +1115,11 @@ class GoalManager(Node):
         scope = set(pending.robots)
         old = {c for r in scope for c in self._standing.get(r, [])}
         others = {c for r, cs in self._standing.items() if r not in scope for c in cs}
-        gone = (old | set(pending.dropped)) - others - set(pending.conjuncts)
-        self._mission = [c for c in self._mission if c not in gone]
+        gone = (old | set(pending.dropped)) - others
+        # Their own tasks go even when nobody remembers whose they were (a
+        # replan forgets it) or another robot's goal lists them too.
+        gone = (gone | self._bound_to(scope)) - set(pending.conjuncts)
+        self._forget(gone)
         self._mission += [c for c in pending.conjuncts if c not in self._mission]
         self._lost -= gone
         for robot in scope:
@@ -1207,7 +1268,15 @@ class GoalManager(Node):
         if goal is None:
             self.get_logger().info(f"replan requested ({msg.data}), but no goal yet")
             return
-        mission = self._mission or goal_conjuncts(goal.goal.pddl_goal)
+        mission = self._mission
+        if not mission:
+            # Every plan finished or was stopped: there is nothing to repair.
+            # The last goal sent is not the mission, and is not planned again.
+            self.get_logger().warning(
+                f"replan requested ({msg.data}), but no mission is running: "
+                "nothing to replan"
+            )
+            return
         todo = [c for c in mission if not self._is_done(c)]
         if self._standing and any(c.predicate == USE_ROBOTS for c in goal.constraints):
             # The mission is several robot-scoped goals: one goal's use-robots
@@ -1225,6 +1294,7 @@ class GoalManager(Node):
                 f"mission is achieved: {mission}"
             )
             return
+        todo = self._drop_removed(todo, removed_symbols(msg.data))
         self._pause_executor()
         self._replan_reason = msg.data
         out = self._goal_msg(goal, todo, [])
@@ -1234,13 +1304,35 @@ class GoalManager(Node):
             f"replanning: {msg.data}. goal={out.goal.pddl_goal!r}; forwarded to planner"
         )
 
+    def _drop_removed(self, todo: List[str], gone: Set[str]) -> List[str]:
+        """What is left of todo without the tasks on objects that were removed
+        from the map: the planner cannot read a goal naming them, and the
+        whole mission would stop for one object. Only plain tasks are dropped
+        (an ``or`` or ``not`` may still hold), and only if something is left;
+        otherwise todo is returned whole and the replan fails as it should."""
+        dropped = [c for c in todo if _conjunct_symbols(_parse_goal(c.lower())) & gone]
+        left = [c for c in todo if c not in dropped]
+        plain = all(_parse_goal(c)[0] not in ("or", "not") for c in dropped)
+        if not dropped or not left or not plain:
+            return todo
+        self._forget(dropped)
+        self._lost -= set(dropped)
+        names = sorted(gone & goal_objects(dropped) or gone)
+        self._notify_operator(
+            f"{_names(names)} {'was' if len(names) == 1 else 'were'} removed: "
+            f"dropped {' '.join(dropped)}; continuing with {' '.join(left)}."
+        )
+        return left
+
     def _notify_operator(self, text: str) -> None:
         self.get_logger().warning(f"operator: {text}")
         self._display_pub.publish(String(data=text))
         self._alert_pub.publish(String(data=text))
 
     def _commanded_goal_cb(self, msg: ConstrainedPddlGoalMsg) -> None:
-        # Flow: decide → (pause →) forward, or leave the robots be → log.
+        # Flow: (wait →) decide → (pause →) forward, or leave the robots be → log.
+        if self._queue_behind_pending(msg):
+            return
         self._replan_reason = None  # a new instruction supersedes it
         new_mission = self._starts_new_mission(msg)
         if new_mission:
@@ -1254,6 +1346,49 @@ class GoalManager(Node):
         if decision.conflicts:
             self._notify_operator(self._conflict_text(msg, decision))
         self._forward_for_replanning(msg, decision)
+
+    def _queue_behind_pending(self, msg: ConstrainedPddlGoalMsg) -> bool:
+        """Hold a robot-scoped goal while a goal for other robots is being
+        planned: sent now, the planner would drop that plan for this goal.
+        A goal for the same robots, or the team's, replaces what is being
+        planned and is not held. The newest goal waiting for a robot wins."""
+        pending = self._pending
+        if self._queue_timeout_s <= 0 or pending is None or pending.kind != SCOPED:
+            return False
+        scope = self._goal_scope(msg, goal_conjuncts(msg.goal.pddl_goal))
+        if not scope or scope & set(pending.robots):
+            return False
+        self._queued = [(s, m) for s, m in self._queued if not (s & scope)]
+        self._queued.append((scope, msg))
+        self.get_logger().info(
+            f"{self._describe(msg)} waits for the plan of "
+            f"{self._describe(pending.msg)}, which is for {_names(pending.robots)}: "
+            f"the planner takes one goal at a time ({len(self._queued)} waiting)"
+        )
+        return True
+
+    def _send_queued(self) -> None:
+        """Once the pending goal is settled (its plan came, or it failed):
+        decide the goals that waited for it, oldest first, until one is
+        forwarded."""
+        while self._queued and self._pending is None:
+            self._commanded_goal_cb(self._queued.pop(0)[1])
+
+    def _check_queue(self) -> None:
+        """A planner that never answers must not hold the waiting goals."""
+        pending = self._pending
+        if not self._queued or pending is None:
+            return
+        waited = self._now() - pending.at
+        if waited < self._queue_timeout_s:
+            return
+        self._notify_operator(
+            f"No answer from the planner for {self._describe(pending.msg)} after "
+            f"{waited:.0f} s; planning the next goal now. If "
+            f"{_names(pending.robots)} got no plan, send that goal again."
+        )
+        self._pending = None
+        self._send_queued()
 
     def _conflict_text(self, msg, d: Decision) -> str:
         parts = [
@@ -1594,6 +1729,12 @@ class GoalManager(Node):
         for robot in sorted(self._paused):
             (stopped if self._executor_cmd(robot, "stop") else unreached).append(robot)
             self._drop(robot, "stopped")
+            self._release(robot)
+            self._plan_robots.discard(robot)
+        if self._paused and not self._plan_robots - {self._base_station}:
+            # Every robot of the mission was stopped: it is over. A later
+            # scene change must not bring it back.
+            self._mission, self._standing = [], {}
         self._paused = set()
         return stopped, unreached
 
@@ -1664,6 +1805,9 @@ class GoalManager(Node):
                     )
                 )
             self._pause_executor(only=d.robots)
+        # A goal waiting for these robots (the team's goal: for any) is replaced.
+        scope = set(d.robots)
+        self._queued = [(s, m) for s, m in self._queued if scope and not (s & scope)]
         out = self._goal_msg(msg, d.todo, d.busy, d.new_mission, d.robots)
         # Record what the incoming plan will be grounded under, so the next goal
         # can tell whether the constraints have since changed.

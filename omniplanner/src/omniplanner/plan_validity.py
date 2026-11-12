@@ -24,6 +24,7 @@ Symbols are compared lowercase, positions in the plane (map frame).
 from __future__ import annotations
 
 import math
+import re
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from dsg_pddl.pddl_utils import lisp_string_to_ast
@@ -144,6 +145,20 @@ def affecting_changes(
         elif sym in goal["inspect"] and sym not in inspected:
             out.append((sym, f"{sym} {what} before the inspection the goal asks for"))
     return out
+
+
+def removed_symbols(reason: str) -> set:
+    """The symbols a replan reason says were removed.
+
+    Reads the reasons affecting_changes writes ("o0 removed, and the plan
+    still has to pick it", "o21 removed before the visit the goal asks
+    for"), joined by "; " after a "scene changed: " or "map reloaded: " lead.
+    """
+    return {
+        m.group(1).lower()
+        for part in (reason or "").split(": ", 1)[-1].split("; ")
+        if (m := re.match(r"(\S+) removed(?:,| before) ", part))
+    }
 
 
 # {robot -> [(action index, [place symbols the Follow passes, in order])]}
