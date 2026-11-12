@@ -29,13 +29,14 @@ running mission while robots are busy goes as an additional task, with a
 ``busy-robots`` constraint naming the robots the planner should leave alone.
 The per-robot state is latched on ``~/robot_plan_states`` (JSON).
 
-A goal that names some robots -- in a ``*-by``, ``holding``, ``at-*`` or
-``in-region`` conjunct, or a ``use-robots`` constraint -- but not the whole
-fleet is robot-scoped: it goes to the planner with ``use-robots`` naming only
-them, only they are paused, and every other robot's plan, standing goal and
-held objects are left alone. Each robot keeps the last scoped goal it was
-given, so goals for different robots compose; a goal naming no robot is the
-team's and replaces them all. If the goal moves or holds an object another
+A goal with a ``use-robots`` constraint, or whose every open conjunct names
+a robot (in a ``*-by``, ``holding``, ``at-*`` or ``in-region`` atom), is
+robot-scoped unless it names the whole fleet: it goes to the planner with
+``use-robots`` naming only those robots, only they are paused, and every other
+robot's plan, standing goal and held objects are left alone. Each robot keeps
+the last scoped goal it was given, so goals for different robots compose. A
+goal with a conjunct naming no robot (and no ``use-robots``) is the team's,
+even if other conjuncts name robots, and replaces them all. If the goal moves or holds an object another
 robot holds or its plan acts on, that robot is replanned too, with the rest of
 its goal, and the operator is told. Where a robot is or what it holds (at-*,
 in-region, holding) is never remembered as done: it stops holding when the
@@ -1384,7 +1385,9 @@ class GoalManager(Node):
             d.action = WAIT
             d.reason = f"already in progress ({', '.join(in_progress)}); not replanning"
             return d
-        involved = self._goal_scope(msg, conjuncts)
+        # What is left to do decides: an achieved robot-free task does not
+        # make the rest the team's.
+        involved = self._goal_scope(msg, todo)
         if involved:
             return self._decide_scoped(d, involved)
         mission_open = [c for c in self._mission if not self._is_done(c)]
@@ -1427,12 +1430,16 @@ class GoalManager(Node):
         return robots - {self._base_station, ""}
 
     def _goal_scope(self, msg, conjuncts) -> Set[str]:
-        """The robots a goal involves, if not the whole fleet: those its
-        conjuncts name (-by, holding, at-*, in-region) and its use-robots.
-        Empty for a goal naming no robot, which is the whole team's."""
-        robots = (goal_robots(conjuncts) | use_robots(msg.constraints)) - {
-            self._base_station
-        }
+        """The robots a goal involves, if not the whole fleet: its use-robots,
+        else the robots its conjuncts name (-by, holding, at-*, in-region)
+        when every one of them names a robot. Empty for a goal with a task
+        naming no robot (and no use-robots), which is the whole team's: its
+        robot-free tasks are for anyone, not for the robots named elsewhere."""
+        own = {self._base_station}
+        used = use_robots(msg.constraints) - own
+        if not used and any(not (goal_robots([c]) - own) for c in conjuncts):
+            return set()
+        robots = (goal_robots(conjuncts) - own) | used
         if not robots or not (self._fleet() - robots):
             return set()
         return robots

@@ -295,3 +295,108 @@ def test_no_resume_without_a_recent_pause_or_after_the_plan_changed(h):
     h.t += 1.0
     h.node._unpause_tick()
     assert ("euclid", "resume") not in h.sent
+
+
+# ---------- mixed goals: a robot-free task is the team's ----------
+
+
+def test_a_mixed_goal_is_the_teams(h):
+    """(inspected-by hamilton o58) with a robot-free move: o12's move must
+    not be forced onto hamilton."""
+    h.send("(and (inspected-by hamilton o58) (object-in-place o12 t1253))")
+    (sent,) = h.goals
+    assert _use(sent) == []
+    assert not any("robot-scoped" in m for m in h.logs)
+
+
+def _euclid_visiting_cones(h):
+    h.send("(and (visited-object o1) (visited-object o2) (visited-object o3))")
+    h.plan(euclid=("cones1", 3, ["o1", "o2", "o3"]))
+    h.goals.clear()
+    h.sent.clear()
+
+
+CONES_AND_HAMILTON = (
+    "(and (visited-object o1) (visited-object o2) (visited-object o3) "
+    "(visited-object-by hamilton o58))"
+)
+
+
+def test_resending_the_cones_with_a_hamilton_task_replans_the_team(h):
+    """The cone visits must not all go to hamilton while euclid keeps its
+    old plan for them too."""
+    _euclid_visiting_cones(h)
+    h.send(CONES_AND_HAMILTON)
+    (sent,) = h.goals
+    assert _use(sent) == [] and h.busy(sent) == []  # a repair: anyone
+    assert ("euclid", "pause") in h.sent
+    h.plan(euclid=("cones2", 2, ["o1", "o2"]), hamilton=("ph", 2, ["o3", "o58"]))
+    assert h.node._robots["euclid"].plan_id == "cones2"
+    assert h.node._standing == {}
+    assert set(h.node._mission) == set(
+        CONES_AND_HAMILTON[5:-1].replace(") (", ")|(").split("|")
+    )
+
+
+def test_euclids_stale_cone_plan_is_stopped_if_the_team_plan_leaves_it_out(h):
+    _euclid_visiting_cones(h)
+    h.send(CONES_AND_HAMILTON)
+    h.plan(hamilton=("ph", 4, ["o1", "o2", "o3", "o58"]))
+    assert ("euclid", "stop") in h.sent
+    assert "euclid" not in h.node._running()
+
+
+def test_a_mixed_goal_replaces_standing_robot_goals(h):
+    h.send("(holding hamilton o1)")
+    h.plan(hamilton=("ph", 2, ["o1"]))
+    assert h.node._standing == {"hamilton": ["(holding hamilton o1)"]}
+    h.send("(and (visited-object-by hamilton o2) (object-in-place o1 t5))")
+    (_, sent) = h.goals
+    assert _use(sent) == []
+    assert ("hamilton", "pause") in h.sent
+    h.plan(hamilton=("ph2", 1, ["o2"]), euclid=("pe", 2, ["t5"]))
+    assert h.node._standing == {}
+    assert "(holding hamilton o1)" not in h.node._mission
+
+
+def test_explicit_use_robots_still_scopes_a_mixed_goal(h):
+    _euclid_visiting_cones(h)
+    h.send(
+        "(and (visited-object-by hamilton o58) (visited-object o9))", use=["hamilton"]
+    )
+    (sent,) = h.goals
+    assert _use(sent) == ["hamilton"]
+    assert h.sent == []  # euclid is left alone
+
+
+def test_a_goal_whose_every_open_task_names_a_robot_stays_scoped(h):
+    """The robot-free part is already achieved: what is left is hilbert's,
+    and euclid and hamilton are left alone."""
+    h.send("(and (visited-object o1) (visited-object o2))")
+    h.plan(euclid=("pe", 1, ["o1"]), hamilton=("ph", 2, ["o2"]))
+    h.done("euclid", "pe")  # o1 visited; hamilton still busy
+    h.goals.clear()
+    h.sent.clear()
+    h.send("(and (visited-object o1) (visited-object-by hilbert o9))")
+    (sent,) = h.goals
+    assert _use(sent) == ["hilbert"]
+    assert sent.goal.pddl_goal == "(visited-object-by hilbert o9)"
+    assert h.sent == []
+
+
+# ---------- the fleet is every robot in the plugin config ----------
+
+EIGHT = ("euclid", "hamilton", "hilbert", "gauss2", "noether", "fermat", "lagrange")
+
+
+def test_a_mixed_goal_is_the_teams_with_eight_robots_configured(tmp_path):
+    """The fleet is every robot in the plugin config, online or not: a mixed
+    goal must not be scoped to its one named robot because six configured
+    robots are offline."""
+    h = Harness(tmp_path, spots=EIGHT, huskies=("gauss",))
+    try:
+        h.send("(and (visited-object-by euclid o1) (visited-object o3))")
+        (sent,) = h.goals
+        assert _use(sent) == []
+    finally:
+        h.close()
