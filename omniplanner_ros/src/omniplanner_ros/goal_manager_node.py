@@ -182,14 +182,6 @@ def _parse_goal(pddl_goal: str):
         return None
 
 
-def goal_satisfied_by(pddl_goal: str, visited: Set[str]) -> Optional[bool]:
-    """Wrap parsing + evaluation. Returns None on parse failure."""
-    ast = _parse_goal(pddl_goal)
-    if ast is None:
-        return None
-    return _eval_goal_against_visited(ast, visited)
-
-
 def constraint_signature(constraint_facts) -> frozenset:
     """Hashable identity of a constraint set, for "did the constraints change?".
 
