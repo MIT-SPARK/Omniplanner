@@ -136,7 +136,7 @@ def symbols_near(dsg, points: Iterable, radius_m: float) -> Set[str]:
 
     A place or object within radius_m (in the plane) of a waypoint, and an
     object whose nearest mesh place is a waypoint: a route to an object stops
-    at that place -- GRSTAPS-X snaps every target to it -- which can be farther
+    at that place, which can be farther
     from the object than any sensible radius (2.2 m for one object in b45).
     """
     pts = np.array([[float(p[0]), float(p[1])] for p in points], dtype=float)
