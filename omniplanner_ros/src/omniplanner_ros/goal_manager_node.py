@@ -121,6 +121,8 @@ _OBJECT_SLOT = {
 }
 # Predicates that move or hold their object: two robots' goals conflict over it.
 _MOVE_PREDS = {"holding", "object-in-place", "object-placed-by"}
+# Where an object is: a fact about the map, which a new mission does not undo.
+_PLACEMENT_PREDS = {"object-in-place", "object-placed-by"}
 # The constraint that limits a plan to the robots it names.
 USE_ROBOTS = "use-robots"
 
@@ -313,6 +315,12 @@ def _conjunct_symbols(ast) -> Set[str]:
     if str(ast[0]).endswith("-by"):
         args = args[1:]
     return set(args)
+
+
+def _is_a_placement(conjunct: str) -> bool:
+    """Every atom says where an object is."""
+    atoms = list(_atoms(_parse_goal(conjunct.lower())))
+    return bool(atoms) and all(str(a[0]) in _PLACEMENT_PREDS for a in atoms)
 
 
 def _positive(ast) -> bool:
@@ -1424,14 +1432,17 @@ class GoalManager(Node):
     def _forget_finished_mission(self) -> None:
         """P16: what earlier, finished goals achieved does not count for a
         new mission, so a goal sent again after it finished is planned again.
-        Facts the planner found already holding (a placement) are about the
-        map, not the mission, and are kept until the map changes."""
+        A placement the planner found already holding is about the map, not
+        the mission, and is kept until the map changes. Any other fact it
+        found holding (a visit, an inspection) held because of what the last
+        mission did, so it goes with the mission."""
         if self._achieved or self._lost:
             self.get_logger().info(
                 "every robot is idle: the goal starts a new mission; forgetting "
                 f"what earlier goals achieved ({len(self._achieved)} POIs)"
             )
         self._achieved.clear()
+        self._facts = {c: s for c, s in self._facts.items() if _is_a_placement(c)}
         self._lost = set()
         self._mission = []
         self._standing = {}
