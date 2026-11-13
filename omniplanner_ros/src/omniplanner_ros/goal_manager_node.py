@@ -87,7 +87,7 @@ import yaml
 from dsg_pddl.pddl_utils import lisp_string_to_ast
 from nav_msgs.msg import Path
 from omniplanner.plan_validity import removed_symbols
-from omniplanner_msgs.msg import ConstrainedPddlGoalMsg, ConstraintFact, TaskScheduleMsg
+from omniplanner_msgs.msg import ConstrainedPddlGoalMsg, ConstraintFact
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 from robot_executor_msgs.msg import ActionDoneMsg, ActionSequenceMsg
@@ -97,8 +97,7 @@ from std_msgs.msg import Bool, Int64, String
 # Region goals (visited-region, explored-region and their -by forms) are
 # deliberately NOT here: whether a region is done depends on which of its places
 # were reached, and this node has no region membership. They evaluate to
-# "unknown", which means replan -- and the planner's own residual (GRSTAPS-X:
-# expand_regions) then plans only the part of the region still to do.
+# "unknown", which means replan.
 _VISIT_PREDS = {"visited-place", "visited-object", "visited-poi"}
 
 # Where a robot is, or what it holds, NOW. Such a fact stops holding as soon as
@@ -187,30 +186,6 @@ def goal_satisfied_by(pddl_goal: str, visited: Set[str]) -> Optional[bool]:
     if ast is None:
         return None
     return _eval_goal_against_visited(ast, visited)
-
-
-def _goal_symbols(pddl_goal: str) -> Set[str]:
-    """Every POI a goal names under a visit predicate.
-
-    Used to look each one up in the schedule. Deliberately ignores and/or/not
-    structure: for a horizon check we want the symbols mentioned, not whether
-    the goal as a whole holds -- ``goal_satisfied_by`` already answers that.
-    """
-    out: Set[str] = set()
-
-    def walk(node):
-        if isinstance(node, str) or not node:
-            return
-        if node[0] in ("and", "or", "not"):
-            for sub in node[1:]:
-                walk(sub)
-        elif node[0] in _VISIT_PREDS and len(node) >= 2:
-            # Same argument slot _eval_goal_against_visited matches on, so the
-            # horizon check and the coverage check always mean the same symbol.
-            out.add(node[1])
-
-    walk(_parse_goal(pddl_goal))
-    return out
 
 
 def constraint_signature(constraint_facts) -> frozenset:
@@ -602,20 +577,6 @@ class GoalManager(Node):
         self._map_epoch_id: str = ""
         self._running_epoch: int = 0
 
-        # When the active plan's schedule is known, {poi -> finish time in
-        # seconds}. Empty for planners that publish no schedule, which leaves
-        # the horizon check inert rather than wrong.
-        self._plan_finish_times: dict = {}
-
-        # A goal already covered by the running plan is normally left to it. If
-        # the plan does not get to those POIs until after this many seconds,
-        # replan anyway and see whether a fresh plan does better -- coverage
-        # alone says nothing about *when*. Zero disables the check, which is the
-        # default so behaviour is unchanged unless a deployment opts in.
-        self.declare_parameter("replan_horizon_s", 0.0)
-        self._replan_horizon_s = float(
-            self.get_parameter("replan_horizon_s").value or 0.0
-        )
         # A robot that got a plan and reports no action for this long is
         # stalled: the operator is told, once per plan. Zero disables it.
         self.declare_parameter("progress_timeout_s", 60.0)
@@ -641,9 +602,6 @@ class GoalManager(Node):
         # Latched, so a restarted goal manager still knows who is executing.
         self._robots_sub = self.create_subscription(
             String, "~/plan_robots", self._plan_robots_cb, latched
-        )
-        self._schedule_sub = self.create_subscription(
-            TaskScheduleMsg, "~/plan_schedule", self._schedule_cb, 10
         )
         self._replan_sub = self.create_subscription(
             String, "~/replan_request", self._replan_request_cb, 10
@@ -1212,7 +1170,6 @@ class GoalManager(Node):
         self._achieved.clear()
         self._facts.clear()
         self._lost = set()
-        self._plan_finish_times = {}
         self._publish_states()
         self._notify_operator(
             f"The map was reloaded ({why}). Forgetting what was done and what "
@@ -1372,37 +1329,6 @@ class GoalManager(Node):
         self.get_logger().warning(f"operator: {text}")
         self._display_pub.publish(String(data=text))
         self._alert_pub.publish(String(data=text))
-
-    def _schedule_cb(self, msg: TaskScheduleMsg) -> None:
-        """Record when the active plan reaches each POI.
-
-        Coverage tells us a POI is in the plan; only the schedule says whether
-        it is reached in ten seconds or ten minutes. Kept separate from the
-        visited-POI cache because a planner may publish one and not the other.
-        """
-        finish = {}
-        for t in msg.tasks:
-            if not t.target:
-                continue
-            # A POI may be touched by several tasks (inspect, pick, place);
-            # the plan is only done with it at the last one.
-            finish[t.target] = max(finish.get(t.target, 0.0), float(t.finish_time))
-        self._plan_finish_times = finish
-        self.get_logger().info(
-            f"Updated plan schedule: makespan={msg.makespan:.1f}s, "
-            f"{len(msg.tasks)} task(s)"
-        )
-
-    def _late_pois(self, pddl_goal: str) -> Set[str]:
-        """POIs this goal needs that the running plan reaches after the horizon."""
-        if self._replan_horizon_s <= 0 or not self._plan_finish_times:
-            return set()
-        wanted = _goal_symbols(pddl_goal)
-        return {
-            p
-            for p in wanted
-            if self._plan_finish_times.get(p, 0.0) > self._replan_horizon_s
-        }
 
     def _commanded_goal_cb(self, msg: ConstrainedPddlGoalMsg) -> None:
         # Flow: (wait →) decide → (pause →) forward, or leave the robots be → log.
@@ -1574,12 +1500,6 @@ class GoalManager(Node):
                 out[c] = (CONJ_NEW, why)
             elif set().union(*(running[r].remaining for r in by)) & forbidden:
                 out[c] = (CONJ_NEW, "the plan reaching it visits a forbidden POI")
-            elif late := self._late_pois(c):
-                out[c] = (
-                    CONJ_NEW,
-                    f"{sorted(late)} not reached until after "
-                    f"{self._replan_horizon_s:.0f}s",
-                )
             else:
                 out[c] = (CONJ_IN_PROGRESS, _names(by))
         return out
