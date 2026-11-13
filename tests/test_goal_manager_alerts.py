@@ -45,13 +45,13 @@ def test_failed_scene_change_replan_stops_and_tells_the_operator(h):
     )
     assert [g.goal.pddl_goal for g in h.goals] == [GOAL]
     h.node._planner_failed_cb(
-        String(data="grstaps_planner: Goal symbol(s) not in the DSG: o20")
+        String(data="multi_robot_pddl_constrained: Goal symbol(s) not in the DSG: o20")
     )
     assert ("hilbert", "stop") in h.sent  # the old plan drives to o20
     assert ("hilbert", "resume") not in h.sent
     text = h.texts[-1]
     assert "o20 removed" in text and "not in the DSG: o20" in text
-    assert "Stopped hilbert" in text and "grstaps_planner" not in text
+    assert "Stopped hilbert" in text and "multi_robot_pddl_constrained" not in text
 
 
 def test_a_scene_change_stops_the_robots_even_with_resume_on_failure(tmp_path):

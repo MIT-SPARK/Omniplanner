@@ -386,8 +386,7 @@ def test_a_robot_that_never_ran_its_plan_does_not_cover_its_targets(h):
 
 
 def test_a_spot_moving_through_one_long_follow_is_not_stalled(h):
-    """GRSTAPS-X sends one follow per task, so a far task is one action that
-    reports nothing for minutes. The planner's word that the Spot is moving
+    """A far task can be one follow that reports nothing for minutes. The planner's word that the Spot is moving
     keeps it from being called stalled."""
     h.send("(visited-object o1)")
     h.plan(euclid=("pe", 1, ["o1"]))
