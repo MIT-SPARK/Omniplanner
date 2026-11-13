@@ -22,6 +22,10 @@ adds:
   plans still act on and what the goal asks for. A change that invalidates the
   plan -- or a failed pick, up to ``max_pick_retries`` -- is sent to the goal
   manager on ``~/replan_request`` once this node holds a map that contains it.
+  A plan that has finished, or whose robot was stopped (by the goal manager
+  or the operator, on ``executor_stop_topic``; a Husky by an empty Path), is
+  no longer judged: each plan keeps its own goal, and a change is only held
+  against the plans still running.
   A scene change that invalidates the plan pauses every robot in it at once,
   on ``executor_pause_topic``, so none drives on while the map catches up.
   The replanned sequence releases each robot; if no plan is found they stay
@@ -57,6 +61,9 @@ adds:
   names it. Without that constraint a goal is a repair of the mission, and
   any robot may be interrupted; one holding an object still places it or
   puts it down first.
+* robot-scoped goals: a goal with a ``use-robots`` constraint is planned for
+  those robots only, and every other robot is left alone the same way: no
+  plan (not even an empty one), and what it holds is not put down.
 
 This module does **not** override ``register_plugin`` or duplicate the
 plan-handling logic in ``OmniPlannerRos``; the plugin-side ``pddl_callback``
@@ -72,6 +79,7 @@ import uuid
 import numpy as np
 import rclpy
 import spark_dsg
+from dsg_pddl.dsg_pddl_grounding_multirobot import assigned_robots
 from dsg_pddl.pddl_grounding import ConstraintFact
 from heracles_ros_interfaces.msg import SceneChangeMsg
 from nav_msgs.msg import Path
@@ -113,6 +121,12 @@ def plan_ids(plan_dict):
     return {r: getattr(p, "plan_id", "") or "" for r, p in plan_dict.items()}
 
 
+def joined_goals(goals) -> str:
+    """Several plans' goals as one goal ("" for none), each goal once."""
+    goals = list(dict.fromkeys(g for g in goals if g))
+    return goals[0] if len(goals) == 1 else f"(and {' '.join(goals)})" if goals else ""
+
+
 class OmniPlannerRepairRos(OmniPlannerRos):
     """OmniPlannerRos plus persistent constraints and mission state."""
 
@@ -142,6 +156,9 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         self._pause_pubs: dict = {}
         self._planning_goal = ""
         self._active_goal = ""
+        # {robot -> the goal its running plan was made for}; _active_goal is
+        # these, joined. A plan that finished or was stopped drops out.
+        self._plan_goals: dict = {}
         self._pending_changes: list = []
         self._pending_version = 0
         self._pick_failures: dict = {}
@@ -201,6 +218,27 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         self._executor_pause_topic = str(
             self.get_parameter("executor_pause_topic").value
         )
+        # A robot that is stopped (by the goal manager when no plan can be
+        # found, or by the operator) is no longer running its plan.
+        self.declare_parameter(
+            "executor_stop_topic", "/{robot}/spot_executor_node/stop"
+        )
+        stop_topic = str(self.get_parameter("executor_stop_topic").value)
+        for robot, adaptor in self.robot_adaptors.items():
+            if self._is_path_robot(robot):
+                self.create_subscription(
+                    Path,
+                    adaptor.plan_topic,
+                    lambda msg, r=robot: msg.poses or self._stop_seen(r),
+                    1,
+                )
+            else:
+                self.create_subscription(
+                    Bool,
+                    stop_topic.format(robot=robot),
+                    lambda msg, r=robot: msg.data and self._stop_seen(r),
+                    10,
+                )
         self._replan_pub = self.create_publisher(String, "~/replan_request", 10)
         self.create_subscription(
             SceneChangeMsg, "~/scene_changes", self._scene_changes_callback, 10
@@ -258,7 +296,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 if sent is not None:
                     sent["last_progress"] = self._now_s()
                     if done >= sent["steps"]:
-                        del self._dispatched[msg.robot_name]  # finished
+                        self._plan_over(msg.robot_name)  # finished
         points = [(p.x, p.y) for p in msg.points]
         with self._world_lock:
             new = self.world_tracker.record(
@@ -292,6 +330,30 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 )
 
     # ------------- plan validity under scene changes -------------
+
+    def _plan_over(self, robot: str) -> None:
+        """A robot's plan finished or was stopped (call under _plan_lock): it
+        is not watched any more, and no later scene change is held against it
+        or its goal."""
+        plan = self._running_plans.pop(robot, None)
+        self._plan_goals.pop(robot, None)
+        self._dispatched.pop(robot, None)
+        self._route.pop(robot, None)
+        others = plan_dependencies(self._running_plans.values())
+        for obj in plan_dependencies([plan]):
+            if obj not in others:
+                self._plan_deps.pop(obj, None)
+        self._plan_robots = sorted(self._running_plans)
+        self._active_goal = joined_goals(self._plan_goals.values())
+
+    def _stop_seen(self, robot: str) -> None:
+        with self._plan_lock:
+            running = robot in self._running_plans
+            self._plan_over(robot)
+        if running:
+            self.get_logger().info(
+                f"{robot} was stopped: its plan is over and is no longer watched"
+            )
 
     def _scene_changes_callback(self, msg: SceneChangeMsg) -> None:
         if msg.source.startswith("executor/"):
@@ -646,15 +708,26 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 )
             state = self.world_tracker.snapshot(dsg)
         busy = unavailable_robots(constraints, state, goal_tokens(pddl_goal))
-        planning, release = split_held(state, kept_objects(pddl_goal))
+        # A use-robots goal is theirs alone: the rest of the fleet is left
+        # alone, and keeps holding what it holds.
+        assigned = assigned_robots(constraints)
+        outside = set()
+        if assigned is not None:
+            outside = {
+                r.lower() for r in (getattr(self, "robot_adaptors", None) or {})
+            } - assigned
+        kept = kept_objects(pddl_goal) | {
+            o for r in outside for o in state.holding.get(r, [])
+        }
+        planning, release = split_held(state, kept)
         planning.cannot_manipulate = {
             r
             for r in (getattr(self, "robot_adaptors", None) or {})
             if self._is_path_robot(r)
         }
-        release = {r: objs for r, objs in release.items() if r not in busy}
+        release = {r: objs for r, objs in release.items() if r not in busy | outside}
         self._pending_release = release
-        self._pending_busy = busy
+        self._pending_busy = busy | outside
         self._planning_goal = pddl_goal
         additional = busy_robots(constraints) is not None
         self.get_logger().info(
@@ -666,6 +739,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 if additional
                 else ""
             )
+            + (f"; use-robots: leaving {sorted(outside)} alone" if outside else "")
         )
         return planning
 
@@ -696,11 +770,16 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             self._running_plans = running
             self._plan_deps = plan_dependencies(running.values())
             self._plan_robots = sorted(running)
-            self._active_goal = (
-                f"(and {self._active_goal} {self._planning_goal})"
-                if kept and self._active_goal
-                else self._planning_goal
-            )
+            # Each plan keeps the goal it was made for; an empty plan has none.
+            self._plan_goals = {
+                **{r: g for r, g in self._plan_goals.items() if r in kept},
+                **{
+                    r: self._planning_goal
+                    for r, p in plan_dict.items()
+                    if not plan_is_empty(p)
+                },
+            }
+            self._active_goal = joined_goals(self._plan_goals.values())
             self._route = route_places(running, self._place_finder(self._current_dsg()))
             self._plan_ids = plan_ids(running)
             self._actions_done = {
@@ -720,14 +799,16 @@ class OmniPlannerRepairRos(OmniPlannerRos):
 
     def _leave_busy_alone(self, plan_dict):
         """An additional task sends a busy robot nothing, not even an empty
-        plan, which would preempt what it is doing."""
+        plan, which would preempt what it is doing; nor does a goal send
+        anything to a robot its use-robots leaves out."""
         busy, self._pending_busy = self._pending_busy, set()
         left = sorted(r for r in plan_dict if r.lower() in busy)
         self._left_alone = set(left)
         if not left:
             return plan_dict
         self.get_logger().info(
-            f"additional task: not sending {', '.join(left)} anything (busy)"
+            f"not sending {', '.join(left)} anything (busy, or not one of the "
+            "goal's use-robots)"
         )
         return {r: p for r, p in plan_dict.items() if r.lower() not in busy}
 
@@ -867,7 +948,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                         advanced = True
             finished = sent["path"] is not None and sent["reached"] >= sent["steps"] - 1
             if finished:
-                del self._dispatched[robot]
+                self._plan_over(robot)
             stalled = (
                 not finished
                 and self._progress_timeout_s > 0

@@ -123,6 +123,7 @@ def _node(dsg=None, poses=None, adaptors=None):
         _pause_pubs={},
         _planning_goal="",
         _active_goal="",
+        _plan_goals={},
         _pending_changes=[],
         _pending_version=0,
         _pick_failures={},
@@ -600,3 +601,209 @@ def test_a_new_mission_forgets_visits_but_not_holding():
     )
     assert state.visited == set()
     assert node.world_tracker._reported_holding == {"testbot_a": {"o2"}}
+
+
+# ---------- robot-scoped goals: use-robots leaves the rest of the fleet alone ----------
+
+
+def _use(*robots):
+    return [NS(predicate="use-robots", symbols=list(robots))]
+
+
+def test_a_use_robots_goal_sends_nothing_to_the_others_and_puts_nothing_down():
+    """2026-11-11 (b): a goal for one robot made the carrying robot put its
+    object down where it stood."""
+    node = _mid_carry()
+    state = node.world_state_for(
+        "(at-place testhusky t3)", constraints=_use("testhusky")
+    )
+    assert state.holding == {"testbot_a": ["o58"]}  # still in its hand
+    out = node.finalize_plans(
+        {
+            "testbot_a": ActionSequence("r7", "testbot_a", []),
+            "testhusky": _path((3, 0)),
+        },
+        node.f_poses,
+    )
+    assert list(out) == ["testhusky"]  # no empty plan, no put-down
+    assert node._plan_ids["testbot_a"] == "carry"  # its carry goes on, watched
+    assert not any("interrupting" in m for m in _warnings(node))
+
+
+def test_a_use_robots_robot_holding_what_the_goal_wants_is_planned_with_it():
+    node = _mid_carry()
+    state = node.world_state_for(
+        "(object-in-place o58 t1)", constraints=_use("testbot_a")
+    )
+    assert state.holding == {"testbot_a": ["o58"]}
+    assert node._pending_release == {}
+    assert node._pending_busy == {"testbot_b", "testhusky"}
+
+
+# ---------- a plan that finished or was stopped (2026-11-11 rig test) ----------
+
+CARRY_GOAL = "(object-in-place o58 t4)"
+
+
+def _change(node, kind, symbol, xy=(2.0, 0.2)):
+    """One scene change, judged at once; the replan requests it caused."""
+    from omniplanner.plan_validity import ADDED
+
+    before = len(node.f_pubs["~/replan_request"].sent)
+    node._pending_changes = [
+        {
+            "kind": kind,
+            "symbol": symbol,
+            "old": None if kind == ADDED else xy,
+            "new": xy if kind == ADDED else None,
+        }
+    ]
+    node._settle_timer = NS(cancel=lambda: None)
+    node._wait_for_map_then_replan = lambda v, reason, **_: node._request_replan(reason)
+    node._judge_changes()
+    return [m.data for m in node.f_pubs["~/replan_request"].sent[before:]]
+
+
+def _visit(robot, plan_id, obj="o60"):
+    return ActionSequence(
+        plan_id,
+        robot,
+        [
+            Follow("map", np.array([[0.0, 0.0], [1.0, 0.0]])),
+            Pick("map", "box", np.zeros(3), np.array([1.0, 0.2, 0.0]), obj),
+        ],
+    )
+
+
+def _carrying(node, robot="testbot_a"):
+    node._planning_goal = CARRY_GOAL
+    node.finalize_plans({robot: _carry(robot)}, node.f_poses)
+
+
+def test_a_running_plan_is_replanned_when_its_object_goes():
+    from omniplanner.plan_validity import REMOVED
+
+    node = _node(_map())
+    _carrying(node)
+    (reason,) = _change(node, REMOVED, "O58")
+    assert "o58 removed" in reason
+
+
+def test_a_stopped_plan_is_not_judged_by_a_later_scene_change():
+    """The goal manager stopped the robot ("give a new instruction"); the
+    object coming back must not replan the plan it gave up."""
+    from omniplanner.plan_validity import ADDED, REMOVED
+
+    node = _node(_map(), poses={"testbot_a": np.array([0.0, 0.0, 0.0, 0.0])})
+    _carrying(node)
+    node._stop_seen("testbot_a")
+    assert node._plan_robots == [] and node._plan_deps == {}
+    assert node._active_goal == "" and node._dispatched == {}
+    assert _change(node, REMOVED, "O58") == []
+    assert _change(node, ADDED, "O58") == []
+    assert (
+        node.f_pubs.get("/testbot_a/spot_executor_node/pause", NS(sent=[])).sent == []
+    )
+    # and its no-progress watchdog is off
+    node.f_clock["t"] = 61.0
+    node._progress_tick()
+    assert node.f_pubs["~/progress_alert"].sent == []
+    assert node.status_warnings() == []
+
+
+def test_a_stop_ends_only_that_robots_plan():
+    """Two plans, two goals: after testbot_a is stopped a change to its
+    object is ignored, and one to testbot_b's replans testbot_b's goal."""
+    from omniplanner.plan_validity import REMOVED
+
+    node = _node(_map())
+    _carrying(node)
+    node._planning_goal = "(holding testbot_b o60)"
+    node._pending_busy = {"testbot_a"}  # use-robots testbot_b
+    node.finalize_plans(
+        {
+            "testbot_a": ActionSequence("pb", "testbot_a", []),
+            "testbot_b": _visit("testbot_b", "pb"),
+        },
+        node.f_poses,
+    )
+    assert node._active_goal == f"(and {CARRY_GOAL} (holding testbot_b o60))"
+    node._stop_seen("testbot_a")
+    assert node._active_goal == "(holding testbot_b o60)"
+    assert node._plan_robots == ["testbot_b"] and set(node._plan_deps) == {"o60"}
+    assert _change(node, REMOVED, "O58") == []
+    (reason,) = _change(node, REMOVED, "O60")
+    assert "o60 removed" in reason
+    assert [m.data for m in node.f_pubs["/testbot_b/spot_executor_node/pause"].sent]
+    assert node.f_pubs["/testbot_a/spot_executor_node/pause"].sent == []
+
+
+def test_a_finished_plans_goal_is_not_kept_with_the_next_plan():
+    """testbot_a finished a visit of o21; testbot_b then got its own goal.
+    'o21 removed before the visit the goal asks for' replanned for a goal
+    that no longer had a visit of o21."""
+    from omniplanner.plan_validity import REMOVED
+
+    node = _node(_map())
+    node._planning_goal = "(visited-object o21)"
+    seq = ActionSequence(
+        "pa", "testbot_a", [Follow("map", np.array([[0.0, 0.0], [1.0, 0.0]]))]
+    )
+    node.finalize_plans({"testbot_a": seq}, node.f_poses)
+    _done(node, "testbot_a", "FOLLOW", plan_id="pa")  # its only action
+    assert node._active_goal == "" and node._plan_robots == []
+
+    node._planning_goal = "(holding testbot_b o60)"
+    node._pending_busy = {"testbot_a"}
+    node.finalize_plans(
+        {
+            "testbot_a": ActionSequence("pb", "testbot_a", []),
+            "testbot_b": _visit("testbot_b", "pb"),
+        },
+        node.f_poses,
+    )
+    assert node._active_goal == "(holding testbot_b o60)"
+    assert node._plan_robots == ["testbot_b"]
+    assert _change(node, REMOVED, "O21", xy=(9.0, 9.0)) == []
+
+
+def test_an_empty_plan_does_not_hold_the_goal_after_the_others_finish():
+    node = _node(_map())
+    node._planning_goal = "(holding testbot_b o60)"
+    node.finalize_plans(
+        {
+            "testbot_a": ActionSequence("pb", "testbot_a", []),
+            "testbot_b": _visit("testbot_b", "pb"),
+        },
+        node.f_poses,
+    )
+    _done(node, "testbot_b", "FOLLOW", plan_id="pb")
+    assert node._active_goal == "(holding testbot_b o60)"  # still at work
+    _done(node, "testbot_b", "PICK", plan_id="pb", obj="o60")
+    assert node._active_goal == ""
+
+
+def test_a_stopped_husky_is_not_watched_either():
+    node = _node(_map(), poses={"testhusky": np.array([0.0, 0.0, 0.0, 0.0])})
+    node._planning_goal = "(visited-place t2)"
+    node.finalize_plans({"testhusky": _path((1, 0), (2, 0))}, node.f_poses)
+    assert node._plan_robots == ["testhusky"]
+    node._stop_seen("testhusky")  # an empty Path on its plan topic
+    assert node._plan_robots == [] and node._active_goal == ""
+    node.f_clock["t"] = 61.0
+    node._progress_tick()
+    assert node.f_pubs["~/progress_alert"].sent == []
+
+
+def test_a_done_action_of_one_plan_keeps_what_another_still_acts_on():
+    """Stopping testbot_a must not bring back, or take away, testbot_b's
+    object: both plans pick o60 here."""
+    node = _node(_map())
+    node._planning_goal = "(holding testbot_b o60)"
+    node.finalize_plans(
+        {"testbot_a": _visit("testbot_a", "p"), "testbot_b": _visit("testbot_b", "p")},
+        node.f_poses,
+    )
+    node._stop_seen("testbot_a")
+    assert set(node._plan_deps) == {"o60"}
+    assert node._plan_robots == ["testbot_b"]

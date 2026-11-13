@@ -82,7 +82,15 @@ predecessors. Deploy planner and Spot executor changes together.
 Zero-travel tasks retain a one-point `Follow` checkpoint. The executor checks
 actual arrival and navigates from its current pose if it has drifted. Atomic
 relocation emits `Pick → Follow(carry) → Place` with a shared task ID; carry
-routing uses the pruned solver graph. An action that fails its retries is
+routing uses the pruned solver graph. A holding goal's task emits only
+`Follow → Pick`, the last actions in that robot's plan: it ends holding the
+object, as with a fast-downward `(holding r o)` plan. Grounding gives the holder
+a species with only its identity trait, so the solver cannot schedule anything
+else for it, and a solution that does anyway is refused before it is compiled.
+
+Robots that a `use-robots` constraint leaves out, and a robot already holding
+what its holding goal asks for, are not sent to the solver; they are part of
+the returned fleet with no tasks, so each gets an empty plan. An action that fails its retries is
 skipped, as on the other planners, and its task still counts as done, so
 partners are not left waiting on it. A robot waiting on a partner gives up the
 plan after the executor's `plan_wait_timeout_s` (default 900 s).

@@ -354,13 +354,14 @@ class GrstapsRos:
         else:
             logger.info(
                 "Goal: %d visit, %d inspect, %d manipulate target(s), "
-                "regions visit %s explore %s; pinned: %s",
+                "regions visit %s explore %s; pinned: %s; holding: %s",
                 len(found["visit"]),
                 len(found["inspect"]),
                 len(found["manipulate"]),
                 regions["visit"] or "-",
                 regions["explore"] or "-",
                 {**found["bound"], **found["region_bound"]} or "none",
+                found["holding"] or "none",
             )
 
         # Constraints arrive from two places and both must be honoured: the
@@ -392,6 +393,8 @@ class GrstapsRos:
             region_visits=regions["visit"],
             region_explores=regions["explore"],
             region_bound=found["region_bound"],
+            # (holding r o): r picks o up and keeps it; r does nothing else.
+            holding=found["holding"],
             robot_id=msg.goal.robot_id,
             constraints=persistent + per_msg,
             world_state=(
