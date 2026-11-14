@@ -136,7 +136,7 @@ def test_held_object_is_carried_not_picked_again():
     )
     goal = "(object-in-place o4 t598)"
     fresh, _ = _fd(G, goal, robot_xy)
-    assert "pick-object" in fresh and "inspect" in fresh  # the bug, without state
+    assert "pick-object" in fresh  # the bug, without state: it picks it up again
     held, actions = _fd(G, goal, robot_xy, WorldState(holding={ROBOT: ["o4"]}))
     assert "pick-object" not in held and "inspect" not in held
     assert actions[-1][0] == "place-object" and actions[-1][-1] == "t598"

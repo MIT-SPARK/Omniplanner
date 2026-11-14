@@ -336,6 +336,25 @@ def test_a_goal_sent_again_after_every_robot_finished_is_planned_again(h):
     assert any("starts a new mission" in m for m in h.logs)
 
 
+def test_a_visit_the_planner_found_done_is_planned_again_in_a_new_mission(h):
+    """hamilton passed o4 on its way elsewhere, so the planner answered a goal
+    to visit o4 with empty plans ("already holds"). That was true of the last
+    mission, not of the map: once every robot is idle the same goal must reach
+    the planner again, with new-mission. A placement stays done."""
+    h.send("(and (visited-object-by hamilton o4) (object-in-place o58 t2260))")
+    h.plan(hamilton=("p0", 0, []))
+    assert "already holds" in h.texts[-1]
+    h.goals.clear()
+    h.send("(visited-object-by hamilton o4)")
+    (sent,) = h.goals
+    assert _new_mission(sent)
+    h.plan(hamilton=("p1", 1, ["o4"]))
+    h.done("hamilton", "p1")
+    h.goals.clear()
+    h.send("(object-in-place o58 t2260)")
+    assert h.goals == [] and "already done" in h.texts[-1]
+
+
 def test_while_a_robot_runs_a_goal_is_not_a_new_mission(h):
     _three_robot_mission(h)
     h.done("euclid", "pe")
@@ -386,8 +405,7 @@ def test_a_robot_that_never_ran_its_plan_does_not_cover_its_targets(h):
 
 
 def test_a_spot_moving_through_one_long_follow_is_not_stalled(h):
-    """GRSTAPS-X sends one follow per task, so a far task is one action that
-    reports nothing for minutes. The planner's word that the Spot is moving
+    """A far task can be one follow that reports nothing for minutes. The planner's word that the Spot is moving
     keeps it from being called stalled."""
     h.send("(visited-object o1)")
     h.plan(euclid=("pe", 1, ["o1"]))
