@@ -61,6 +61,9 @@ def pddl_char_to_dsg_char(c):
         case "p":
             # NOTE: this means we can only ground to 2d places, not 3d places
             return "P"
+        case "t":
+            # Hydra's mesh (traversability) places are T(i)
+            return "T"
         case _:
             return c
 
@@ -71,17 +74,22 @@ REGION_DSG_CHARS = ("R", "r")
 
 
 def pddl_symbol_to_node_symbol(G, pddl_symbol: str):
-    """The scene-graph node a PDDL symbol (``o12``, ``p3``, ``r0``) names in ``G``.
+    """The scene-graph node a PDDL symbol (``o12``, ``t3``, ``r0``) names in ``G``.
 
-    Regions are normalized to the graph at planning time: ``r0`` is ``R(0)`` if the
-    graph has it, else ``r(0)``. Raises ValueError for a token that is not a symbol.
+    PDDL symbols are lowercase, scene-graph prefixes are case sensitive: the symbol
+    resolves to the canonical prefix (``R``, ``O``, ``P``, ``T``) if ``G`` has that
+    node, else to the prefix as written (``r(0)``, ``t(3)``: open-vocabulary regions,
+    graphs built with lowercase places). A node ``G`` has under neither keeps the
+    canonical name (errors name ``R(i)``). Raises ValueError for a token that is not
+    a symbol.
     """
     import spark_dsg
 
     c, index = pddl_symbol[0], int(pddl_symbol[1:])
     ns = spark_dsg.NodeSymbol(pddl_char_to_dsg_char(c), index)
-    if c == "r" and G is not None and not G.has_node(ns):
-        for alt in REGION_DSG_CHARS:
+    if G is not None and not G.has_node(ns):
+        alts = REGION_DSG_CHARS if c == "r" else (c, c.upper())
+        for alt in alts:
             alt_ns = spark_dsg.NodeSymbol(alt, index)
             if G.has_node(alt_ns):
                 return alt_ns
@@ -89,5 +97,5 @@ def pddl_symbol_to_node_symbol(G, pddl_symbol: str):
 
 
 def dsg_char_to_pddl_char(c: str) -> str:
-    """Inverse of pddl_char_to_dsg_char. 'O' -> 'o', 'P' -> 'p', 'R' -> 'r'."""
+    """Inverse of pddl_char_to_dsg_char. 'O' -> 'o', 'P' -> 'p', 'R' -> 'r', 'T' -> 't'."""
     return c.lower()
