@@ -26,6 +26,7 @@ __all__ = [
     "GroundingError",
     "MissingSymbolError",
     "GoalSymbolNotInMapError",
+    "EmptyRegionError",
     "PddlSolverError",
     "PddlUnsolvableError",
     "PddlTimeoutError",
@@ -173,6 +174,47 @@ class GoalSymbolNotInMapError(MissingSymbolError, ValueError):
 
     def _message(self) -> str:
         return self.detail or super()._message()
+
+
+class EmptyRegionError(GroundingError):
+    """A region the goal names has no place a robot can get to.
+
+    The region goals (visited-region*, in-region, explored-region*, object-in-region)
+    all go through the region's member places; with none of them in the problem a
+    visit is unsolvable and an exploration is vacuously true (an empty plan), so
+    grounding stops here with the reason. ``regions``: {region: (members in the
+    scene graph, members the robots can reach)}.
+    """
+
+    def __init__(self, regions: dict, constrained: bool = False):
+        self.regions = dict(regions)
+        self.constrained = constrained
+        super().__init__(self._message())
+
+    def _message(self) -> str:
+        parts = []
+        for name, (members, reachable) in sorted(self.regions.items()):
+            if members == 0:
+                parts.append(
+                    f"region {name} has no places in the scene graph (no mesh place "
+                    "belongs to it), so no robot can visit, stop in or explore it"
+                )
+            elif self.constrained:
+                parts.append(
+                    f"region {name} cannot be reached: none of its {members} places is "
+                    "connected to a robot's start once the constraints are applied "
+                    "(a forbidden area covers it, or cuts off every path to it)"
+                )
+            else:
+                parts.append(
+                    f"region {name} cannot be reached: none of its {members} places is "
+                    "connected to a robot's start (the map's place graph is "
+                    "disconnected between them)"
+                )
+        return "; ".join(parts)
+
+    def __reduce__(self):
+        return (type(self), (self.regions, self.constrained))
 
 
 class PddlSolverError(Exception):
