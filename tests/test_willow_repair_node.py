@@ -207,9 +207,10 @@ def _carry(robot="testbot_a"):
     )
 
 
-def _done(node, robot, action, plan_id="carry", obj="", ok=True):
+def _done(node, robot, action, plan_id="carry", obj="", ok=True, note=""):
     node._action_done_callback(
         NS(
+            header=NS(frame_id=note),
             action_type=action,
             success=ok,
             robot_name=robot,
@@ -807,3 +808,45 @@ def test_a_done_action_of_one_plan_keeps_what_another_still_acts_on():
     node._stop_seen("testbot_a")
     assert set(node._plan_deps) == {"o60"}
     assert node._plan_robots == ["testbot_b"]
+
+
+# ---------- a failed pick: replanned, unless the operator gave it up ----------
+
+
+def _about_to_pick():
+    node = _node(_map(holding={}), poses={"testbot_a": np.array([2.0, 0.0, 0.0, 0.0])})
+    node._active_goal = node._planning_goal = "(object-in-place o58 t4)"
+    node.finalize_plans({"testbot_a": _carry()}, node.f_poses)
+    _done(node, "testbot_a", "FOLLOW")
+    return node
+
+
+def _replans(node):
+    return [m.data for m in node.f_pubs["~/replan_request"].sent]
+
+
+def test_a_failed_pick_is_replanned():
+    node = _about_to_pick()
+    _done(node, "testbot_a", "PICK", obj="o58", ok=False)
+    (reason,) = _replans(node)
+    assert "pick of o58 by testbot_a failed (attempt 1 of 2)" in reason
+
+
+def test_a_pick_the_operator_gave_up_is_not_replanned_and_ends_the_plan():
+    node = _about_to_pick()
+    assert "testbot_a" in node._running_plans
+    _done(node, "testbot_a", "PICK", obj="o58", ok=False, note="operator_gave_up")
+    assert _replans(node) == []
+    assert "testbot_a" not in node._running_plans and node._active_goal == ""
+    assert any("given up by the operator" in m for m in _warnings(node))
+    # it does not count against a later pick of the same object
+    assert node._pick_failures == {}
+
+
+def test_a_given_up_pick_of_an_older_plan_leaves_the_running_one_alone():
+    node = _about_to_pick()
+    _done(
+        node, "testbot_a", "PICK", plan_id="old", obj="o58", ok=False,
+        note="operator_gave_up",
+    )  # fmt: skip
+    assert _replans(node) == [] and "testbot_a" in node._running_plans
