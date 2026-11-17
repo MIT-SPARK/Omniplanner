@@ -803,7 +803,12 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         anything to a robot its use-robots leaves out."""
         busy, self._pending_busy = self._pending_busy, set()
         left = sorted(r for r in plan_dict if r.lower() in busy)
-        self._left_alone = set(left)
+        # A busy robot the planner left out of the problem has no entry in
+        # plan_dict at all: it is left alone just the same, and its running
+        # plan must stay watched.
+        with self._plan_lock:
+            unplanned = {r for r in self._running_plans if r.lower() in busy}
+        self._left_alone = set(left) | unplanned
         if not left:
             return plan_dict
         self.get_logger().info(
