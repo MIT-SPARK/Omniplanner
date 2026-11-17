@@ -518,3 +518,113 @@ def test_robot_goals_still_compose_after_a_replan(h):
     (sent,) = h.goals
     assert _use(sent) == ["gauss"]
     assert not any(r in ("euclid", "hamilton") for r, _ in h.sent)
+
+
+def test_a_replan_leaves_alone_a_robot_whose_own_goal_is_achieved(h):
+    """hamilton reached o536 and is done; a change on euclid's route replans
+    euclid only: hamilton is neither paused nor planned for."""
+    _hamilton_and_euclid_to_objects(h)
+    h.done("hamilton", "ph")
+    h.node._replan_request_cb(String(data="place t3349 on euclid's route was removed"))
+    (sent,) = h.goals
+    assert _use(sent) == ["euclid"]
+    assert sent.goal.pddl_goal == "(visited-object-by euclid o710)"
+    assert [r for r, _ in h.sent] == ["euclid"]
+
+
+def test_separate_robot_goals_are_replanned_together_and_stay_separate(h):
+    """Three goals sent one by one, each for its robot: a replan names all
+    three and no one else, and each robot keeps its own goal afterwards."""
+    _euclid_to_o20(h)
+    h.send("(holding hamilton o1)", use=["hamilton"])
+    h.plan(hamilton=("ph", 2, ["o1"]))
+    h.send("(visited-place-by gauss t9)")
+    h.plan(gauss=("pg", 1, ["t9"]))
+    h.goals.clear()
+    h.sent.clear()
+    h.node._replan_request_cb(String(data="scene changed"))
+    (sent,) = h.goals
+    assert sorted(_use(sent)) == ["euclid", "gauss", "hamilton"]
+    assert sorted(h.sent) == [
+        ("euclid", "pause"),
+        ("hamilton", "pause"),
+    ]  # gauss: a husky
+    h.plan(
+        euclid=("pe2", 2, ["t3", "o20"]),
+        hamilton=("ph2", 2, ["o1"]),
+        gauss=("pg2", 1, ["t9"]),
+    )
+    assert h.node._standing == {
+        "euclid": ["(visited-object-by euclid o20)"],
+        "hamilton": ["(holding hamilton o1)"],
+        "gauss": ["(visited-place-by gauss t9)"],
+    }
+
+
+def test_a_team_task_added_to_robot_goals_makes_the_replan_the_teams(h):
+    """euclid has its own goal; a task naming no robot was planned for the free
+    robots as an additional task. Its robot is not one of the scoped ones, so
+    scoping the replan to euclid would leave that robot on its old plan and
+    hand its task to euclid as well."""
+    _euclid_to_o20(h)
+    h.send("(visited-object o77)")
+    (extra,) = h.goals
+    assert h.busy(extra) == [["euclid"]]
+    h.plan(hamilton=("ph", 1, ["o77"]))
+    assert "(visited-object o77)" in h.node._mission
+    h.goals.clear()
+    h.sent.clear()
+    h.node._replan_request_cb(String(data="scene changed"))
+    (sent,) = h.goals
+    assert _use(sent) == []
+    assert sorted(h.sent) == [("euclid", "pause"), ("hamilton", "pause")]
+    assert "(visited-object o77)" in sent.goal.pddl_goal
+    assert "(visited-object-by euclid o20)" in sent.goal.pddl_goal
+
+
+def test_a_team_mission_is_still_replanned_for_the_whole_team(h):
+    h.send("(and (visited-object o20) (visited-object o21))")
+    h.plan(euclid=("pe", 1, ["o20"]), hamilton=("ph", 1, ["o21"]))
+    h.goals.clear()
+    h.sent.clear()
+    h.node._replan_request_cb(String(data="scene changed"))
+    (sent,) = h.goals
+    assert _use(sent) == []
+    assert sorted(h.sent) == [("euclid", "pause"), ("hamilton", "pause")]
+
+
+def test_a_robot_whose_goal_was_dropped_with_a_removed_object_is_stopped(h):
+    """o536 was removed: hamilton's visit is dropped and the replan is euclid's
+    alone. hamilton is in no plan to come, and must not walk on to o536."""
+    _hamilton_and_euclid_to_objects(h)
+    h.node._replan_request_cb(
+        String(data="scene changed: o536 removed before the visit the goal asks for")
+    )
+    (sent,) = h.goals
+    assert _use(sent) == ["euclid"]
+    assert sent.goal.pddl_goal == "(visited-object-by euclid o710)"
+    assert ("hamilton", "stop") in h.sent and ("hamilton", "pause") not in h.sent
+    assert ("euclid", "pause") in h.sent
+    assert "hamilton" not in h.node._standing
+
+
+def test_a_scoped_replan_that_fails_leaves_the_outside_robot_running(h):
+    """A replan the planner finds no plan for stops the robots it was for;
+    gauss was never part of it."""
+    _hamilton_and_euclid_to_objects(h)
+    h.node._replan_request_cb(String(data="scene changed"))
+    h.failed("no plan")
+    assert not any(r == "gauss" for r, _ in h.sent)
+
+
+def test_a_second_replan_after_the_first_keeps_the_same_scope(h):
+    _hamilton_and_euclid_to_objects(h)
+    for plan in ("2", "3"):
+        h.node._replan_request_cb(String(data="scene changed"))
+        assert sorted(_use(h.goals[-1])) == ["euclid", "hamilton"]
+        h.plan(
+            hamilton=("ph" + plan, 1, ["t1", "o536"]),
+            euclid=("pe" + plan, 1, ["t431", "o710"]),
+        )
+    assert not any(r == "gauss" for r, _ in h.sent)
+    assert set(h.node._standing) == {"euclid", "hamilton"}
