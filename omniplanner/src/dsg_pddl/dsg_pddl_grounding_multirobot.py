@@ -29,6 +29,7 @@ from dsg_pddl.dsg_pddl_grounding import (
     symbol_connectivity_to_pddl,
 )
 from dsg_pddl.grounding_errors import (
+    EmptyRegionError,
     GoalSymbolNotInMapError,
     MissingSymbol,
     MissingSymbolError,
@@ -981,6 +982,7 @@ def generate_goal_relevant_multirobot_pddl(
     robot_names = {r.lower() for r in robot_states}
     region_places = None
     object_place, region_membership, missing, too_far = {}, [], [], {}
+    empty_regions = {}  # {region: (members in the graph, members reachable)}
     for name in sorted(referenced | held):
         sym = by_name.get(name)
         if sym is None:
@@ -1016,13 +1018,16 @@ def generate_goal_relevant_multirobot_pddl(
                 region_places = {}
                 for _, place, region in generate_place_containment(G):
                     region_places.setdefault(region, []).append(place)
+            members = [p for p in region_places.get(name, []) if p in by_name]
             reachable = [
                 p
-                for p in region_places.get(name, [])
-                if p in by_name
-                and pddl_symbol_to_node_symbol(G, p).value
+                for p in members
+                if pddl_symbol_to_node_symbol(G, p).value
                 in planner.node_value_to_position
             ]
+            if not reachable:
+                empty_regions[name] = (len(members), 0)
+                continue
             if name not in explored:
                 xy = {
                     p: planner.node_value_to_position[
@@ -1057,6 +1062,15 @@ def generate_goal_relevant_multirobot_pddl(
         raise MissingSymbolError(
             sorted(missing, key=lambda m: m.name), raw_pddl_goal_string
         )
+    if empty_regions:
+        # a visit to it is unsolvable and exploring it vacuously true (an empty
+        # plan): say why instead of letting Fast Downward blame the map
+        forbidden_pois, forbidden_edges = _extract_forbidden_sets(constraints or [])
+        err = EmptyRegionError(
+            empty_regions, constrained=bool(forbidden_pois or forbidden_edges)
+        )
+        logger.error("Cannot ground %s: %s", raw_pddl_goal_string, err)
+        raise err
 
     add_symbol_positions(G, list(selected.values()))
 

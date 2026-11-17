@@ -32,3 +32,31 @@ def test_plan_context_finds_lowercase_regions():
     ctx = DsgContextProvider(_graph("r"))
     assert "r0" in ctx
     assert np.allclose(ctx["r0"]["position"][:2], [1.0, 2.0])
+
+
+def _place_graph(place_char):
+    G = spark_dsg.DynamicSceneGraph()
+    G.add_layer(3, 1, spark_dsg.DsgLayers.MESH_PLACES)
+    attrs = spark_dsg.PlaceNodeAttributes()
+    attrs.position = np.array([1.0, 2.0, 0.0])
+    G.add_node(
+        spark_dsg.DsgLayers.MESH_PLACES,
+        spark_dsg.NodeSymbol(place_char, 5).value,
+        attrs,
+    )
+    return G
+
+
+def test_mesh_places_follow_the_graph():
+    # Hydra's mesh places are T(i): t5 must name T(5), not a t(5) the graph lacks
+    assert pddl_symbol_to_node_symbol(_place_graph("T"), "t5") == spark_dsg.NodeSymbol(
+        "T", 5
+    )
+    # graphs built with lowercase places still resolve
+    assert pddl_symbol_to_node_symbol(_place_graph("t"), "t5") == spark_dsg.NodeSymbol(
+        "t", 5
+    )
+    # a place the graph doesn't have gets the canonical T(i)
+    assert pddl_symbol_to_node_symbol(_place_graph("t"), "t9") == spark_dsg.NodeSymbol(
+        "T", 9
+    )
