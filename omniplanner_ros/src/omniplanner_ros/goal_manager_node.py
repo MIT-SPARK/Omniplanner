@@ -1090,6 +1090,18 @@ class GoalManager(Node):
             self._mission += [c for c in pending.conjuncts if c not in self._mission]
         elif pending.kind == SCOPED:
             self._commit_scoped(pending)
+        elif pending.kind == REPAIR and pending.robots:
+            # A scoped mission replanned: it is still its robots' goals, each
+            # robot keeping its own (less what was dropped or is gone).
+            self._mission = list(pending.conjuncts)
+            self._lost = set()
+            self._standing = {
+                r: kept
+                for r, cs in self._standing.items()
+                if (kept := [c for c in cs if c in self._mission])
+            }
+            self._running_constraints = self._plan_constraints
+            self._running_epoch = pending.stamp[0]
         else:
             self._mission = list(pending.conjuncts)
             self._lost = set()
@@ -1279,9 +1291,29 @@ class GoalManager(Node):
             )
             return
         todo = [c for c in mission if not self._is_done(c)]
-        if self._standing and any(c.predicate == USE_ROBOTS for c in goal.constraints):
-            # The mission is several robot-scoped goals: one goal's use-robots
-            # would keep the others' robots out of their own conjuncts.
+        if not todo:
+            self.get_logger().info(
+                f"replan requested ({msg.data}), but every conjunct of the "
+                f"mission is achieved: {mission}"
+            )
+            return
+        before = self._replan_scope(todo)
+        todo = self._drop_removed(todo, removed_symbols(msg.data))
+        scope = self._replan_scope(todo)
+        if scope is not None:
+            # A robot whose whole goal was dropped is in no plan to come: its
+            # running plan still goes to what was removed.
+            for robot in sorted(set(before or []) - set(scope)):
+                self.get_logger().info(
+                    f"{robot}'s goal was dropped with what was removed; stopping it"
+                )
+                self._executor_cmd(robot, "stop")
+                self._drop(robot, "stopped: its goal was dropped")
+                self._plan_robots.discard(robot)
+                self._standing.pop(robot, None)
+        if scope is None and any(c.predicate == USE_ROBOTS for c in goal.constraints):
+            # The team's replan: one goal's use-robots would keep the other
+            # robots out of it.
             stripped = ConstrainedPddlGoalMsg()
             stripped.goal.robot_id = goal.goal.robot_id
             stripped.goal.pddl_goal = goal.goal.pddl_goal
@@ -1289,21 +1321,38 @@ class GoalManager(Node):
                 c for c in goal.constraints if c.predicate != USE_ROBOTS
             ]
             goal = stripped
-        if not todo:
-            self.get_logger().info(
-                f"replan requested ({msg.data}), but every conjunct of the "
-                f"mission is achieved: {mission}"
-            )
-            return
-        todo = self._drop_removed(todo, removed_symbols(msg.data))
-        self._pause_executor()
+        self._pause_executor(only=scope)
         self._replan_reason = msg.data
-        out = self._goal_msg(goal, todo, [])
-        self._pending = Pending(REPAIR, out, todo, self._stamp, self._now())
+        out = self._goal_msg(goal, todo, [], robots=scope)
+        self._pending = Pending(
+            REPAIR, out, todo, self._stamp, self._now(), robots=scope or []
+        )
         self._goal_pub.publish(out)
         self.get_logger().info(
             f"replanning: {msg.data}. goal={out.goal.pddl_goal!r}; forwarded to planner"
         )
+
+    def _replan_scope(self, todo: List[str]) -> Optional[List[str]]:
+        """The robots a replan of todo is for, or None for the whole team.
+
+        A mission made of robot-scoped goals is replanned with exactly the
+        robots whose goals still have something open (all of them, not one
+        goal's use-robots, which would keep the others' robots out of their
+        own conjuncts). Any other robot is not part of what is replanned and
+        must not be paused or handed a plan (an empty one stops it): a robot
+        outside every goal, or one whose own goal is already achieved.
+
+        A task in nobody's robot-scoped goal (the team's, e.g. an additional
+        task planned for the free robots) makes it the team's replan: the
+        robot doing it is not one of the scoped ones."""
+        owners = {
+            r: [c for c in self._own(r, cs) if c in todo]
+            for r, cs in self._standing.items()
+        }
+        owned = {c for cs in owners.values() for c in cs}
+        if not owned or set(todo) - owned:
+            return None
+        return sorted(r for r, cs in owners.items() if cs)
 
     def _drop_removed(self, todo: List[str], gone: Set[str]) -> List[str]:
         """What is left of todo without the tasks on objects that were removed

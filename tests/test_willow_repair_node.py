@@ -739,6 +739,24 @@ def test_a_stop_ends_only_that_robots_plan():
     assert node.f_pubs["/testbot_a/spot_executor_node/pause"].sent == []
 
 
+def test_a_busy_robot_left_out_of_an_additional_tasks_problem_stays_watched():
+    """2026-11-17 rig: euclid ran its own goal, an additional task was planned
+    with euclid left out of the problem (so with no plan for it at all, not an
+    empty one). The planner then watched only the new plan's route: a place
+    removed on euclid's route replanned nothing."""
+    from omniplanner.plan_validity import REMOVED
+
+    node = _node(_map())
+    _carrying(node)
+    node._planning_goal = "(holding testbot_b o60)"
+    node._pending_busy = {"testbot_a"}
+    node.finalize_plans({"testbot_b": _visit("testbot_b", "pb")}, node.f_poses)
+    assert node._plan_robots == ["testbot_a", "testbot_b"]
+    assert node._active_goal == f"(and {CARRY_GOAL} (holding testbot_b o60))"
+    assert set(node._route) == {"testbot_a", "testbot_b"}
+    assert _change(node, REMOVED, "O58") != []
+
+
 def test_a_finished_plans_goal_is_not_kept_with_the_next_plan():
     """testbot_a finished a visit of o21; testbot_b then got its own goal.
     'o21 removed before the visit the goal asks for' replanned for a goal
