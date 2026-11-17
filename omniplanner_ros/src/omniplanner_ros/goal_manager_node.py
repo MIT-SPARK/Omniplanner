@@ -1090,6 +1090,17 @@ class GoalManager(Node):
             self._mission += [c for c in pending.conjuncts if c not in self._mission]
         elif pending.kind == SCOPED:
             self._commit_scoped(pending)
+        elif pending.kind == REPAIR and pending.robots:
+            # A scoped mission replanned: it is still its robots' goals, each
+            # robot keeping its own (less what was dropped or is gone).
+            self._mission = list(pending.conjuncts)
+            self._lost = set()
+            self._standing = {
+                r: [c for c in cs if c in self._mission]
+                for r, cs in self._standing.items()
+            }
+            self._running_constraints = self._plan_constraints
+            self._running_epoch = pending.stamp[0]
         else:
             self._mission = list(pending.conjuncts)
             self._lost = set()
@@ -1279,16 +1290,12 @@ class GoalManager(Node):
             )
             return
         todo = [c for c in mission if not self._is_done(c)]
-        if self._standing and any(c.predicate == USE_ROBOTS for c in goal.constraints):
-            # The mission is several robot-scoped goals: one goal's use-robots
-            # would keep the others' robots out of their own conjuncts.
-            stripped = ConstrainedPddlGoalMsg()
-            stripped.goal.robot_id = goal.goal.robot_id
-            stripped.goal.pddl_goal = goal.goal.pddl_goal
-            stripped.constraints = [
-                c for c in goal.constraints if c.predicate != USE_ROBOTS
-            ]
-            goal = stripped
+        # The mission is made of robot-scoped goals: replan it with exactly the
+        # robots those goals were given (all of them, not one goal's use-robots,
+        # which would keep the others' robots out of their own conjuncts). Any
+        # other robot is not part of the mission and must not be paused or
+        # handed a plan (an empty one stops it). A team mission has no scope.
+        scope = sorted(self._standing) if self._standing else None
         if not todo:
             self.get_logger().info(
                 f"replan requested ({msg.data}), but every conjunct of the "
@@ -1296,10 +1303,12 @@ class GoalManager(Node):
             )
             return
         todo = self._drop_removed(todo, removed_symbols(msg.data))
-        self._pause_executor()
+        self._pause_executor(only=scope)
         self._replan_reason = msg.data
-        out = self._goal_msg(goal, todo, [])
-        self._pending = Pending(REPAIR, out, todo, self._stamp, self._now())
+        out = self._goal_msg(goal, todo, [], robots=scope)
+        self._pending = Pending(
+            REPAIR, out, todo, self._stamp, self._now(), robots=scope or []
+        )
         self._goal_pub.publish(out)
         self.get_logger().info(
             f"replanning: {msg.data}. goal={out.goal.pddl_goal!r}; forwarded to planner"

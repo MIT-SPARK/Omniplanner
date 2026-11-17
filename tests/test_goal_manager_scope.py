@@ -214,7 +214,8 @@ def test_a_replan_request_drops_one_goals_use_robots(h):
     h.goals.clear()
     h.node._replan_request_cb(String(data="scene changed"))
     (sent,) = h.goals
-    assert _use(sent) == []
+    # not hamilton's use-robots alone: every robot of the mission's goals
+    assert sorted(_use(sent)) == ["euclid", "hamilton"]
     assert set(sent.goal.pddl_goal[5:-1].replace(") (", ")|(").split("|")) == {
         "(visited-object-by euclid o20)",
         "(holding hamilton o1)",
@@ -479,3 +480,41 @@ def test_the_willow_sequence_with_hamilton_finished_plans(h):
     assert use == ["euclid", "gauss"]
     assert goal == {"(holding euclid o58)", "(visited-object-by gauss o58)"}
     assert "keeping (visited-object-by gauss o58)." in h.texts[-1]
+
+
+# ---------- a replan keeps the mission's robot scope (2026-11-17 bench test) ----------
+
+
+def _hamilton_and_euclid_to_objects(h):
+    """The console's team goal from the bench test: two robots named, gauss idle."""
+    h.send("(and (visited-object-by hamilton o536) (visited-object-by euclid o710))")
+    (sent,) = h.goals
+    assert sorted(_use(sent)) == ["euclid", "hamilton"]
+    h.plan(hamilton=("ph", 1, ["t1", "o536"]), euclid=("pe", 1, ["t3349", "o710"]))
+    h.goals.clear()
+    h.sent.clear()
+
+
+def test_a_replan_of_a_robot_scoped_goal_stays_scoped_to_its_robots(h):
+    """Removing t3349 replanned with no use-robots: gauss, not in the goal, was
+    sent an empty Path (stopped) and every robot was paused."""
+    _hamilton_and_euclid_to_objects(h)
+    h.node._replan_request_cb(String(data="place t3349 on euclid's route was removed"))
+    (sent,) = h.goals
+    assert sorted(_use(sent)) == ["euclid", "hamilton"]
+    assert not any(r == "gauss" for r, _ in h.sent)
+
+
+def test_robot_goals_still_compose_after_a_replan(h):
+    """After the replan's plan arrives, each robot keeps its own goal: a later
+    goal for gauss leaves hamilton and euclid alone."""
+    _hamilton_and_euclid_to_objects(h)
+    h.node._replan_request_cb(String(data="scene changed"))
+    h.plan(hamilton=("ph2", 1, ["t1", "o536"]), euclid=("pe2", 1, ["t431", "o710"]))
+    assert set(h.node._standing) == {"euclid", "hamilton"}
+    h.goals.clear()
+    h.sent.clear()
+    h.send("(visited-object-by gauss o30)")
+    (sent,) = h.goals
+    assert _use(sent) == ["gauss"]
+    assert not any(r in ("euclid", "hamilton") for r, _ in h.sent)
