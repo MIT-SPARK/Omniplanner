@@ -89,7 +89,7 @@ def test_out_of_memory_does_not_retry(solver, returncode):
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("greedy_limit", ["", "120"])
+@pytest.mark.parametrize("greedy_limit", ["", "0", "120"])
 def test_anytime_timeout_reuses_translation_for_greedy(
     solver, monkeypatch, greedy_limit
 ):
@@ -113,11 +113,86 @@ def test_anytime_timeout_reuses_translation_for_greedy(
     assert len(calls) == 2
     assert calls[0][calls[0].index("--search-time-limit") + 1] == "1"
     assert any(arg.endswith("output.sas") for arg in calls[1])
-    if greedy_limit:
-        assert calls[1][calls[1].index("--search-time-limit") + 1] == greedy_limit
-    else:
+    if greedy_limit == "0":  # explicitly unlimited
         assert "--search-time-limit" not in calls[1]
+    else:  # unset: the retry's own limit
+        expected = greedy_limit or str(pddl_planning.RETRY_GREEDY_TIME_LIMIT_S)
+        assert calls[1][calls[1].index("--search-time-limit") + 1] == expected
     assert "--translate-time-limit" not in calls[1]
+
+
+def _scripted(monkeypatch, calls, outcomes):
+    """subprocess.run that answers each call with the next (returncode, plan?)."""
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        Path(kwargs["cwd"], "output.sas").write_text("translated task")
+        returncode, write_plan = outcomes[len(calls) - 1]
+        if write_plan:
+            plan_fn = command[command.index("--plan-file") + 1]
+            Path(plan_fn).write_text("(goto-poi t1 t2)\n; cost = 1\n")
+        return subprocess.CompletedProcess(
+            command, returncode, stdout="translate exit code: 0\n", stderr=""
+        )
+
+    monkeypatch.setattr(pddl_planning.subprocess, "run", fake_run)
+
+
+def _limit(command):
+    return command[command.index("--search-time-limit") + 1]
+
+
+def test_greedy_out_of_time_falls_back_to_lama(solver, monkeypatch):
+    problem, calls, _ = solver
+    problem.anytime_search_s = 1
+    # anytime: no plan in its budget; greedy: out of time; lama: a plan
+    _scripted(monkeypatch, calls, [(23, False), (23, False), (0, True)])
+    assert pddl_planning.solve_pddl(problem) == [("goto-poi", "t1", "t2")]
+    assert len(calls) == 3
+    greedy, lama = calls[1], calls[2]
+    assert "--search" in greedy and "--alias" not in greedy
+    assert _limit(greedy) == str(pddl_planning.RETRY_GREEDY_TIME_LIMIT_S)
+    assert lama[lama.index("--alias") + 1] == pddl_planning.RETRY_FD_ALIAS
+    assert "--search" not in lama
+    assert _limit(lama) == str(pddl_planning.RETRY_LAMA_TIME_LIMIT_S)
+    assert any(arg.endswith("output.sas") for arg in lama)  # translation reused
+
+
+def test_explicit_limit_applies_to_both_retries(solver, monkeypatch):
+    problem, calls, _ = solver
+    problem.anytime_search_s = 1
+    monkeypatch.setenv("OMNIPLANNER_FD_SEARCH_TIME_LIMIT", "5")
+    _scripted(monkeypatch, calls, [(23, False), (23, False), (0, True)])
+    pddl_planning.solve_pddl(problem)
+    assert [_limit(c) for c in calls[1:]] == ["5", "5"]
+
+
+def test_no_lama_after_a_greedy_plan(solver, monkeypatch):
+    problem, calls, _ = solver
+    problem.anytime_search_s = 1
+    _scripted(monkeypatch, calls, [(23, False), (0, True)])
+    pddl_planning.solve_pddl(problem)
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("returncode", [11, 12, 22, 31])
+def test_no_lama_after_a_terminal_greedy_failure(solver, monkeypatch, returncode):
+    """Proved unsolvable, out of memory, bad input: LAMA would not do better."""
+    problem, calls, _ = solver
+    problem.anytime_search_s = 1
+    _scripted(monkeypatch, calls, [(23, False), (returncode, False)])
+    with pytest.raises(Exception):
+        pddl_planning.solve_pddl(problem)
+    assert len(calls) == 2
+
+
+def test_everything_out_of_time_is_a_timeout(solver, monkeypatch):
+    problem, calls, _ = solver
+    problem.anytime_search_s = 1
+    _scripted(monkeypatch, calls, [(23, False), (23, False), (23, False)])
+    with pytest.raises(Exception, match="ran out of time"):
+        pddl_planning.solve_pddl(problem)
+    assert len(calls) == 3
 
 
 @pytest.mark.parametrize("returncode", [1, 2, 3])

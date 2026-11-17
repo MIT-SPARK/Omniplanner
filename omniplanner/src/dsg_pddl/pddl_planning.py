@@ -36,6 +36,19 @@ ANYTIME_FD_SEARCH = (
     "], repeat_last=true, continue_on_fail=true)))"
 )
 
+# When the anytime search above finds no plan, the greedy search retries, and
+# if that fails too, LAMA (lama-first: a greedy search too, guided by FF and
+# landmarks instead of FF and CEA). Each retry is limited -- by
+# OMNIPLANNER_FD_SEARCH_TIME_LIMIT when set (0: no limit), by these otherwise:
+# an unbounded greedy search on a goal its heuristics cannot steer through
+# runs until it exhausts the machine. Seen 2026-11-17: one robot visiting 42
+# objects while two others carry three of them elsewhere -- greedy ff+cea found
+# no plan in 13 min (9 GB); lama-first plans it in 0.03 s. The anytime search
+# runs only on the small goal-relevant problems, where greedy takes seconds.
+RETRY_GREEDY_TIME_LIMIT_S = 10
+RETRY_LAMA_TIME_LIMIT_S = 30
+RETRY_FD_ALIAS = "lama-first"
+
 
 # Lines of Fast Downward output kept on a failure (PddlSolverError.fd_log).
 FD_LOG_TAIL = 40
@@ -190,7 +203,10 @@ def solve_pddl(problem: GroundedPddlProblem):
         OMNIPLANNER_FD_SEARCH_TIME_LIMIT - optional greedy-search limit.
     Translation and greedy search are unlimited unless configured (0 or an
     empty value disables either phase limit). Goal-relevant problems may use
-    a short anytime search first, then retry greedy if no plan was found.
+    a short anytime search first; if it finds no plan, the greedy search
+    retries, then lama-first. The retries are limited to
+    RETRY_GREEDY_TIME_LIMIT_S / RETRY_LAMA_TIME_LIMIT_S unless
+    OMNIPLANNER_FD_SEARCH_TIME_LIMIT is set (0: no limit).
     When unset, the historical lazy-greedy(ff + cea) search is used.
     """
     with tempfile.TemporaryDirectory() as tmpdirname:
@@ -236,8 +252,9 @@ def solve_pddl(problem: GroundedPddlProblem):
         anytime_s = getattr(problem, "anytime_search_s", 0.0) or 0.0
         anytime = anytime_s > 0 and not fd_alias and not fd_search
 
-        def fd_command(search, search_time_limit, inputs=None):
+        def fd_command(search, search_time_limit, inputs=None, alias=None):
             """``inputs``: a translated task ([output.sas]) runs the search alone."""
+            alias = alias or fd_alias
             command = ["fast-downward"]
             if inputs is None and translate_time_limit not in (None, "", "0"):
                 command += ["--translate-time-limit", str(translate_time_limit)]
@@ -246,10 +263,10 @@ def solve_pddl(problem: GroundedPddlProblem):
             command += ["--plan-file", plan_fn]
             if fd_time_limit:
                 command += ["--overall-time-limit", fd_time_limit]
-            if fd_alias:
-                command += ["--alias", fd_alias]
+            if alias:
+                command += ["--alias", alias]
             command += inputs or [domain_fn, problem_fn]
-            if not fd_alias:
+            if not alias:
                 command += ["--search", search]
             return command
 
@@ -310,14 +327,37 @@ def solve_pddl(problem: GroundedPddlProblem):
             )
             # the translator's part only: the failed search's lines would read as this run's
             translate_out = (proc.stdout or "").split("translate exit code: 0", 1)[0]
-            proc = subprocess.run(
-                fd_command(DEFAULT_FD_SEARCH, search_time_limit, inputs),
-                capture_output=True,
-                text=True,
-                cwd=tmpdirname,
-            )
-            if inputs:  # the translator's stats (operators, facts) are in the first run
-                proc.stdout = translate_out + (proc.stdout or "")
+
+            def retry(limit_s, search=DEFAULT_FD_SEARCH, alias=None):
+                limit = search_time_limit or str(limit_s)  # "0": no limit
+                command = fd_command(search, limit, inputs, alias)
+                logger.info(f"Calling: {command}")
+                start = time.perf_counter()
+                out = subprocess.run(
+                    command, capture_output=True, text=True, cwd=tmpdirname
+                )
+                logger.info(
+                    f"fast-downward finished in {time.perf_counter() - start:.3f}s "
+                    f"(return code {out.returncode})"
+                )
+                if inputs:  # the translator's stats (operators, facts) are in the first run
+                    out.stdout = translate_out + (out.stdout or "")
+                return out
+
+            proc = retry(RETRY_GREEDY_TIME_LIMIT_S)
+            # a greedy search its heuristics cannot steer gets LAMA's landmarks
+            if (
+                _best_plan_file(plan_fn) is None
+                and proc.returncode
+                not in FD_UNSOLVABLE + FD_BAD_INPUT + FD_OUT_OF_MEMORY
+            ):
+                logger.warning(
+                    "Greedy search found no plan (return code %d); "
+                    "retrying with %s",
+                    proc.returncode,
+                    RETRY_FD_ALIAS,
+                )
+                proc = retry(RETRY_LAMA_TIME_LIMIT_S, alias=RETRY_FD_ALIAS)
 
         best_plan_fn = _best_plan_file(plan_fn)
         if best_plan_fn is not None:
