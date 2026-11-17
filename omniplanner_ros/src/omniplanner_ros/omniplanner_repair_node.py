@@ -127,6 +127,16 @@ def joined_goals(goals) -> str:
     return goals[0] if len(goals) == 1 else f"(and {' '.join(goals)})" if goals else ""
 
 
+# ActionDoneMsg.header.frame_id of a failed pick the operator chose not to try
+# again (spot_tools: the answer "give up" to the after-pick question).
+OPERATOR_GAVE_UP = "operator_gave_up"
+
+
+def _note(msg) -> str:
+    """How an ActionDoneMsg says its action ended ("" for most)."""
+    return getattr(getattr(msg, "header", None), "frame_id", "") or ""
+
+
 class OmniPlannerRepairRos(OmniPlannerRos):
     """OmniPlannerRos plus persistent constraints and mission state."""
 
@@ -317,6 +327,21 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 self._plan_deps.pop(obj, None)  # done: a later move no longer matters
             self._pick_failures.pop(obj, None)
         elif msg.action_type == "PICK" and not msg.success and obj:
+            if _note(msg) == OPERATOR_GAVE_UP:
+                # The operator watched the pick fail and chose not to try
+                # again; the robot ended its action sequence. Replanning would
+                # send it straight back to the same pick.
+                self._pick_failures.pop(obj, None)
+                with self._plan_lock:
+                    if msg.plan_id and msg.plan_id == self._plan_ids.get(
+                        msg.robot_name
+                    ):
+                        self._plan_over(msg.robot_name)
+                self.get_logger().warning(
+                    f"pick of {obj} by {msg.robot_name} was given up by the "
+                    "operator: not replanning; its plan is over"
+                )
+                return
             tries = self._pick_failures.get(obj, 0) + 1
             self._pick_failures[obj] = tries
             if tries <= self._max_pick_retries:
