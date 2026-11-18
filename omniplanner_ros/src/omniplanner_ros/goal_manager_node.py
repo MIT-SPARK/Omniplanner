@@ -1557,23 +1557,43 @@ class GoalManager(Node):
         return out
 
     def _visit_again(self, conjuncts) -> None:
-        """A goal with nothing left to do, sent all the same: the operator
-        wants its visits made again. A finished visit is remembered so that
-        the rest of its mission is not planned twice, not to refuse the
-        operator who asks for it once more. What the planner found holding on
-        this map (an object already in its place) is a fact, and stays done.
+        """A visit is remembered so that a replan of the mission it was made
+        in does not make it twice -- not to refuse the operator who names the
+        place again. A finished visit is planned again when:
+
+        * the goal names its robot (a ``-by`` visit) and that robot has
+          finished its goal: its visits were for that goal;
+        * or nothing in the goal is left to do: sent all the same, it means
+          go again.
+
+        A visit no robot is named for stays done while it is sent next to
+        open work: that is the team's mission sent again (to give a lost
+        robot's part to another), and its finished parts are not repeated.
+        What the planner found holding on this map (an object already in its
+        place) is a fact, and always stays done.
         """
-        if not conjuncts or not all(self._is_done(c) for c in conjuncts):
-            return
-        again = [c for c in conjuncts if self._facts.get(c.lower()) != self._stamp]
-        if not again:
-            return
+        held = {c for c in conjuncts if self._facts.get(c.lower()) == self._stamp}
+        done = [c for c in conjuncts if c not in held and self._is_done(c)]
+        all_done = bool(conjuncts) and len(done) + len(held) == len(conjuncts)
+        again = []
+        for c in done:
+            ast = _parse_goal(c.lower())
+            named = (
+                isinstance(ast, (list, tuple))
+                and len(ast) == 3
+                and str(ast[0]).endswith("-by")
+            )
+            entry = self._robots.get(str(ast[1])) if named else None
+            working = entry is not None and entry.status in (RUNNING, STALLED)
+            if all_done or (named and not working):
+                again.append(c)
         for c in again:
             for poi in _conjunct_symbols(_parse_goal(c.lower())):
                 self._achieved.pop(poi, None)
-        self.get_logger().info(
-            f"{' '.join(again)} was done, and is asked for again: planning it again"
-        )
+        if again:
+            self.get_logger().info(
+                f"{' '.join(again)} was done, and is asked for again: planning it again"
+            )
 
     def _decide(self, msg: ConstrainedPddlGoalMsg) -> Decision:
         """What the planner still has to do for this goal.

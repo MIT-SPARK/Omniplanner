@@ -66,15 +66,6 @@ def test_the_same_goal_again_is_planned_again_while_another_robot_works(
     assert _planned(h)[-1] == goal
 
 
-OPEN = pytest.mark.xfail(
-    strict=True,
-    reason="open decision: a goal that mixes a finished visit with new work is "
-    "read as the mission sent again with one more task, so the finished visit "
-    "is left out. Remove this mark if a named place should always be visited.",
-)
-
-
-@OPEN
 def test_an_old_place_next_to_a_new_one_is_planned_with_it(h):
     """gauss has been to t5. "Go to t5 and t9" is not "go to t9"."""
     _gauss_did(h, "(visited-place-by gauss t5)", ["t5"])
@@ -83,7 +74,6 @@ def test_an_old_place_next_to_a_new_one_is_planned_with_it(h):
     assert "t5" in sent.goal.pddl_goal and "t9" in sent.goal.pddl_goal
 
 
-@OPEN
 def test_an_old_place_next_to_another_robots_new_task_is_planned_with_it(h):
     _gauss_did(h, "(visited-place-by gauss t5)", ["t5"])
     h.send("(and (visited-place-by gauss t5) (visited-object-by hamilton o2))")
