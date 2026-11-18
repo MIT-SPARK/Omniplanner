@@ -3,5 +3,9 @@
 *.pyc
 *.egg-info*
 
+# PDDL debug dumps (written to ~/adt4_output/omniplanner; older builds wrote them to the cwd)
+pddl_dumps/
+pddl_problem_debugging.pddl
+
 # Local scenegraph data
 omniplanner/examples/scenegraph/*.json
