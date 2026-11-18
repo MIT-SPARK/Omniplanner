@@ -253,6 +253,20 @@ class WorldStateTracker:
         self.visited_by.clear()
         self.inspected_by.clear()
 
+    def forget_visits(self, keep: Iterable[str] = ()) -> Set[str]:
+        """Forget what every robot not in keep visited and inspected; returns
+        the robots forgotten. What a kept robot also visited stays visited.
+        Holding and placements are physical state, and stay (see reset)."""
+        keep = {str(r).lower() for r in keep}
+        gone = {r for r in (*self.visited_by, *self.inspected_by) if r not in keep}
+        for done, by in (
+            (self.visited, self.visited_by),
+            (self.inspected, self.inspected_by),
+        ):
+            theirs = set().union(*(by.pop(r, set()) for r in gone))
+            done -= theirs - set().union(*by.values())
+        return gone
+
     def record(
         self,
         action_type: str,

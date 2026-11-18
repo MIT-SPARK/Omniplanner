@@ -75,6 +75,7 @@ from __future__ import annotations
 import json
 import threading
 import uuid
+from typing import Optional
 
 import numpy as np
 import rclpy
@@ -135,6 +136,24 @@ OPERATOR_GAVE_UP = "operator_gave_up"
 def _note(msg) -> str:
     """How an ActionDoneMsg says its action ended ("" for most)."""
     return getattr(getattr(msg, "header", None), "frame_id", "") or ""
+
+
+def last_waypoint_reached(near) -> Optional[int]:
+    """How far along the rest of its path a robot has come: the index of the
+    last waypoint of the first stretch it is near (near[i]: waypoint i ahead
+    is within reach of the robot), or None when it is near none.
+
+    Only the first stretch counts. A path that comes back over its own ground
+    (out to a place and home again, or twice past the same corner) has later
+    waypoints at the spot the robot is standing on: being near those says
+    nothing about the waypoints in between, which it has yet to drive.
+    Waypoints before the stretch were cut short, and count as passed.
+    """
+    idx = np.flatnonzero(np.asarray(near, dtype=bool))
+    if len(idx) == 0:
+        return None
+    gaps = np.flatnonzero(np.diff(idx) > 1)
+    return int(idx[gaps[0]] if len(gaps) else idx[-1])
 
 
 class OmniPlannerRepairRos(OmniPlannerRos):
@@ -724,7 +743,19 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         names them; a named one still puts down what it holds first.
         """
         dsg = self._current_dsg()
+        with self._plan_lock:
+            running = set(getattr(self, "_running_plans", None) or {})
         with self._world_lock:
+            # A visit counts for the plan it was made in, so that a replan of
+            # that plan does not make it again. Once a robot's plan is over
+            # (finished, stopped, given up) nothing is left to repair: a goal
+            # that sends it to the same place means go there again.
+            forgot = self.world_tracker.forget_visits(keep=running)
+            if forgot:
+                self.get_logger().info(
+                    "forgot the visits and inspections of "
+                    f"{', '.join(sorted(forgot))}: their plans are over"
+                )
             if new_mission(constraints):
                 self.world_tracker.reset()
                 self.get_logger().info(
@@ -969,9 +1000,11 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 path = sent["path"]
                 if path is not None and len(path):
                     ahead = np.hypot(*(path[sent["reached"] + 1 :] - xy).T)
-                    near = np.nonzero(ahead <= self.world_tracker.visited_radius_m)[0]
-                    if len(near):
-                        reached = sent["reached"] + 1 + int(near[-1])
+                    last = last_waypoint_reached(
+                        ahead <= self.world_tracker.visited_radius_m
+                    )
+                    if last is not None:
+                        reached = sent["reached"] + 1 + last
                         visited_points = path[sent["reached"] + 1 : reached + 1]
                         sent["reached"], sent["last_progress"] = reached, now
                         self._actions_done[robot] = reached
