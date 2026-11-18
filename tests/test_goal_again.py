@@ -1,0 +1,102 @@
+"""A goal the operator sends again, in every form it takes.
+
+"Already done" is the right answer to one thing only: the rest of a mission
+that is being replanned. An operator who names a place again wants a robot
+there again -- whether the goal is the same one, has a new part next to the
+old one, names a region or an object, or arrives while other robots work.
+"""
+
+import pytest
+
+pytest.importorskip("robot_executor_msgs.msg")
+
+from goal_manager_harness import Harness  # noqa: E402
+from std_msgs.msg import String  # noqa: E402
+
+
+@pytest.fixture
+def h(tmp_path):
+    harness = Harness(tmp_path)
+    yield harness
+    harness.close()
+
+
+def _done(h, robot):
+    h.node._path_status_cb(
+        robot, String(data='{"plan_id": "(path)", "status": "done"}')
+    )
+
+
+def _gauss_did(h, goal, coverage):
+    """euclid is busy on a long task; gauss gets `goal` and finishes it."""
+    h.send("(visited-object-by euclid o1)")
+    h.plan(euclid=("pe", 3, ["o1"]))
+    h.send(goal)
+    h.plan(gauss=("", 0, coverage))
+    _done(h, "gauss")
+    assert "gauss" not in h.node._robots and "euclid" in h.node._robots
+    h.goals.clear()
+    h.texts.clear()
+
+
+def _planned(h):
+    return [g.goal.pddl_goal for g in h.goals]
+
+
+AGAIN = [
+    ("(visited-place-by gauss t5)", ["t5"]),
+    ("(visited-object-by gauss o3)", ["o3"]),
+    ("(visited-region-by gauss r2)", ["r2", "t7"]),
+    ("(explored-region-by gauss r2)", ["r2", "t7", "t8"]),
+    ("(visited-place t5)", ["t5"]),
+    ("(visited-region r2)", ["r2", "t7"]),
+    ("(and (visited-place-by gauss t5) (visited-place-by gauss t6))", ["t5", "t6"]),
+    ("(or (visited-place-by gauss t5) (visited-place-by gauss t6))", ["t5"]),
+]
+
+
+@pytest.mark.parametrize("goal,coverage", AGAIN, ids=[g for g, _ in AGAIN])
+def test_the_same_goal_again_is_planned_again_while_another_robot_works(
+    h, goal, coverage
+):
+    _gauss_did(h, goal, coverage)
+    h.send(goal)
+    assert not any("already done" in t for t in h.texts), h.texts
+    assert h.goals, "nothing was sent to the planner"
+    assert _planned(h)[-1] == goal
+
+
+OPEN = pytest.mark.xfail(
+    strict=True,
+    reason="open decision: a goal that mixes a finished visit with new work is "
+    "read as the mission sent again with one more task, so the finished visit "
+    "is left out. Remove this mark if a named place should always be visited.",
+)
+
+
+@OPEN
+def test_an_old_place_next_to_a_new_one_is_planned_with_it(h):
+    """gauss has been to t5. "Go to t5 and t9" is not "go to t9"."""
+    _gauss_did(h, "(visited-place-by gauss t5)", ["t5"])
+    h.send("(and (visited-place-by gauss t5) (visited-place-by gauss t9))")
+    (sent,) = h.goals
+    assert "t5" in sent.goal.pddl_goal and "t9" in sent.goal.pddl_goal
+
+
+@OPEN
+def test_an_old_place_next_to_another_robots_new_task_is_planned_with_it(h):
+    _gauss_did(h, "(visited-place-by gauss t5)", ["t5"])
+    h.send("(and (visited-place-by gauss t5) (visited-object-by hamilton o2))")
+    (sent,) = h.goals
+    assert "t5" in sent.goal.pddl_goal and "o2" in sent.goal.pddl_goal
+
+
+def test_a_replan_still_leaves_out_what_the_mission_has_done(h):
+    """The one place "already done" belongs: a replan of the running mission."""
+    h.send("(and (visited-object o1) (visited-place-by gauss t5))")
+    h.plan(euclid=("pe", 3, ["o1"]), gauss=("", 0, ["t5"]))
+    _done(h, "gauss")
+    h.goals.clear()
+    h.node._replan_request_cb(String(data="a place on euclid's route was removed"))
+    (again,) = h.goals
+    assert "t5" not in again.goal.pddl_goal and "o1" in again.goal.pddl_goal
