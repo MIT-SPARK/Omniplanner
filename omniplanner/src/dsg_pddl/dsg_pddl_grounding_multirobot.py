@@ -42,6 +42,7 @@ from dsg_pddl.pddl_grounding import (
     PddlProblem,
     PddlSymbol,
 )
+from dsg_pddl.pddl_planning import resolve_dump_dir
 from dsg_pddl.pddl_utils import (
     extract_facts,
     lisp_string_to_ast,
@@ -743,10 +744,13 @@ def _failure_hint(
 
 def _dump_problem(problem_str):
     try:
-        dump_dir = os.environ.get(
-            "PDDL_DUMP_DIR", os.path.join(os.getcwd(), "pddl_dumps")
-        )
-        os.makedirs(dump_dir, exist_ok=True)
+        # never the working directory: nodes are often started inside the source tree
+        dump_dir = os.environ.get("PDDL_DUMP_DIR")
+        if dump_dir:
+            dump_dir = os.path.expanduser(dump_dir)
+            os.makedirs(dump_dir, exist_ok=True)
+        else:
+            dump_dir = resolve_dump_dir()
         ts = time.strftime("%Y%m%d_%H%M%S")
         persistent_problem = os.path.join(dump_dir, f"{ts}_mr_region_problem.pddl")
         latest_problem = os.path.join(dump_dir, "mr_region_problem_latest.pddl")

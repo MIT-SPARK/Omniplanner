@@ -366,7 +366,8 @@ def solve_pddl(problem: GroundedPddlProblem):
             with open(debug_plan_fn, "w") as fo:
                 fo.writelines(lines)
         else:
-            output_dir = os.getenv("ADT4_OUTPUT_DIR", "")
+            # never the working directory: nodes are often started inside the source tree
+            output_dir = os.getenv("ADT4_OUTPUT_DIR") or resolve_dump_dir()
             debug_fn = os.path.join(output_dir, "pddl_problem_debugging.pddl")
             logger.warning(
                 f"Planning failed. Please see {debug_fn} for the failed problem file."

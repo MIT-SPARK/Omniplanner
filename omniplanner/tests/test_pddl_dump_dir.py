@@ -49,6 +49,33 @@ def test_resolve_dump_dir_env_override_expands_user(tmp_path, monkeypatch):
     assert os.path.isdir(expected)
 
 
+def test_multirobot_problem_dump_never_in_cwd(tmp_path, monkeypatch):
+    """The multi-robot region problem used to land in $PWD/pddl_dumps, which is
+    the source tree when a node is started from it."""
+    from dsg_pddl.dsg_pddl_grounding_multirobot import _dump_problem
+
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.delenv("PDDL_DUMP_DIR", raising=False)
+    monkeypatch.setenv("OMNIPLANNER_DUMP_DIR", str(tmp_path / "dumps"))
+
+    _dump_problem("(define (problem p))")
+
+    assert not (cwd / "pddl_dumps").exists()
+    assert (tmp_path / "dumps" / "mr_region_problem_latest.pddl").exists()
+
+
+def test_multirobot_problem_dump_env_override(tmp_path, monkeypatch):
+    from dsg_pddl.dsg_pddl_grounding_multirobot import _dump_problem
+
+    monkeypatch.setenv("PDDL_DUMP_DIR", str(tmp_path / "explicit"))
+
+    _dump_problem("(define (problem p))")
+
+    assert (tmp_path / "explicit" / "mr_region_problem_latest.pddl").exists()
+
+
 if __name__ == "__main__":
     import pytest
 
