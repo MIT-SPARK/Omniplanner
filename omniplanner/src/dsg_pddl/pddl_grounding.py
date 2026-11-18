@@ -208,3 +208,7 @@ class GroundedPddlProblem:
     # Search budget (s) for an anytime, cost-improving search; 0 = the single
     # greedy search. Worth it only on small problems (see solve_pddl).
     anytime_search_s: float = 0.0
+    # {robot -> places-graph planner} for robots that drive on a graph of their
+    # own (without the places its platform avoids, e.g. a Husky's curbs):
+    # make_plan expands that robot's goto hops on it. Others use layer_planner.
+    robot_layer_planners: dict = field(default_factory=dict)
