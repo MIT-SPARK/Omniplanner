@@ -30,12 +30,22 @@ adds:
   on ``executor_pause_topic``, so none drives on while the map catches up.
   The replanned sequence releases each robot; if no plan is found they stay
   stopped and the goal manager tells the operator.
-  With ``confirm_replans`` (the default) a replan for a scene change, a map
-  reload or a cut route waits for the operator: it is offered on the latched
-  ``~/replan_pending`` (JSON ``{reason, robots}``; "" when none is waiting) and
-  goes out when "confirm" arrives on ``~/replan_decision`` ("decline" drops
-  it). The robots stay paused meanwhile; a new plan replaces the waiting
-  replan. A failed pick is replanned at once.
+* held replans: with ``confirm_replans`` (the default) a replan caused by
+  change detection -- a scene change whose source starts with ``awcd/`` --
+  waits for the operator. Every other replan (a map edit from ``sget/`` or
+  ``console/``, a map reload, a cut route, a failed pick) goes out at once.
+  The robots are paused as above, and the robots paused are the question's
+  robots. The question is latched on
+  ``~/replan_pending``: "" when nothing is held, else JSON ``{id, robots,
+  reasons, reason, source, t}``. ``~/replan_decision`` answers it with JSON
+  ``{id, decision}`` ("confirm" or "decline"); a decision for another id, or
+  with none, is ignored. Confirm sends each reason as its own
+  ``~/replan_request``; decline sends nothing. A robot given a new plan, or
+  whose plan ends, leaves the question (same id); a question left with no
+  robot is cleared, and a further change makes a new question (new id). A
+  held robot is not flagged by the progress watchdog, and a held Spot is
+  reported as progress on its path_status, so the goal manager does not take
+  it for stalled.
 * the map version this node plans on, latched on ``~/map_version``, so the
   goal manager replans a goal the running plan covers once the map changed.
 * routes under map edits: each new map is checked against the part of every
@@ -81,6 +91,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 import uuid
 from typing import Optional
 
@@ -139,6 +150,15 @@ def joined_goals(goals) -> str:
 # ActionDoneMsg.header.frame_id of a failed pick the operator chose not to try
 # again (spot_tools: the answer "give up" to the after-pick question).
 OPERATOR_GAVE_UP = "operator_gave_up"
+
+# A scene change from change detection (AWCD) is the one replan the operator
+# confirms (see confirm_replans).
+HELD_SOURCE_PREFIX = "awcd/"
+# A Husky's empty Path seen back within this long of this node sending it is
+# its own pause coming back, not a stop.
+OWN_STOP_ECHO_S = 5.0
+# How often a held Spot is reported as progress on its path_status.
+HELD_PROGRESS_EVERY_S = 10.0
 
 
 def _note(msg) -> str:
@@ -267,6 +287,10 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         # {robot -> what was dispatched to it and when it last made progress},
         # for the progress watchdog and a Husky's visits.
         self._dispatched: dict = {}
+        # Held replans (see confirm_replans): the question asked, the changes
+        # still waiting for the map before they are asked, and when this node
+        # stopped each Husky itself. See _hold_state.
+        self._hold_state()
 
         super().__init__()
 
@@ -326,9 +350,13 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                     10,
                 )
         self._replan_pub = self.create_publisher(String, "~/replan_request", 10)
+        # confirm_replans: a replan caused by change detection (a scene change
+        # from an awcd/ source) waits for the operator's decision on
+        # ~/replan_decision; the question is on ~/replan_pending. Map edits,
+        # reloads, cut routes and failed picks replan at once either way, so
+        # nothing is ever held while change detection is off.
         self.declare_parameter("confirm_replans", True)
         self._confirm_replans = bool(self.get_parameter("confirm_replans").value)
-        self._held_replan = None
         self._pending_pub = self.create_publisher(
             String,
             "~/replan_pending",
@@ -445,15 +473,18 @@ class OmniPlannerRepairRos(OmniPlannerRos):
 
     # ------------- plan validity under scene changes -------------
 
-    def _plan_over(self, robot: str, stopped: bool = False) -> None:
+    def _plan_over(self, robot: str, stopped: bool = False, release=True) -> None:
         """A robot's plan finished or was stopped (call under _plan_lock): it
         is not watched any more, and no later scene change is held against it
-        or its goal.
+        or its goal. Unless release is false (this node's own stop of a
+        Husky, seen back) it leaves a held replan's question too.
 
         Only a plan that ran to its end accomplished its goal, which is when
         its robot's visits stop being remembered (see visits_to_forget). A
         stop does not -- every replan stops a Husky first -- and neither does
         a pick the operator gave up."""
+        if release:
+            self._release_held({robot}, "its plan is over")
         goals = self.__dict__.setdefault("_visit_goals", {})
         goal = next(
             (g for r, g in self._plan_goals.items() if r.lower() == robot.lower()), None
@@ -474,9 +505,12 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         self._active_goal = joined_goals(self._plan_goals.values())
 
     def _stop_seen(self, robot: str) -> None:
+        own = self._own_stop_seen(robot)
         with self._plan_lock:
             running = robot in self._running_plans
-            self._plan_over(robot, stopped=True)
+            # This node's own empty Path (a pause), seen back: the Husky stays
+            # one of the robots a held replan waits with.
+            self._plan_over(robot, stopped=True, release=not own)
         if running:
             self.get_logger().info(
                 f"{robot} was stopped: its plan is over and is no longer watched"
@@ -485,12 +519,18 @@ class OmniPlannerRepairRos(OmniPlannerRos):
     def _scene_changes_callback(self, msg: SceneChangeMsg) -> None:
         if msg.source.startswith("executor/"):
             return  # our own pick or place: the plan already accounts for it
+        # Only change detection's replans wait for the operator.
+        held = bool(getattr(self, "_confirm_replans", False)) and (
+            msg.source.startswith(HELD_SOURCE_PREFIX)
+        )
         changes = [
             {
                 "kind": c.kind,
                 "symbol": c.symbol,
                 "old": (c.old_position.x, c.old_position.y),
                 "new": (c.new_position.x, c.new_position.y),
+                "source": msg.source,
+                "held": held,
             }
             for c in msg.changes
         ]
@@ -522,19 +562,36 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             robots = list(self._plan_robots)
         with self._world_lock:
             state = self.world_tracker.snapshot(self._current_dsg())
-        # A reported change counts as reported: AWCD reports no moves (a moved
-        # object comes as one removed and one added) and a map edit's move is
-        # deliberate. move_threshold_m is for a reload, which reports nothing.
-        affected = affecting_changes(changes, deps, goal, state, move_threshold_m=0.0)
-        if not affected:
+        # Changes from change detection wait for the operator (see
+        # confirm_replans), the rest replan at once, as without it: judged
+        # apart, so that each replan names only its own changes.
+        now = [c for c in changes if not c.get("held")]
+        later = [c for c in changes if c.get("held")]
+        reasons = {}
+        for key, group in (("now", now), ("held", later)):
+            affected = group and affecting_changes(
+                group, deps, goal, state, move_threshold_m=self._move_threshold_m
+            )
+            if affected:
+                reasons[key] = "scene changed: " + "; ".join(r for _, r in affected)
+        if not reasons:
             self.get_logger().info(
                 f"scene change does not affect the plan: "
                 f"{sorted({c['symbol'] for c in changes})}"
             )
             return
-        reason = "scene changed: " + "; ".join(r for _, r in affected)
-        self._pause_robots(robots, reason)
-        self._wait_for_map_then_replan(version, reason, epoch=epoch)
+        # The robots held are those paused now: a Husky's empty Path, seen
+        # back, takes it out of _plan_robots before the map arrives.
+        token = None
+        if "held" in reasons:
+            token = self._hold_until_asked(robots, later[-1].get("source", ""))
+        self._pause_robots(robots, "; ".join(reasons.values()))
+        if "now" in reasons:
+            self._wait_for_map_then_replan(version, reasons["now"], epoch=epoch)
+        if token is not None:
+            self._wait_for_map_then_replan(
+                version, reasons["held"], epoch=epoch, hold=token
+            )
 
     def _is_path_robot(self, robot: str) -> bool:
         """A Husky: its plan is a nav_msgs/Path, and it has no executor to pause."""
@@ -559,6 +616,10 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 stop = Path()
                 stop.header.frame_id = self.dsg_frame or ""
                 stop.header.stamp = self.get_clock().now().to_msg()
+                with self._hold_state()["lock"]:  # its echo is not a stop
+                    self._hold_state()["own_stops"].setdefault(robot, []).append(
+                        self._now_s()
+                    )
                 adaptor.publish_plan(stop)
                 pub, done = getattr(adaptor, "plan_pub", None), stopped
                 with self._plan_lock:
@@ -680,7 +741,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             return f"objects the plan acts on unchanged: {sorted(deps)}"
         reason = "map reloaded: " + "; ".join(r for _, r in affected)
         self._pause_robots(robots, reason)
-        self._request_replan(reason, confirm=True)
+        self._request_replan(reason)
         return f"objects affected: {[s for s, _ in affected]}"
 
     @staticmethod
@@ -738,7 +799,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             self._route = {}  # judged; the new plan brings its own route
         reason = "map changed: " + "; ".join(why for _, why in broken)
         self._pause_robots(robots, reason)
-        self._request_replan(reason, confirm=True)
+        self._request_replan(reason)
         return f"route affected: {reason}"
 
     def _publish_map_version(self) -> None:
@@ -777,13 +838,25 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             self.get_logger().warning(f"cannot read the map version: {exc}")
             return ("", 0)
 
-    def _wait_for_map_then_replan(self, version, reason, waited=0.0, epoch=None):
+    def _wait_for_map_then_replan(
+        self, version, reason, waited=0.0, epoch=None, hold=None
+    ):
         """Replan only once the planner holds a map with the change in it.
 
         version is heracles' own, from the scene change; it is compared only
         within the epoch the change arrived in. A map of another epoch is a
         reload, which has whatever the change did in it or is newer still.
+
+        With hold (a token from _hold_until_asked) the replan is not sent but
+        asked of the operator; once none of its robots is held any more (a
+        new plan, or their plans ended) there is nothing to ask, and the wait
+        ends.
         """
+        if hold is not None and hold not in self._hold_state()["waits"]:
+            self.get_logger().info(
+                f"not asking about {reason!r}: none of its robots waits any more"
+            )
+            return
         now_epoch, now_version = self._map_state()
         reached = now_version >= version or (epoch is not None and now_epoch != epoch)
         if reached or waited >= 10.0:
@@ -791,52 +864,174 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 self.get_logger().warning(
                     f"map_version {version} not received after 10 s; replanning anyway"
                 )
-            self._request_replan(reason, confirm=True)
+            if hold is None:
+                self._request_replan(reason)
+            else:
+                self._ask_operator(hold, reason)
             return
         timer = None
 
         def again():
             timer.cancel()
             self.destroy_timer(timer)
-            self._wait_for_map_then_replan(version, reason, waited + 0.2, epoch)
+            self._wait_for_map_then_replan(version, reason, waited + 0.2, epoch, hold)
 
         timer = self.create_timer(0.2, again)
 
-    def _request_replan(self, reason: str, confirm: bool = False) -> None:
-        if confirm and getattr(self, "_confirm_replans", False):
-            with self._plan_lock:
-                robots = list(self._plan_robots)
-            held = getattr(self, "_held_replan", None)
-            if held is not None:  # one question: the reasons add up
-                reason = f"{held['reason']}; {reason}"
-                robots = sorted(set(held["robots"]) | set(robots))
-            self._held_replan = {"reason": reason, "robots": robots}
-            self.get_logger().warning(
-                f"plan invalidated: {reason}; the replan waits for the operator"
-            )
-            self._pending_pub.publish(String(data=json.dumps(self._held_replan)))
-            return
+    def _request_replan(self, reason: str) -> None:
         self.get_logger().warning(f"plan invalidated: {reason}; requesting a replan")
         self._replan_pub.publish(String(data=reason))
 
-    def _drop_held_replan(self, why: str):
-        """The waiting replan, now no longer waiting (None if none was)."""
-        held, self._held_replan = getattr(self, "_held_replan", None), None
-        if held is not None:
-            self._pending_pub.publish(String(data=""))
-            self.get_logger().info(f"replan of {held['reason']!r} {why}")
-        return held
+    # ------------- held replans (confirm_replans) -------------
+
+    def _hold_state(self) -> dict:
+        """The held replans' state, made on first use: lock (an RLock; take
+        it after _plan_lock, never before), question (the one asked, or
+        None), waits ({token: {robots, source}}: changes held until the map
+        has them, then asked) and own_stops ({robot: [times]}: this node's
+        empty Paths to a Husky)."""
+        state = self.__dict__.get("_hold")
+        if state is None:
+            state = self.__dict__.setdefault(
+                "_hold",
+                {
+                    "lock": threading.RLock(),
+                    "question": None,
+                    "waits": {},
+                    "own_stops": {},
+                },
+            )
+        return state
+
+    def _publish_question(self, question) -> None:
+        pub = getattr(self, "_pending_pub", None)
+        if pub is not None:
+            pub.publish(String(data="" if question is None else json.dumps(question)))
+
+    def _hold_until_asked(self, robots, source: str):
+        """Hold the robots being paused for a change detection replan; the
+        token to ask with once the map has the change (None: no robot)."""
+        robots = set(robots)
+        if not robots:
+            self.get_logger().info("change detection replan: no robot to hold")
+            return None
+        token = uuid.uuid4().hex
+        hold = self._hold_state()
+        with hold["lock"]:
+            hold["waits"][token] = {"robots": robots, "source": source}
+        return token
+
+    def _ask_operator(self, token: str, reason: str) -> None:
+        """Ask the operator to confirm the held replan: a new question (new
+        id) with the reasons and robots already asked about, and these."""
+        hold = self._hold_state()
+        with hold["lock"]:
+            wait = hold["waits"].pop(token, None)
+            if not wait or not wait["robots"]:
+                self.get_logger().info(
+                    f"not asking about {reason!r}: none of its robots waits any more"
+                )
+                return
+            old = hold["question"] or {"robots": [], "reasons": []}
+            reasons = old["reasons"] + [reason]
+            question = {
+                "id": uuid.uuid4().hex,
+                "robots": sorted(set(old["robots"]) | wait["robots"]),
+                "reasons": reasons,
+                "reason": "; ".join(reasons),
+                "source": wait["source"],
+                "t": time.time(),
+            }
+            hold["question"] = question
+            self._publish_question(question)
+        self.get_logger().warning(
+            f"plan invalidated: {question['reason']}; the replan of "
+            f"{', '.join(question['robots'])} waits for the operator "
+            f"(question {question['id'][:8]})"
+        )
+
+    def _release_held(self, robots, why: str) -> None:
+        """These robots are held no more (a new plan, or their plan ended):
+        they leave the question (same id) and the changes waiting for the
+        map. A question with no robot left is cleared."""
+        robots = set(robots)
+        hold = self._hold_state()
+        with hold["lock"]:
+            for token, wait in list(hold["waits"].items()):
+                wait["robots"] -= robots
+                if not wait["robots"]:
+                    del hold["waits"][token]
+            question = hold["question"]
+            if question is None or not robots & set(question["robots"]):
+                return
+            left = [r for r in question["robots"] if r not in robots]
+            hold["question"] = {**question, "robots": left} if left else None
+            self._publish_question(hold["question"])
+        self.get_logger().info(
+            f"held replan {question['id'][:8]}: {', '.join(sorted(robots))} "
+            f"left it ({why})" + ("" if left else "; nothing is held any more")
+        )
+
+    def _is_held(self, robot: str) -> bool:
+        hold = self._hold_state()
+        with hold["lock"]:
+            question = hold["question"]
+            return (question is not None and robot in question["robots"]) or any(
+                robot in w["robots"] for w in hold["waits"].values()
+            )
+
+    def _own_stop_seen(self, robot: str) -> bool:
+        """An empty Path seen on a Husky's plan topic is this node's own (a
+        pause), coming back."""
+        hold, now = self._hold_state(), self._now_s()
+        with hold["lock"]:
+            sent = [
+                t
+                for t in hold["own_stops"].get(robot, [])
+                if now - t <= OWN_STOP_ECHO_S
+            ]
+            own = bool(sent)
+            if sent:
+                sent.pop(0)
+            hold["own_stops"][robot] = sent
+        return own
 
     def _replan_decision_callback(self, msg: String) -> None:
-        decision = msg.data.strip().lower()
+        """The operator's answer, JSON {id, decision}. Only an answer to the
+        question asked now counts."""
+        try:
+            data = json.loads(msg.data)
+            qid, decision = str(data["id"]), str(data["decision"]).strip().lower()
+        except Exception:
+            self.get_logger().warning(
+                f"replan decision {msg.data!r} ignored: not JSON with id and decision"
+            )
+            return
         if decision not in ("confirm", "decline"):
             self.get_logger().warning(f"unknown replan decision {msg.data!r}")
             return
-        held = self._drop_held_replan(f"{decision}d by the operator")
-        if held is None:
-            self.get_logger().info(f"replan {decision}: no replan is waiting")
-        elif decision == "confirm":
-            self._request_replan(held["reason"])
+        hold = self._hold_state()
+        with hold["lock"]:
+            question = hold["question"]
+            if question is None or question["id"] != qid:
+                now = question["id"][:8] if question else "none"
+                self.get_logger().warning(
+                    f"replan {decision} for question {qid[:8]} ignored: the "
+                    f"question asked now is {now}"
+                )
+                return
+            hold["question"] = None
+            self._publish_question(None)
+        self.get_logger().info(
+            f"replan {decision}d by the operator (question {qid[:8]}): "
+            f"{question['reason']}"
+            + ("" if decision == "confirm" else "; nothing is sent")
+        )
+        if decision == "confirm":
+            # One request each: the goal manager reads the removed objects
+            # from one "scene changed: ..." reason at a time.
+            for reason in question["reasons"]:
+                self._request_replan(reason)
 
     def _reset_mission_state_callback(self, request, response):
         with self._world_lock:
@@ -960,9 +1155,9 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 f"the new plan of {self._planning_goal!r}"
             )
         running = {**kept, **plan_dict}
-        held = getattr(self, "_held_replan", None)
-        if held is not None and set(plan_dict) & set(held["robots"]):
-            self._drop_held_replan("dropped: a new plan was made for its robots")
+        # Robots given a new plan are held no more; the others stay held.
+        if hasattr(self, "_release_held"):  # a stand-in node holds nothing
+            self._release_held(plan_dict, "given a new plan")
         # What these plans act on, for judging later scene changes.
         with self._plan_lock:
             self._running_plans = running
@@ -1174,6 +1369,17 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             finished = sent["path"] is not None and sent["reached"] >= sent["steps"] - 1
             if finished:
                 self._plan_over(robot)
+            # A robot held for the operator waits, it does not stall: its time
+            # without progress starts once it is let go. A held Spot is
+            # reported as progress, so the goal manager does not stall it.
+            held = not finished and self._is_held(robot)
+            ping = False
+            if held:
+                sent["last_progress"] = now
+                last = sent.get("held_reported")
+                ping = last is None or now - last >= HELD_PROGRESS_EVERY_S
+                if ping:
+                    sent["held_reported"] = now
             stalled = (
                 not finished
                 and self._progress_timeout_s > 0
@@ -1198,7 +1404,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         if sent["path"] is not None and (advanced or finished or stalled):
             status = "done" if finished else "stalled" if stalled else "progress"
             self._publish_path_status(robot, sent, status)
-        elif sent["path"] is None and moved:
+        elif sent["path"] is None and (moved or ping):
             # A Spot reports actions, but not during one: say it is moving.
             self._publish_path_status(robot, sent, "progress")
         if stalled:
