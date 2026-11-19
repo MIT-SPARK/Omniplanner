@@ -67,6 +67,11 @@ class WorldState:
     placed_by: Dict[str, Set[str]] = field(default_factory=dict)
     # Robots with no arm or gaze (a Husky): they cannot inspect, pick or place.
     cannot_manipulate: Set[str] = field(default_factory=set)
+    # {robot -> platform}, e.g. {"gauss": "husky", "euclid": "spot"}. A
+    # platform may avoid some places (a Husky: those marked {"curb": true});
+    # see PLATFORM_AVOIDS in dsg_pddl_grounding_multirobot. A robot not listed
+    # goes anywhere.
+    platform: Dict[str, str] = field(default_factory=dict)
 
     def held_by(self, robot: str) -> List[str]:
         return list(self.holding.get(robot.lower(), []))

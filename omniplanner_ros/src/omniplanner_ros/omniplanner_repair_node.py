@@ -834,6 +834,12 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             for r in (getattr(self, "robot_adaptors", None) or {})
             if self._is_path_robot(r)
         }
+        # Each robot's platform: the planner decides what a platform avoids
+        # (a Husky: places marked {"curb": true}).
+        planning.platform = {
+            r.lower(): "husky" if self._is_path_robot(r) else str(a.robot_type).lower()
+            for r, a in (getattr(self, "robot_adaptors", None) or {}).items()
+        }
         release = {r: objs for r, objs in release.items() if r not in busy | outside}
         self._pending_release = release
         self._pending_busy = busy | outside

@@ -169,7 +169,8 @@ def test_distances_are_shortest_paths_in_decimetres():
     problem = _grounded(G, "(visited-object o1)").problem_str
     # hamilton starts at t0 (0, 0); o1 sits 0.22 m from place (8, 4): 12 m along the grid
     o1 = math.hypot(0.1, 0.2)
-    assert f"(= (distance t0 o1) {round((12 + o1) * 10) + 1})" in problem  # + one hop
+    # + one hop; m-any: the distances of a robot that drives on the whole graph
+    assert f"(= (distance m-any t0 o1) {round((12 + o1) * 10) + 1})" in problem
 
 
 def test_no_stops_on_the_way():
@@ -184,7 +185,9 @@ def test_no_stops_on_the_way():
     problem = _grounded(G, "(visited-object o1)").problem_str
     dist = {
         (a, b): int(d)
-        for a, b, d in re.findall(r"\(= \(distance (\w+) (\w+)\) (\d+)\)", problem)
+        for a, b, d in re.findall(
+            r"\(= \(distance m-any (\w+) (\w+)\) (\d+)\)", problem
+        )
     }
     place = re.search(r"\(object-in-place o1 (\w+)\)", problem).group(1)
     assert dist[("t0", "o1")] < dist[("t0", place)] + dist[(place, "o1")]
@@ -686,3 +689,144 @@ def test_pick_needs_no_inspect_by_default(scope, monkeypatch):
     plan = _plan(grid_dsg(), "(holding euclid o0)", scope=scope)
     acts = [a[0] for a in plan.symbolic_actions]
     assert "pick-object" in acts and "inspect" not in acts
+
+
+# ---------------------------------------------------------------------------
+# a Husky's mobility class: a husky avoids curbs
+# ---------------------------------------------------------------------------
+
+# gauss is a Husky: it avoids places whose metadata marks them as a curb
+GAUSS_IS_A_HUSKY = WorldState(
+    cannot_manipulate={"gauss"}, platform={"hamilton": "spot", "gauss": "husky"}
+)
+BOTH = {"hamilton": np.array([0.0, 0.0]), "gauss": np.array([0.0, 0.0])}
+
+
+def _mark_curb(G, indices):
+    for i in indices:
+        node = G.get_node(spark_dsg.NodeSymbol("t", i).value)
+        node.attributes.metadata.set({"curb": True})
+
+
+def curb_dsg(long_way=True):
+    """corridors_dsg, with the short connector at x = 0 marked as a curb (a Spot
+    walks over it, a Husky cannot); with long_way=False the long connector at
+    x = 9 too, so a Husky cannot leave the y = 0 row."""
+    G, idx = corridors_dsg()
+    curb = [(0, y) for y in (1, 2, 3)]
+    if not long_way:
+        curb += [(9, y) for y in (1, 2, 3)]
+    _mark_curb(G, [idx[xy] for xy in curb])
+    return G, idx
+
+
+def _near_the_curb(path):
+    return min(np.linalg.norm(np.asarray(p)[:2] - [0.0, 2.0]) for p in path) < 0.9
+
+
+def test_a_husky_is_given_its_own_distances():
+    G, idx = curb_dsg()
+    start, target = f"t{idx[(0, 0)]}", f"t{idx[(0, 4)]}"
+    problem = _grounded(
+        G, f"(visited-place {target})", robots=BOTH, world_state=GAUSS_IS_A_HUSKY
+    ).problem_str
+    assert "(mobility-of hamilton m-any)" in problem
+    assert "(mobility-of gauss m-husky)" in problem
+    # 4 m over the curb; 9 + 4 + 9 m around it (decimetres, + one hop)
+    assert f"(= (distance m-any {start} {target}) 41)" in problem
+    assert f"(= (distance m-husky {start} {target}) 221)" in problem
+
+
+def test_a_map_without_curbs_changes_nothing():
+    G, idx = corridors_dsg()
+    grounded = _grounded(
+        G, f"(visited-place t{idx[(0, 4)]})", robots=BOTH, world_state=GAUSS_IS_A_HUSKY
+    )
+    assert "(mobility-of gauss m-any)" in grounded.problem_str
+    assert "m-husky" not in grounded.problem_str
+    assert grounded.robot_layer_planners == {}
+
+
+def test_a_robot_of_a_platform_with_nothing_to_avoid_goes_anywhere():
+    G, idx = curb_dsg()
+    spots = WorldState(platform={"hamilton": "spot", "gauss": "spot"})
+    problem = _grounded(
+        G, f"(visited-place t{idx[(0, 4)]})", robots=BOTH, world_state=spots
+    ).problem_str
+    assert "(mobility-of gauss m-any)" in problem and "m-husky" not in problem
+
+
+def test_each_robot_s_hop_is_expanded_on_its_own_graph(monkeypatch):
+    """The same hop, start to target, as a path: the Spot's over the curb, the
+    Husky's around it. (A canned plan: this needs no fast-downward.)"""
+    import dsg_pddl.dsg_pddl_planning as planning
+
+    G, idx = curb_dsg()
+    start, target = f"t{idx[(0, 0)]}", f"t{idx[(0, 4)]}"
+    monkeypatch.setattr(
+        planning,
+        "solve_pddl",
+        lambda problem: [
+            ("goto-poi", "hamilton", start, target, "m-any"),
+            ("goto-poi", "gauss", start, target, "m-husky"),
+        ],
+    )
+    plan = _plan(G, f"(visited-place {target})", robots=BOTH, world_state=GAUSS_IS_A_HUSKY)
+    # the mobility class is not part of the action a robot is given
+    assert plan.symbolic_actions == [
+        ("goto-poi", "hamilton", start, target),
+        ("goto-poi", "gauss", start, target),
+    ]
+    spot, husky = plan.parameterized_actions
+    assert _near_the_curb(spot) and not _near_the_curb(husky)
+    assert f"t{idx[(9, 2)]}" in plan.traversed["gauss"]
+    assert f"t{idx[(9, 2)]}" not in plan.traversed["hamilton"]
+
+
+def test_a_spot_and_a_husky_take_different_paths_to_the_same_place():
+    G, idx = curb_dsg()
+    target = f"t{idx[(0, 4)]}"
+    spot = _plan(
+        G, f"(visited-place-by hamilton {target})", robots=BOTH, world_state=GAUSS_IS_A_HUSKY
+    )
+    husky = _plan(
+        G, f"(visited-place-by gauss {target})", robots=BOTH, world_state=GAUSS_IS_A_HUSKY
+    )
+    assert _travel(spot) < 6 and _travel(husky) > 20
+    assert any(_near_the_curb(p) for p in spot.parameterized_actions)
+    assert not any(_near_the_curb(p) for p in husky.parameterized_actions)
+
+
+def test_the_spot_is_sent_where_the_husky_would_have_to_go_around():
+    G, idx = curb_dsg()
+    plan = _plan(
+        G, f"(visited-place t{idx[(0, 4)]})", robots=BOTH, world_state=GAUSS_IS_A_HUSKY
+    )
+    assert {a[1] for a in plan.symbolic_actions} == {"hamilton"}
+
+
+def test_a_place_beyond_a_curb_is_refused_with_the_reason():
+    G, idx = curb_dsg(long_way=False)
+    target = f"t{idx[(0, 4)]}"
+    grounded = _grounded(
+        G, f"(visited-place-by gauss {target})", robots=BOTH, world_state=GAUSS_IS_A_HUSKY
+    )
+    assert f"gauss cannot reach {target}: a husky avoids curbs" in grounded.failure_hint
+    assert f"(connected m-husky t{idx[(0, 0)]} {target})" not in grounded.problem_str
+    # a Spot does not avoid curbs: the same place is no trouble for it
+    assert not _grounded(
+        G, f"(visited-place-by hamilton {target})", robots=BOTH, world_state=GAUSS_IS_A_HUSKY
+    ).failure_hint
+    with pytest.raises(Exception, match=f"gauss cannot reach {target}"):
+        make_plan(grounded, G)
+
+
+def test_a_curb_itself_is_off_limits_to_a_husky():
+    G, idx = curb_dsg()
+    curb = f"t{idx[(0, 2)]}"
+    grounded = _grounded(
+        G, f"(visited-place-by gauss {curb})", robots=BOTH, world_state=GAUSS_IS_A_HUSKY
+    )
+    assert f"gauss cannot reach {curb}" in grounded.failure_hint
+    assert f"(connected m-husky t{idx[(0, 0)]} {curb})" not in grounded.problem_str
+    assert f"(connected m-any t{idx[(0, 0)]} {curb})" in grounded.problem_str

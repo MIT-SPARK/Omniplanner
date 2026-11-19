@@ -117,6 +117,13 @@ def make_plan(grounded_problem: GroundedPddlProblem, map_context: Any) -> PddlPl
         layer_planner = layer_planner.restricted_to_components(start_positions)
     last_pose = np.zeros(2)
     multirobot = "multirobot" in grounded_problem.domain.domain_name
+    if multirobot:
+        # (goto-poi robot from to mobility): the mobility class only picks the
+        # graph the hop was costed on; what is driven is (goto-poi robot from to)
+        plan = [p[:4] if p[0] == "goto-poi" else p for p in plan]
+    # Robots whose platform avoids some places (a Husky: curbs): each one's
+    # hops are expanded on its own graph, the one its distances came from.
+    robot_planners = getattr(grounded_problem, "robot_layer_planners", None) or {}
     # Multi-robot plans interleave the robots' actions: each robot's next action
     # starts where that robot is, not where the previous action left another one.
     last_poses = {}
@@ -130,14 +137,17 @@ def make_plan(grounded_problem: GroundedPddlProblem, map_context: Any) -> PddlPl
         match p[0]:
             case "goto-poi":
                 if multirobot:
+                    own = robot_planners.get(p[1])
                     path, last_pose = parameterize_goto_poi_multirobot(
-                        layer_planner, grounded_problem.symbols, p
+                        own or layer_planner, grounded_problem.symbols, p
                     )
                     if grounded_planner is not None:
                         a, b = (grounded_problem.symbols[x].position for x in p[2:4])
                         traversed.setdefault(p[1], set()).update(
                             spark_dsg.NodeSymbol(n).str(True).lower()
-                            for n in grounded_planner.get_external_path_nodes(a, b)
+                            for n in (own or grounded_planner).get_external_path_nodes(
+                                a, b
+                            )
                         )
                 else:
                     path, last_pose = parameterize_goto_poi(

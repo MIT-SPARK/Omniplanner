@@ -3,7 +3,7 @@ import os
 import re
 import time
 from collections.abc import Mapping
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Set, Tuple
 
 import networkx as nx
 import numpy as np
@@ -21,6 +21,7 @@ from dsg_pddl.dsg_pddl_grounding import (
     generate_object_containment,
     generate_objects,
     generate_place_containment,
+    get_places_layer,
     goal_requires_full_scene,
     implicit_edges_from_layers,
     normalize_symbols,
@@ -430,7 +431,10 @@ def generate_dense_region_init_multirobot(
     connectivity = generate_dense_region_symbol_connectivity_multirobot(
         G, symbols_of_interest, robot_states, constraints=constraints
     )
-    connectivity_pddl = symbol_connectivity_to_pddl(connectivity)
+    # The full encoding has one graph: every robot drives on all of it.
+    connectivity_pddl = for_mobility(
+        symbol_connectivity_to_pddl(connectivity), ANY_MOBILITY
+    )
 
     initial_pddl: List[tuple] = [("=", ("total-cost",), 0)]
     initial_pddl += connectivity_pddl
@@ -444,6 +448,7 @@ def generate_dense_region_init_multirobot(
         symbols_of_interest, robot_states
     ).items():
         initial_pddl.append(("at-poi", robot_id, place))
+        initial_pddl.append(("mobility-of", robot_id, ANY_MOBILITY))
 
     return initial_pddl
 
@@ -462,9 +467,10 @@ def diagnose_unreachable_goal(goal_string, init_facts, symbols):
     """
     connected = set()
     for fact in init_facts:
+        # (connected <mobility> s t): reachable by some robot is reachable
         if fact and fact[0] == "connected" and len(fact) >= 3:
-            connected.add(fact[1])
-            connected.add(fact[2])
+            connected.add(fact[-2])
+            connected.add(fact[-1])
 
     # robots have no connectivity of their own (they stand on a place); a robot
     # id like spot1 is not an unreachable goal symbol
@@ -671,6 +677,17 @@ def generate_multirobot_region_pddl(
     # Build objects dict using shared generator and adding robots
     pddl_objects = generate_objects(symbols_of_interest)
     pddl_objects["robot"] = robot_ids
+    pddl_objects["mobility"] = [ANY_MOBILITY]
+    platform_of = _platforms(world_state)
+    held = sorted(r for r in robot_ids if _avoids_something(platform_of.get(r)))
+    if held:
+        logger.warning(
+            "The full scene encoding has one graph for every robot: %s may be "
+            "planned over places %s platform avoids (a quantified goal, or "
+            "scene_scope: full)",
+            ", ".join(held),
+            "its" if len(held) == 1 else "their",
+        )
     problem = PddlProblem(
         name="multi-robot-problem",
         domain="region-object-rearrangement-domain-multirobot-fd",
@@ -833,6 +850,165 @@ def _node_symbol_name(node_id):
     return spark_dsg.NodeSymbol(node_id).str(True).lower()
 
 
+# The mobility class of a robot that drives on the whole places graph.
+ANY_MOBILITY = "m-any"
+
+# What each platform cannot drive over: metadata labels on a mesh place. A place
+# marked {"curb": true} is avoided by every Husky. A platform not listed (a Spot)
+# drives on the whole graph.
+PLATFORM_AVOIDS = {"husky": ("curb",)}
+
+
+def for_mobility(facts, mobility):
+    """Connectivity facts as one mobility class's: (connected m s t),
+    (= (distance m s t) d)."""
+    out = []
+    for f in facts:
+        if f and f[0] == "connected":
+            out.append(("connected", mobility, *f[1:]))
+        elif f and f[0] == "=" and f[1][0] == "distance":
+            out.append(("=", ("distance", mobility, *f[1][1:]), f[2]))
+        else:
+            out.append(f)
+    return out
+
+
+def _platforms(world_state) -> Dict[str, str]:
+    """{robot -> platform}, lowercase, from the world state."""
+    return {
+        str(r).lower(): str(p).lower()
+        for r, p in (getattr(world_state, "platform", None) or {}).items()
+    }
+
+
+def _avoids_something(platform) -> bool:
+    return bool(PLATFORM_AVOIDS.get(platform))
+
+
+def _plural(labels) -> str:
+    return " or ".join(lab if lab.endswith("s") else lab + "s" for lab in labels)
+
+
+def _is_marked(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes")
+    return bool(value)
+
+
+def places_labelled(G, labels) -> Set[int]:
+    """Node ids of the mesh places marked with any of ``labels`` in their
+    metadata, e.g. {"curb": true}. Empty on a map without the marks."""
+    out = set()
+    for node in get_places_layer(G).nodes:
+        try:
+            metadata = node.attributes.metadata.get()
+        except Exception:
+            continue
+        if any(_is_marked(metadata.get(label)) for label in labels):
+            out.add(node.id.value)
+    return out
+
+
+def mobility_planners(G, planner, robot_states, world_state):
+    """({robot -> mobility class}, {mobility class -> its places-graph planner}).
+
+    A robot drives on ``planner`` (class ``m-any``) unless its platform (the
+    world state's ``platform``) avoids some places (``PLATFORM_AVOIDS``): a map
+    built by Spots has curbs a Husky cannot drive over. Each such platform gets
+    a class of its own (``m-husky``), whose planner is ``planner`` without the
+    places it avoids, so both the distances its robots are given and the paths
+    their plans are expanded into stay off them. On a map with none of those
+    marks, the platform's robots stay in ``m-any``.
+
+    A class whose planner is None has no place left its robots can stand on;
+    they are given no way to move.
+    """
+    robots = [r for r, pose in robot_states.items() if pose is not None]
+    mobility = {r: ANY_MOBILITY for r in robots}
+    planners = {ANY_MOBILITY: planner}
+    platform_of = _platforms(world_state)
+    by_platform = {}
+    for r in robots:
+        if _avoids_something(platform_of.get(r)):
+            by_platform.setdefault(platform_of[r], []).append(r)
+    for platform, members in sorted(by_platform.items()):
+        labels = PLATFORM_AVOIDS[platform]
+        avoided = places_labelled(G, labels)
+        if not avoided:
+            logger.info(
+                "No place in the map is marked %s: a %s avoids nothing here",
+                " or ".join(labels),
+                platform,
+            )
+            continue
+        name = "m-" + re.sub(r"[^a-z0-9]+", "-", platform).strip("-")
+        for r in members:
+            mobility[r] = name
+        view = planner.without(avoided)
+        if not view.node_ids:
+            logger.warning(
+                "Every place a %s could use is marked %s: %s cannot move",
+                platform,
+                " or ".join(labels),
+                ", ".join(members),
+            )
+            planners[name] = None
+            continue
+        view = view.restricted_to_components(
+            [np.asarray(robot_states[r])[:2] for r in members]
+        )
+        planners[name] = view
+        logger.info(
+            "%s (%s) avoid%s the %d places marked %s (%d places reachable)",
+            ", ".join(members),
+            platform,
+            "s" if len(members) == 1 else "",
+            len(avoided),
+            " or ".join(labels),
+            len(view.node_ids),
+        )
+    return mobility, planners
+
+
+def _off_limits(G, planner, pois):
+    """The places among pois a mobility class may not use: those its graph
+    (``planner``) leaves out -- a place its platform avoids (a curb), or one that
+    can only be reached over such a place. A place of either kind would
+    otherwise be snapped to the nearest place the class can use, and look
+    reachable. Objects are not checked."""
+    return {
+        s.symbol
+        for s in pois
+        if s.layer == "place"
+        and pddl_symbol_to_node_symbol(G, s.symbol).value
+        not in planner.node_value_to_position
+    }
+
+
+def _avoid_hint(goal_string, mobility, reached, symbols, world_state):
+    """Why a goal that names a robot whose platform avoids some places may have
+    no plan: a target it is told to go to is such a place, or every way there
+    crosses one."""
+    platform_of = _platforms(world_state)
+    pois = {s.symbol for s in symbols if s.layer in ("place", "object")}
+    hints = []
+    for robot, name in sorted(mobility.items()):
+        if name == ANY_MOBILITY:
+            continue
+        told = re.findall(
+            rf"\(\s*[a-z-]+\s+{re.escape(robot)}\s+([a-z0-9_]+)", goal_string.lower()
+        )
+        lost = sorted({t for t in told if t in pois and t not in reached.get(name, ())})
+        if lost:
+            platform = platform_of.get(robot, "")
+            hints.append(
+                f"{robot} cannot reach {', '.join(lost)}: a {platform} avoids "
+                f"{_plural(PLATFORM_AVOIDS.get(platform, ()))}, and every way "
+                "there crosses one (or it is one)"
+            )
+    return "; ".join(hints)
+
+
 def constrained_places_planner(G, robot_states, constraints, by_name):
     """The places-graph planner a goal-relevant problem is measured and expanded on.
 
@@ -946,7 +1122,8 @@ def generate_goal_relevant_multirobot_pddl(
     with the runtime constraints applied. One ``goto-poi`` is then a whole
     route; ``make_plan`` expands it on the same graph (``layer_planner``).
 
-    Returns (problem string, symbols, failure hint, layer planner).
+    Returns (problem string, symbols, failure hint, layer planner,
+    {robot -> its own planner, for robots whose platform avoids some places}).
     """
     parsed_goal = lisp_string_to_ast(raw_pddl_goal_string)
     goal_pddl = simplify(parsed_goal)
@@ -964,12 +1141,33 @@ def generate_goal_relevant_multirobot_pddl(
     def select(name):
         selected.setdefault(name, by_name[name])
 
-    def nearest_place(xy):
-        return _node_symbol_name(planner.get_closest_node_id(np.asarray(xy)[:2]))
+    # Robots whose platform avoids some places (a Husky: curbs) drive on a graph
+    # of their own (see mobility_planners); everything else here is measured on
+    # the whole one.
+    mobility, planners = mobility_planners(G, planner, robot_states, world_state)
 
-    start_place = {r: nearest_place(robot_states[r]) for r in robot_ids}
-    for place in start_place.values():
+    def nearest_place(xy, on=planner):
+        return _node_symbol_name(on.get_closest_node_id(np.asarray(xy)[:2]))
+
+    start_place = {
+        r: nearest_place(robot_states[r], planners[mobility[r]] or planner)
+        for r in robot_ids
+    }
+    for r, place in start_place.items():
         select(place)
+        if mobility[r] != ANY_MOBILITY and planners[mobility[r]] is not None:
+            xy = np.asarray(robot_states[r])[:2]
+            off = float(
+                np.linalg.norm(planners[mobility[r]].get_closest_point(xy) - xy)
+            )
+            if off > START_SNAP_WARN_M:
+                logger.warning(
+                    "%s starts at %s, %.1f m from its pose: the nearest place "
+                    "its platform can use",
+                    r,
+                    place,
+                    off,
+                )
 
     held = set()
     if world_state is not None:
@@ -1080,22 +1278,30 @@ def generate_goal_relevant_multirobot_pddl(
 
     pois = [s for s in selected.values() if s.layer in ("place", "object")]
     init: List[tuple] = [("=", ("total-cost",), 0)]
-    D = (
-        planner.external_distance_matrix([s.position[:2] for s in pois])
-        if len(pois) > 1
-        else None
-    )
-    for i in range(len(pois)):
-        for j in range(i + 1, len(pois)):
-            s, t = pois[i].symbol, pois[j].symbol
-            if {s, t} & (forbidden_symbols | set(too_far)):
-                continue
-            if tuple(sorted([s, t])) in forbidden_edges or not np.isfinite(D[i, j]):
-                continue
-            d = int(round(D[i, j] * DISTANCE_SCALE)) + HOP_COST
-            init.append(("connected", s, t))
-            init.append(("=", ("distance", s, t), d))
-            init.append(("=", ("distance", t, s), d))
+    # One set of distances per mobility class in use, each on its own graph.
+    classes = sorted(set(mobility.values()))
+    reached = {name: set() for name in classes}
+    for name in classes:
+        on = planners[name]
+        if on is None or len(pois) < 2:
+            continue
+        D = on.external_distance_matrix([s.position[:2] for s in pois])
+        skip = forbidden_symbols | set(too_far)
+        if name != ANY_MOBILITY:
+            skip = skip | _off_limits(G, on, pois)
+        for i in range(len(pois)):
+            for j in range(i + 1, len(pois)):
+                s, t = pois[i].symbol, pois[j].symbol
+                if {s, t} & skip:
+                    continue
+                if tuple(sorted([s, t])) in forbidden_edges or not np.isfinite(D[i, j]):
+                    continue
+                d = int(round(D[i, j] * DISTANCE_SCALE)) + HOP_COST
+                init.append(("connected", name, s, t))
+                init.append(("=", ("distance", name, s, t), d))
+                init.append(("=", ("distance", name, t, s), d))
+                reached[name] |= {s, t}
+    init += [("mobility-of", r, mobility[r]) for r in robot_ids]
     init += [("object-in-place", o, p) for o, p in sorted(object_place.items())]
     init += [("place-in-region", p, r) for p, r in region_membership]
     init += [("at-poi", r, start_place[r]) for r in robot_ids]
@@ -1112,6 +1318,7 @@ def generate_goal_relevant_multirobot_pddl(
 
     pddl_objects = generate_objects(symbols)
     pddl_objects["robot"] = robot_ids
+    pddl_objects["mobility"] = classes or [ANY_MOBILITY]
     problem_str = PddlProblem(
         name="multi-robot-problem",
         domain="region-object-rearrangement-domain-multirobot-fd",
@@ -1130,7 +1337,24 @@ def generate_goal_relevant_multirobot_pddl(
     failure_hint = _failure_hint(
         raw_pddl_goal_string, init, symbols, robot_states, too_far, constraints
     )
-    return problem_str, symbols, failure_hint, planner
+    failure_hint = "; ".join(
+        filter(
+            None,
+            [
+                failure_hint,
+                _avoid_hint(
+                    raw_pddl_goal_string, mobility, reached, symbols, world_state
+                ),
+            ],
+        )
+    )
+    # the graph the goto hops of each robot with a class of its own are expanded on
+    robot_planners = {
+        r: planners[name]
+        for r, name in mobility.items()
+        if name != ANY_MOBILITY and planners[name] is not None
+    }
+    return problem_str, symbols, failure_hint, planner, robot_planners
 
 
 @dispatch
@@ -1160,7 +1384,7 @@ def ground_problem(
         logger.info("Additional task: leaving busy robots alone: %s", sorted(busy))
     # How much of the scene graph to encode (see DEFAULT_SCENE_SCOPE).
     scene_scope = getattr(domain, "scene_scope", None) or DEFAULT_SCENE_SCOPE
-    layer_planner = None
+    layer_planner, robot_planners = None, {}
     match domain.domain_name:
         # case "goto-object-domain-multirobot-fd":
         #     pddl_problem, symbols = generate_multirobot_inspection_pddl(
@@ -1171,7 +1395,7 @@ def ground_problem(
             scene_scope == "goal_relevant"
             and not goal_requires_full_scene(goal.pddl_goal)
         ):
-            pddl_problem, symbols, failure_hint, layer_planner = (
+            pddl_problem, symbols, failure_hint, layer_planner, robot_planners = (
                 generate_goal_relevant_multirobot_pddl(
                     dsg,
                     goal.pddl_goal,
@@ -1231,6 +1455,7 @@ def ground_problem(
             failure_hint,
             layer_planner,
             ANYTIME_SEARCH_S if layer_planner is not None else 0.0,
+            robot_planners,
         ),
     )
     for outer_name in valid_robot_names:

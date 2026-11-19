@@ -4,11 +4,13 @@
         region point-of-interest - object
         place dsg_object - point-of-interest
         robot - object
+        mobility - object
     )
 
     (:predicates
         (at-poi ?r - robot ?p - point-of-interest)
-        (connected ?s - point-of-interest ?t - point-of-interest)
+        (connected ?m - mobility ?s - point-of-interest ?t - point-of-interest)
+        (mobility-of ?r - robot ?m - mobility)
         (suspicious ?o - dsg_object)
         (at-object ?r - robot ?o - dsg_object)
         (at-place ?r - robot ?p - place)
@@ -38,7 +40,7 @@
     )
 
     (:functions
-        (distance ?s - point-of-interest ?t - point-of-interest)
+        (distance ?m - mobility ?s - point-of-interest ?t - point-of-interest)
         (total-cost)
     )
 
@@ -83,14 +85,16 @@
                 (visited-place-by ?r ?p))))
 
     (:action goto-poi
-        :parameters (?r - robot ?s - point-of-interest ?t - point-of-interest)
-        :precondition (and (at-poi ?r ?s) (or (connected ?s ?t)
-                                           (connected ?t ?s)))
+        :parameters (?r - robot ?s - point-of-interest ?t - point-of-interest ?m - mobility)
+        :precondition (and (at-poi ?r ?s)
+                           (mobility-of ?r ?m)
+                           (or (connected ?m ?s ?t)
+                               (connected ?m ?t ?s)))
         :effect (and (not (at-poi ?r ?s))
                      (at-poi ?r ?t)
                      (visited-poi ?t)
                      (visited-poi-by ?r ?t)
-                     (increase (total-cost) (distance ?s ?t))
+                     (increase (total-cost) (distance ?m ?s ?t))
         )
     )
 
