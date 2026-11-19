@@ -404,28 +404,40 @@ def test_a_new_plan_for_some_robots_lets_only_those_go():
     node._planning_goal = "(object-in-place o58 t3)"
     node.finalize_plans({"testbot_a": _carry()}, node.f_poses)
     left = _pending(node)
-    assert left["robots"] == ["testbot_b"] and left["id"] == q["id"]
+    # a new id: an answer for testbot_a (e.g. its card's goal) is not one for b
+    assert left["robots"] == ["testbot_b"] and left["id"] != q["id"]
     assert left["reasons"] == q["reasons"] and _replans(node) == []
 
 
-def test_a_new_goal_without_the_changed_object_answers_the_held_change():
+def test_a_new_goal_without_the_changed_object_asks_again():
+    """The new goal neither confirms nor declines: the mission may still have a
+    task on o58, so the operator is asked again (a new id), nothing replans."""
     node = _confirming(_node(_map()))
     _carrying(node)
     _scene(node, [_rm("O58")])
+    q = _pending(node)
     node._planning_goal = "(visited-place t3)"  # the console's new goal
     node.finalize_plans({"testbot_a": _visit("testbot_a", "n")}, node.f_poses)
-    assert _questions(node)[-1] == "" and _replans(node) == []
-    assert any("answered by the goal just planned" in m for _, m in node.f_logs)
+    again = _pending(node)
+    assert again["id"] != q["id"] and again["robots"] == ["testbot_a"]
+    assert again["reasons"] == q["reasons"] and _replans(node) == []
+    _decide(node, "confirm", again["id"])
+    (reason,) = _replans(node)
+    assert removed_symbols(reason) == {"o58"}
 
 
-def test_a_new_goal_still_naming_the_changed_object_replans_it():
+def test_a_new_goal_still_naming_the_changed_object_asks_again():
+    """No replan the operator did not confirm (it would drop the new goal's task
+    on o58): asked again."""
     node = _confirming(_node(_map()))
     _carrying(node)
     _scene(node, [_rm("O58")])
+    q = _pending(node)
     node._planning_goal = "(and (object-in-place o58 t3) (visited-place t3))"
     node.finalize_plans({"testbot_a": _carry()}, node.f_poses)
-    (reason,) = _replans(node)
-    assert removed_symbols(reason) == {"o58"} and _questions(node)[-1] == ""
+    assert _replans(node) == [] and _pending(node)["id"] != q["id"]
+    _decide(node, "confirm", q["id"])  # the old card's answer
+    assert _replans(node) == []
 
 
 def test_a_robot_whose_plan_ends_leaves_the_question():
@@ -436,7 +448,7 @@ def test_a_robot_whose_plan_ends_leaves_the_question():
     _done(node, "testbot_b", "FOLLOW", plan_id="v")
     _done(node, "testbot_b", "PICK", plan_id="v", obj="o60")  # finished
     assert _pending(node)["robots"] == ["testbot_a"]
-    assert _pending(node)["id"] == qid
+    assert _pending(node)["id"] != qid
     node._stop_seen("testbot_a")  # the operator stopped it
     assert _pending(node) is None
     _decide(node, "confirm", qid)

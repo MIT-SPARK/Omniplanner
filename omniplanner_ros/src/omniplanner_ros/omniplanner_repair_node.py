@@ -941,38 +941,37 @@ class OmniPlannerRepairRos(OmniPlannerRos):
 
     def _release_held(self, robots, why: str, goal=None) -> None:
         """These robots leave the question (a new plan, or their plan
-        ended). A question left with no robot is cleared; with goal (the goal
-        just planned) its changes whose objects that goal still names are
-        replanned, and the rest are answered by it."""
+        ended). A question left with no robot is cleared. What is left gets a
+        new id, so an answer given for the robots that left (a goal sent from
+        one robot's card) does not answer it for the others. A new goal
+        planned for every robot asked neither confirms nor declines the
+        changes (the mission may still have tasks on them): they are asked
+        again, with a new id."""
         hold = self._hold_state()
         with hold["lock"]:
             question = hold["question"]
             if question is None or not set(robots) & set(question["robots"]):
                 return
             left = [r for r in question["robots"] if r not in robots]
-            hold["question"] = {**question, "robots": left} if left else None
-            self._publish_question(hold["question"])
-            version, epoch = hold["map"]
+            again = not left and goal is not None
+            if again:
+                left = list(question["robots"])
+            hold["question"] = (
+                {**question, "id": uuid.uuid4().hex, "robots": left} if left else None
+            )
+            now = hold["question"]
+            self._publish_question(now)
+        if again:
+            self.get_logger().warning(
+                f"held replan {question['id'][:8]}: a new goal was planned for "
+                f"{', '.join(sorted(robots))}; asked again "
+                f"(question {now['id'][:8]})"
+            )
+            return
         self.get_logger().info(
             f"held replan {question['id'][:8]}: {', '.join(sorted(robots))} "
             f"left it ({why})" + ("" if left else "; nothing is held any more")
         )
-        if left or goal is None:
-            return
-        # Each part of a reason starts with the object it is about.
-        named = set(re.findall(r"[^\s()]+", goal.lower()))
-        parts = [
-            p for r in question["reasons"] for p in r[len(SCENE_LEAD) :].split("; ")
-        ]
-        still = [p for p in parts if p.split(" ", 1)[0] in named]
-        if len(still) < len(parts):
-            self.get_logger().info(
-                "held changes answered by the goal just planned: "
-                + "; ".join(p for p in parts if p not in still)
-            )
-        if still:
-            reason = SCENE_LEAD + "; ".join(still)
-            self._wait_for_map_then_replan(version, reason, epoch=epoch)
 
     def _replan_decision_callback(self, msg: String) -> None:
         """The operator's answer, JSON {id, decision}. Only an answer to the
