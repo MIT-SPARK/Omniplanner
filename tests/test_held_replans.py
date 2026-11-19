@@ -211,9 +211,9 @@ def test_a_failed_pick_is_replanned_at_once_during_a_hold():
     _two(node)
     _scene(node, [_rm("O58")])
     _done(node, "testbot_b", "PICK", plan_id="v", obj="o60", ok=False)
-    pick, held = _replans(node)  # the held change right after, not lost
-    assert "pick of o60 by testbot_b failed (attempt 1 of 2)" in pick
-    assert removed_symbols(held) == {"o58"} and _pending(node) is None
+    (reason,) = _replans(node)  # one request, the held change in it
+    assert reason.startswith("pick of o60 by testbot_b failed (attempt 1 of 2)")
+    assert removed_symbols(reason) == {"o58"} and _pending(node) is None
 
 
 def test_a_given_up_pick_is_not_replanned_and_leaves_the_question():
@@ -630,17 +630,28 @@ def test_an_edit_during_a_hold_carries_the_held_change():
     assert len(_replans(node)) == 1
 
 
-def test_a_cut_route_during_a_hold_sends_the_held_change_right_after():
+def test_a_cut_route_during_a_hold_carries_the_held_change():
     node = _confirming(_node(_map("e1", 4)))
     _carrying(node)
     node._note_map_state()
     _scene(node, [(MOVED, "O58", (2.0, 0.2), (5.0, 0.2))], version=4)
     node.dsg_last = _map("e1", 5, places={k: v for k, v in PLACES.items() if k != "t3"})
     node.dsg_callback(NS(full_update=True, layer_contents=None, header=None))
-    cut, held = _replans(node)
-    assert cut.startswith("map changed: ") and "t3" in cut
-    assert held.startswith("scene changed: ") and "o58 moved" in held
+    (reason,) = _replans(node)
+    assert reason.startswith("map changed: ") and "t3" in reason
+    assert "; o58 moved" in reason and "scene changed" not in reason
     assert _questions(node)[-1] == ""
+
+
+def test_a_cut_route_during_a_hold_of_a_removal_names_it_for_the_goal_manager():
+    node = _confirming(_node(_map("e1", 4)))
+    _carrying(node)
+    node._note_map_state()
+    _scene(node, [_rm("O58")], version=4)
+    node.dsg_last = _map("e1", 5, places={k: v for k, v in PLACES.items() if k != "t3"})
+    node.dsg_callback(NS(full_update=True, layer_contents=None, header=None))
+    (reason,) = _replans(node)
+    assert reason.startswith("map changed: ") and removed_symbols(reason) == {"o58"}
 
 
 def test_a_confirm_carries_a_change_still_waiting_for_its_map():
@@ -689,3 +700,74 @@ def test_a_new_goal_still_naming_the_removed_object_forwards_the_held_change():
     node.finalize_plans({"testbot_a": _carry()}, node.f_poses)
     (reason,) = _replans(node)
     assert removed_symbols(reason) == {"o58"} and _questions(node)[-1] == ""
+
+
+# ---------- review of 2be0f6f ----------
+
+
+def test_a_re_pause_that_misses_a_robot_asks_nothing_and_replans():
+    node = _confirming(_node(_map()))
+    _carrying(node)
+    _scene(node, [_rm("O58")])
+    _scene(node, [(MOVED, "O58", (2.0, 0.2), (5.0, 0.2))], version=5)  # waits
+    _decide(node, "decline")
+    node.f_pubs["/testbot_a/spot_executor_node/pause"].subscribers = 0
+    _map_arrives(node, 5)
+    assert _questions(node)[-1] == ""
+    (reason,) = _replans(node)
+    assert "o58 moved" in reason
+
+
+def test_a_husky_stop_heard_only_by_this_node_did_not_reach_it():
+    node = _confirming(_node(_map(), poses={"testhusky": np.zeros(4)}))
+    node._own_path_subs = {"testhusky"}  # its one subscriber: this node
+    node._planning_goal = "(visited-object testhusky o58)"
+    node.finalize_plans({"testhusky": _path((1, 0), (2, 0))}, node.f_poses)
+    node._plan_deps = {"o58": ("visit", (2.0, 0.2))}
+    _scene(node, [_rm("O58")])
+    (reason,) = _replans(node)
+    assert removed_symbols(reason) == {"o58"} and _questions(node) == []
+    node.robot_adaptors["testhusky"].plan_pub.subscribers = 2  # and phoenix
+    node.finalize_plans({"testhusky": _path((1, 0), (2, 0))}, node.f_poses)
+    node._plan_deps = {"o58": ("visit", (2.0, 0.2))}
+    _scene(node, [_rm("O58")])
+    assert _pending(node)["robots"] == ["testhusky"]
+
+
+def test_a_retried_last_pick_carries_the_held_change():
+    node = _confirming(_node(_map(), poses={"testbot_b": np.zeros(4)}))
+    node._planning_goal = "(and (holding testbot_b o60) (visited-object o58))"
+    node.finalize_plans({"testbot_b": _visit("testbot_b", "v")}, node.f_poses)
+    _scene(node, [_rm("O58")])
+    assert _pending(node)["robots"] == ["testbot_b"]
+    _done(node, "testbot_b", "FOLLOW", plan_id="v")
+    _done(node, "testbot_b", "PICK", plan_id="v", obj="o60", ok=False)  # its last
+    (reason,) = _replans(node)
+    assert reason.startswith("pick of o60 by testbot_b failed")
+    assert removed_symbols(reason) == {"o58"} and _questions(node)[-1] == ""
+
+
+def test_a_given_up_last_pick_still_drops_the_hold():
+    node = _confirming(_node(_map(), poses={"testbot_b": np.zeros(4)}))
+    node._planning_goal = "(and (holding testbot_b o60) (visited-object o58))"
+    node.finalize_plans({"testbot_b": _visit("testbot_b", "v")}, node.f_poses)
+    _scene(node, [_rm("O58")])
+    _done(node, "testbot_b", "FOLLOW", plan_id="v")
+    _done(
+        node, "testbot_b", "PICK", plan_id="v", obj="o60", ok=False,
+        note="operator_gave_up",
+    )  # fmt: skip
+    assert _replans(node) == [] and _questions(node)[-1] == ""
+
+
+def test_a_confirm_carries_an_edit_still_waiting_for_its_map():
+    node = _confirming(_node(_map()))
+    _two(node)
+    _scene(node, [_rm("O58")])
+    _scene(node, [_rm("O60", (1.0, 0.2))], source="console/map_edit", version=5)
+    assert _replans(node) == []  # the edit waits for its map
+    _decide(node, "confirm")
+    (reason,) = _replans(node)
+    assert removed_symbols(reason) == {"o58", "o60"}
+    _map_arrives(node, 5)
+    assert len(_replans(node)) == 1
