@@ -564,22 +564,25 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             plans, goals = dict(self._running_plans), dict(self._plan_goals)
         with self._world_lock:
             state = self.world_tracker.snapshot(self._current_dsg())
-        later = [c for c in changes if c.get("held")]
-        changes = [c for c in changes if not c.get("held")]
+        pub = getattr(self, "_pending_pub", None)
+        holding = bool(robots and pub and pub.get_subscription_count())
+        later = [c for c in changes if holding and c.get("held")]
+        changes = [c for c in changes if not (holding and c.get("held"))]
         affected = affecting_changes(
             changes, deps, goal, state, move_threshold_m=self._move_threshold_m
         )
-        held = (
-            later
-            and robots
-            and affecting_changes(
-                later, deps, goal, state, move_threshold_m=self._move_threshold_m
+        held = [  # (symbol, kind, reason), each change judged on its own
+            (sym, c["kind"], why)
+            for c in later
+            for sym, why in affecting_changes(
+                [c], deps, goal, state, move_threshold_m=self._move_threshold_m
             )
-        )
+        ]
         if held:
-            acting = self._acting({s for s, _ in held}, plans, goals) or robots
+            acting = self._acting({s for s, _, _ in held}, plans, goals) or robots
             if not self._ask_operator(acting, held, later, version, epoch, goal):
-                affected += held  # nobody listens: replanned at once, as on main
+                # nobody listens any more: replanned at once, as on main
+                affected += [(sym, why) for sym, _, why in held]
         if not affected and held:
             return
         if not affected:
@@ -595,7 +598,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             # Taken before a Husky's empty Path, seen back, can end the last
             # running plan (which clears the question), and kept waiting with
             # this edit: whichever request goes out first carries them.
-            token = self._wait_with(self._take_held(), version, epoch)
+            token = self._wait_with(*self._take_held(keys=True), version, epoch)
         self._wait_for_map_then_replan(version, reason, epoch=epoch, carried=token)
 
     @staticmethod
@@ -922,11 +925,10 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         self._pending_pub.publish(String(data=text))
 
     def _ask_operator(self, robots, held, changes, version, epoch, goal) -> bool:
-        """Ask about held = [(symbol, reason)]: appended to the question
+        """Ask about held = [(symbol, kind, reason)]: appended to the question
         under a new id, unless each was asked or declined already. False if
         nobody listens for the question. Judged against a goal replaced
         since, the changes are judged again."""
-        kinds = {(c.get("symbol") or "").lower(): c.get("kind") for c in changes}
         pub, hold = getattr(self, "_pending_pub", None), self._hold_state()
         with self._plan_lock, hold["lock"]:
             if not (pub and pub.get_subscription_count()):
@@ -942,16 +944,18 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                         self._change_settle_s, self._judge_changes
                     )
                 return True
-            known = set(hold["keys"]) | hold["declined"]
-            new = [(s, r) for s, r in held if (s, kinds.get(s)) not in known]
+            # asked, declined, or confirmed and waiting for its map
+            known = {*hold["keys"], *hold["declined"]}
+            known |= {k for w in hold["waiting"].values() for k in w[3]}
+            new = {(s, k): r for s, k, r in held if (s, k) not in known}
             if not new:
                 self.get_logger().info(
-                    f"already asked or declined: {sorted({s for s, _ in held})}"
+                    f"already asked or declined: {sorted({s for s, _, _ in held})}"
                 )
                 return True
-            hold["keys"] += [(s, kinds.get(s)) for s, _ in new]
+            hold["keys"] += list(new)
             old = hold["question"] or {"robots": [], "reasons": []}
-            reasons = old["reasons"] + [SCENE_LEAD + "; ".join(r for _, r in new)]
+            reasons = old["reasons"] + [SCENE_LEAD + r for r in new.values()]
             hold["question"] = question = {
                 "id": uuid.uuid4().hex,
                 "robots": sorted(set(old["robots"]) | set(robots)),
@@ -978,26 +982,32 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 hold["declined"] = set()
             if hold["question"] is None:
                 return
-            hold["question"], hold["keys"] = None, []
+            hold["question"], hold["keys"], hold["map"] = None, [], (0, None)
             self._publish_question(None)
         self.get_logger().info(f"held replan cleared: {why}")
 
-    def _take_held(self) -> list:
+    def _take_held(self, keys=False):
         """Every held reason (the question's, and those whose request still
-        waits for its map), held no more."""
+        waits for its map), held no more; with keys, and their keys."""
         hold = self._hold_state()
         with hold["lock"]:
-            question, waiting = hold["question"], hold["waiting"]
+            question, waiting, held = hold["question"], hold["waiting"], hold["keys"]
             hold["question"], hold["keys"], hold["waiting"] = None, [], {}
+            hold["map"] = (0, None)
             if question is not None:
                 self._publish_question(None)
-        return (question["reasons"] if question else []) + [
+        reasons = (question["reasons"] if question else []) + [
             w[0] for w in waiting.values()
         ]
+        return (
+            (reasons, held + [k for w in waiting.values() for k in w[3]])
+            if keys
+            else reasons
+        )
 
-    def _wait_with(self, reasons, version, epoch):
-        """Keep reasons waiting with a request for map version: its token
-        (None for no reasons)."""
+    def _wait_with(self, reasons, keys, version, epoch):
+        """Keep reasons (and their keys) waiting with a request for map
+        version: its token (None for no reasons)."""
         if not reasons:
             return None
         token, hold = uuid.uuid4().hex, self._hold_state()
@@ -1006,6 +1016,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 join_reasons(reasons[0], reasons[1:]),
                 version,
                 epoch,
+                list(keys),
             )
         return token
 
@@ -1030,6 +1041,12 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 return
             if not named & {s for s, _ in hold["keys"]}:
                 self._clear_question("the running goal names none of its objects")
+                return
+            pub = getattr(self, "_pending_pub", None)
+            if not (pub and pub.get_subscription_count()):  # as main would
+                version, epoch = hold["map"]
+                self._clear_question("nobody listens: replanning at once")
+                self._wait_for_map_then_replan(version, question["reason"], epoch=epoch)
                 return
             hold["question"] = {**question, "id": uuid.uuid4().hex, "t": time.time()}
             self._publish_question(hold["question"])
@@ -1062,15 +1079,17 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             if decision == "decline":
                 hold["declined"] |= set(hold["keys"])
                 hold["declined_goal"] = self._active_goal
-            hold["question"], hold["keys"] = None, []
-            self._publish_question(None)
             reason, token = question["reason"], uuid.uuid4().hex
             version, epoch = hold["map"]
+            keys = hold["keys"]
+            hold["question"], hold["keys"], hold["map"] = None, [], (0, None)
+            self._publish_question(None)
             if decision == "confirm":  # one request with those still waiting
-                for r, v, e in hold["waiting"].values():
+                for r, v, e, k in hold["waiting"].values():
                     reason = join_reasons(r, [reason])
                     version = max(version, v) if e == epoch else version
-                hold["waiting"] = {token: (reason, version, epoch)}
+                    keys = k + keys
+                hold["waiting"] = {token: (reason, version, epoch, keys)}
         self.get_logger().info(f"replan {decision}d by the operator: {reason}")
         if decision == "confirm":
             self._wait_for_map_then_replan(

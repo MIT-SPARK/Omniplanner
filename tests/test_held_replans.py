@@ -31,6 +31,7 @@ from omniplanner.plan_validity import ADDED, MOVED, REMOVED, removed_symbols
 repair = pytest.importorskip("omniplanner_ros.omniplanner_repair_node")
 
 GOAL2 = "(and (object-in-place o58 t4) (visited-object testbot_b o60))"
+SCENE = "scene changed: "
 QUESTION_KEYS = {"id", "robots", "reasons", "reason", "source", "stopped", "t"}
 
 
@@ -260,11 +261,11 @@ def test_an_added_object_asks_nothing():
     assert _questions(node) == [] and _replans(node) == []
 
 
-def test_no_running_plan_no_question():
+def test_no_running_plan_no_question_and_judged_as_on_main():
     node = _confirming(_node(_map()))
     node._active_goal = CARRY_GOAL  # a goal, but no plan running
     _scene(node, [_rm("O58")])
-    assert _questions(node) == [] and _replans(node) == []
+    assert _questions(node) == [] and len(_replans(node)) == 1
 
 
 # ---------- the question and the decision ----------
@@ -730,3 +731,64 @@ def test_a_new_plan_settles_the_question_under_the_plan_lock():
     node._goal_replanned = lambda: seen.append(node._plan_lock.locked()) or replanned()
     _carrying(node)
     assert seen == [True]
+
+
+# ---------- review of ba9a4b8 ----------
+
+
+def test_a_new_plan_with_nobody_listening_replans_the_held_change_at_once():
+    node = _confirming(_node(_map()))
+    _two(node)
+    _scene(node, [_rm("O58")])
+    node._pending_pub.subscribers = 0  # the console went away
+    node._planning_goal = "(object-in-place o58 t3)"
+    node.finalize_plans({"testbot_a": _carry()}, node.f_poses)
+    assert _questions(node)[-1] == ""
+    (reason,) = _replans(node)
+    assert removed_symbols(reason) == {"o58"}
+
+
+def test_a_repeated_report_while_the_confirm_waits_asks_nothing():
+    node = _confirming(_node(_map()))
+    _carrying(node)
+    _scene(node, [_rm("O58")], version=5)
+    _decide(node, "confirm")  # waits for map version 5
+    _scene(node, [_rm("O58")], version=5)  # change detection reports it again
+    assert _questions(node)[-1] == ""
+    _map_arrives(node, 5)
+    (reason,) = _replans(node)
+    assert reason.count("o58 removed") == 1
+
+
+def test_a_new_question_needs_only_its_own_map_version():
+    node = _confirming(_node(_map()))
+    _two(node)
+    _scene(node, [_rm("O58")], version=9)
+    _decide(node, "decline")
+    _scene(node, [_rm("O60", (1.0, 0.2))], version=1)
+    assert node._hold_state()["map"] == (1, "e1")
+    _decide(node, "confirm")
+    (reason,) = _replans(node)  # the map has version 1: no wait
+    assert removed_symbols(reason) == {"o60"}
+
+
+def test_with_nobody_listening_a_mixed_batch_is_judged_as_on_main():
+    node = _confirming(_node(_map()))
+    node._pending_pub.subscribers = 0
+    _two(node)
+    node._scene_changes_callback(_msg([_rm("O58")], "awcd/hamilton", 1))
+    _scene(node, [_rm("O60", (1.0, 0.2))], source="sget/chat")
+    (reason,) = _replans(node)  # one judgement, in the order reported
+    assert reason.index("o58") < reason.index("o60") and reason.count(SCENE) == 1
+
+
+def test_each_held_change_keeps_its_own_kind_and_reason():
+    node = _confirming(_node(_map()))
+    _carrying(node)
+    _scene(node, [_rm("O58"), (ADDED, "O58", None, (2.0, 0.2))])
+    q = _pending(node)
+    assert q["reasons"] == [
+        "scene changed: o58 removed, and the plan still has to pick it",
+        "scene changed: o58 added, and the plan still has to pick it",
+    ]
+    assert node._hold_state()["keys"] == [("o58", REMOVED), ("o58", ADDED)]
