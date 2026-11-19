@@ -44,7 +44,8 @@ adds:
   held change, and those still waiting for their map; decline sends
   nothing. A held change is never lost: any other replan carries it (in
   the same request when it is a scene change's, else right after), and so
-  does a new plan that leaves no robot held for it. A robot given a new plan, or
+  does a new plan that leaves no robot held for it, if its goal still names
+  the object (one that does not answers the change). A robot given a new plan, or
   whose plan ends, leaves the question (same id); a question left with no
   robot is cleared, and a further change makes a new question (new id). A
   change whose pause did not reach every robot is not held: it replans at
@@ -1028,7 +1029,19 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             else:
                 question = None
         if replan and lost:
-            self._request_replan(scene_reason(lost))
+            # Each part of a reason starts with the object it is about. The
+            # goal just planned answers a part whose object it no longer names
+            # (e.g. the console's new goal without the removed object).
+            goal = set(re.findall(r"[^\s()]+", (self._planning_goal or "").lower()))
+            parts = [p for r in lost for p in r.removeprefix(SCENE_LEAD).split("; ")]
+            still = [p for p in parts if p.split(" ", 1)[0] in goal]
+            if len(still) < len(parts):
+                self.get_logger().info(
+                    "held changes answered by the goal just planned: "
+                    + "; ".join(p for p in parts if p not in still)
+                )
+            if still:
+                self._request_replan(scene_reason(still))
         if question is None:
             return
         self.get_logger().info(

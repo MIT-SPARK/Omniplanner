@@ -669,3 +669,23 @@ def test_a_held_husky_is_listed_as_stopped():
     assert _pending(node)["stopped"] == ["testhusky"]
     node.finalize_plans({"testhusky": _path((1, 0), (3, 0))}, node.f_poses)
     assert _questions(node)[-1] == ""
+
+
+def test_a_new_goal_without_the_removed_object_answers_the_held_change():
+    node = _confirming(_node(_map()))
+    _carrying(node)
+    _scene(node, [_rm("O58")])
+    node._planning_goal = "(visited-place t3)"  # the console's new goal
+    node.finalize_plans({"testbot_a": _visit("testbot_a", "n")}, node.f_poses)
+    assert _questions(node)[-1] == "" and _replans(node) == []
+    assert any("answered by the goal just planned" in m for _, m in node.f_logs)
+
+
+def test_a_new_goal_still_naming_the_removed_object_forwards_the_held_change():
+    node = _confirming(_node(_map()))
+    _carrying(node)
+    _scene(node, [_rm("O58")])
+    node._planning_goal = "(and (object-in-place o58 t3) (visited-place t3))"
+    node.finalize_plans({"testbot_a": _carry()}, node.f_poses)
+    (reason,) = _replans(node)
+    assert removed_symbols(reason) == {"o58"} and _questions(node)[-1] == ""
