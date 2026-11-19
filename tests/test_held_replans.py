@@ -328,11 +328,21 @@ def test_decisions_without_the_questions_id_are_ignored():
 def test_a_confirm_carries_an_edit_still_waiting_for_its_map():
     node = _confirming(_node(_map()))
     _two(node)
+    _scene(node, [_rm("O60", (1.0, 0.2))], source="console/map_edit", version=5)
+    _scene(node, [_rm("O58")])  # asked while the edit waits for its map
+    _decide(node, "confirm")
+    assert _replans(node) == []  # the confirmed replan waits for it too
+    _map_arrives(node, 5)
+    (reason,) = _replans(node)
+    assert removed_symbols(reason) == {"o58", "o60"}
+
+
+def test_an_edit_waiting_for_its_map_takes_the_held_change_with_it():
+    node = _confirming(_node(_map()))
+    _two(node)
     _scene(node, [_rm("O58")])
     _scene(node, [_rm("O60", (1.0, 0.2))], source="console/map_edit", version=5)
-    assert _replans(node) == []  # the edit waits for its map
-    _decide(node, "confirm")
-    assert _replans(node) == []  # and so does the confirmed replan
+    assert _questions(node)[-1] == "" and _replans(node) == []
     _map_arrives(node, 5)
     (reason,) = _replans(node)
     assert removed_symbols(reason) == {"o58", "o60"}
@@ -465,3 +475,45 @@ def test_the_repair_node_tests_pass_with_confirm_replans_on(name, monkeypatch):
     if "monkeypatch" in inspect.signature(test).parameters:
         kwargs["monkeypatch"] = monkeypatch
     test(**kwargs)
+
+
+# ---------- review of 940b1db ----------
+
+
+def test_a_retried_last_pick_carries_the_held_change():
+    node = _confirming(_node(_map(), poses={"testbot_b": np.zeros(4)}))
+    node._planning_goal = "(and (holding testbot_b o60) (visited-object o58))"
+    node.finalize_plans({"testbot_b": _visit("testbot_b", "v")}, node.f_poses)
+    _scene(node, [_rm("O58")])
+    assert _pending(node)["robots"] == ["testbot_b"]
+    _done(node, "testbot_b", "FOLLOW", plan_id="v")
+    _done(node, "testbot_b", "PICK", plan_id="v", obj="o60", ok=False)  # its last
+    (reason,) = _replans(node)
+    assert reason.startswith("pick of o60 by testbot_b failed (attempt 1 of 2)")
+    assert removed_symbols(reason) == {"o58"} and _questions(node)[-1] == ""
+
+
+def test_an_edit_that_stops_a_held_husky_carries_the_held_change():
+    node = _confirming(_node(_map(), poses={"testhusky": np.zeros(4)}))
+    node._planning_goal = "(visited-place t2)"
+    node.finalize_plans({"testhusky": _path((1, 0), (2, 0))}, node.f_poses)
+    node._plan_deps = {"o58": ("visit", (2.0, 0.2)), "o59": ("visit", (3.0, 0.2))}
+    _scene(node, [_rm("O58")])
+    assert _pending(node)["robots"] == ["testhusky"]
+    _scene(node, [_rm("O59", (3.0, 0.2))], source="console/map_edit", version=5)
+    node._stop_seen("testhusky")  # its empty Path, seen back
+    _map_arrives(node, 5)
+    (reason,) = _replans(node)
+    assert removed_symbols(reason) == {"o58", "o59"}
+
+
+def test_a_confirmed_replan_waiting_for_its_map_is_sent_once():
+    node = _confirming(_node(_map(), poses={"testbot_b": np.zeros(4)}))
+    _two(node)
+    _scene(node, [_rm("O58")], version=5)
+    _decide(node, "confirm")  # waits for map version 5
+    _done(node, "testbot_b", "PICK", plan_id="v", obj="o60", ok=False)
+    (reason,) = _replans(node)  # the retry carries the confirmed change
+    assert reason.startswith("pick of o60") and removed_symbols(reason) == {"o58"}
+    _map_arrives(node, 5)
+    assert len(_replans(node)) == 1
