@@ -73,6 +73,7 @@ and the upstream ``plugin.on_plan_compiled`` hook handle the per-call work.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import uuid
 from typing import Optional
@@ -157,34 +158,53 @@ def last_waypoint_reached(near) -> Optional[int]:
     return int(idx[gaps[0]] if len(gaps) else idx[-1])
 
 
-def path_lengths(path, start=None) -> np.ndarray:
-    """How far along the path each waypoint lies, in metres, counted from the
-    robot's start when it is known (else from the first waypoint)."""
-    path = np.asarray(path, dtype=float).reshape(-1, 2)
-    if len(path) == 0:
-        return np.zeros(0)
-    first = 0.0 if start is None else float(np.hypot(*(path[0] - start)))
-    legs = np.hypot(*np.diff(path, axis=0).T) if len(path) > 1 else np.zeros(0)
-    return first + np.concatenate([[0.0], np.cumsum(legs)])
+# How far from the robot's track since the last waypoint it reached a waypoint it
+# skipped may lie, in visit radii: a robot rounds corners inside them.
+TRACK_TOLERANCE_RADII = 1.5
+# The track is kept at this spacing (metres), and at most this many points.
+TRACK_STEP_M = 0.2
+TRACK_MAX_POINTS = 4000
 
 
-# How much farther along its path than it has driven a robot can be, in visit
-# radii: it is counted at a waypoint from one radius before it, may have been
-# counted at the last one a radius late, and cuts corners.
-PATH_SLACK_RADII = 2.5
+def distance_to_track(points, track) -> np.ndarray:
+    """Each point's distance (metres, in the plane) to the polyline ``track``,
+    less the length of the nearest segment: between two pose updates the robot
+    may have driven any route about that long, not the chord (pose updates can
+    be sparse, or stop for a while). A robot standing still has short chords.
+    The first segment joins the waypoint the track starts at to the robot, not
+    two poses: it gets no such allowance."""
+    pts = np.asarray(points, dtype=float).reshape(-1, 2)
+    tr = np.asarray(track, dtype=float).reshape(-1, 2)
+    if len(tr) == 1:
+        return np.hypot(*(pts - tr[0]).T)
+    a, b = tr[:-1], tr[1:]
+    ab = b - a
+    ll = np.maximum((ab**2).sum(axis=1), 1e-12)
+    t = np.clip(((pts[:, None, :] - a[None]) * ab[None]).sum(axis=2) / ll, 0.0, 1.0)
+    proj = a[None] + t[..., None] * ab[None]
+    d = np.hypot(*(pts[:, None, :] - proj).transpose(2, 0, 1))
+    slack = np.sqrt(ll)
+    slack[0] = 0.0
+    return np.maximum(d - slack[None], 0.0).min(axis=1)
 
 
-def waypoints_in_range(along, reached, driven, radius) -> np.ndarray:
-    """Which of the waypoints after `reached` the robot can have come to,
-    having driven `driven` metres since it reached that one.
+def waypoints_passed_on_the_way(ahead_points, track, radius) -> np.ndarray:
+    """Which of the waypoints ahead the robot can be counted at: waypoint j
+    only if every waypoint before it (after the last one reached) lies along
+    the robot's track since then.
 
     A path that comes back over its own ground has a later waypoint at the
     spot the robot stands on. Standing there is not having driven the path to
-    it: a waypoint farther along the path than the robot has driven is out of
-    range, however near it is.
+    it: the waypoints between (the far end of an out-and-back) are nowhere
+    near where the robot has been, so that waypoint is out of reach, however
+    near it is. A waypoint skipped by cutting a corner lies along the track.
     """
-    base = along[reached] if reached >= 0 else 0.0
-    return along[reached + 1 :] - base <= driven + PATH_SLACK_RADII * radius
+    n = len(ahead_points)
+    if n == 0:
+        return np.zeros(0, dtype=bool)
+    on_track = distance_to_track(ahead_points, track) <= TRACK_TOLERANCE_RADII * radius
+    before_ok = np.concatenate([[True], np.cumprod(on_track[:-1]).astype(bool)])
+    return before_ok
 
 
 class OmniPlannerRepairRos(OmniPlannerRos):
@@ -356,7 +376,8 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 if sent is not None:
                     sent["last_progress"] = self._now_s()
                     if done >= sent["steps"]:
-                        self._plan_over(msg.robot_name)  # finished
+                        # finished; accomplished only if the last action succeeded
+                        self._plan_over(msg.robot_name, stopped=not msg.success)
         points = [(p.x, p.y) for p in msg.points]
         with self._world_lock:
             new = self.world_tracker.record(
@@ -416,8 +437,12 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         stop does not -- every replan stops a Husky first -- and neither does
         a pick the operator gave up."""
         goals = self.__dict__.setdefault("_visit_goals", {})
-        if robot in self._running_plans:
-            goal = self._plan_goals.get(robot, goals.get(robot.lower(), ("",))[0])
+        goal = next(
+            (g for r, g in self._plan_goals.items() if r.lower() == robot.lower()), None
+        )
+        if robot in self._running_plans and goal is not None:
+            # an empty plan (a robot left out of a replan) has no goal: it
+            # changes nothing about what the robot accomplished before
             goals[robot.lower()] = (goal, not stopped)
         plan = self._running_plans.pop(robot, None)
         self._plan_goals.pop(robot, None)
@@ -787,9 +812,19 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         with self._plan_lock:
             running = {r.lower() for r in getattr(self, "_running_plans", None) or {}}
             goals = self.__dict__.setdefault("_visit_goals", {})
+            plan_goals = {r.lower(): g for r, g in self._plan_goals.items()}
+            # running: a non-empty plan (an empty one, for a robot left out of a
+            # replan, has no goal and runs nothing)
+            running = {r for r in running if r in plan_goals}
             for r in running:  # mid-plan: its goal is the one it is running
-                goals[r] = (self._plan_goals.get(r, goals.get(r, ("",))[0]), False)
-            over = visits_to_forget(goals, running, pddl_goal, assigned)
+                goals[r] = (plan_goals[r], False)
+            fleet = {r.lower() for r in (getattr(self, "robot_adaptors", None) or {})}
+            fleet |= set(goals) | running
+            # a robot stopped short is given another goal only by a goal that
+            # names it (or limits the plan to it)
+            tokens = set(re.findall(r"[^\s()]+", (pddl_goal or "").lower()))
+            given = (assigned or set()) | (fleet & tokens)
+            over = visits_to_forget(goals, running, pddl_goal, given, fleet)
             for r in over:
                 goals.pop(r, None)
         with self._world_lock:
@@ -1024,12 +1059,12 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 "path": path,
                 "reached": -1,
                 "steps": len(plan.actions) if path is None else len(path),
-                # How far along its path each waypoint lies, and how far the
-                # robot has driven: see waypoints_in_range.
-                "along": None if path is None else path_lengths(path, start),
-                "at": start,
-                "driven": 0.0,
-                "driven_at_reached": 0.0,
+                # where the robot has been since the last waypoint it reached
+                # (see waypoints_passed_on_the_way): it starts at the path's
+                # start, which the planner put where the robot is
+                "track": None
+                if path is None or not len(path)
+                else [path[0]] + ([] if start is None else [start]),
             }
 
     def _progress_tick(self) -> None:
@@ -1059,25 +1094,27 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                     moved = True
                 path = sent["path"]
                 if path is not None and len(path):
-                    if sent["at"] is not None:
-                        sent["driven"] += float(np.hypot(*(xy - sent["at"])))
-                    sent["at"] = xy
+                    track = sent["track"]
+                    if np.hypot(*(xy - track[-1])) >= TRACK_STEP_M:
+                        track.append(xy)
+                        del track[: max(0, len(track) - TRACK_MAX_POINTS)]
                     radius = self.world_tracker.visited_radius_m
-                    ahead = np.hypot(*(path[sent["reached"] + 1 :] - xy).T)
-                    last = last_waypoint_reached(
-                        (ahead <= radius)
-                        & waypoints_in_range(
-                            sent["along"],
-                            sent["reached"],
-                            sent["driven"] - sent["driven_at_reached"],
-                            radius,
+                    rest = path[sent["reached"] + 1 :]
+                    near = np.hypot(*(rest - xy).T) <= radius
+                    if near.any():
+                        upto = int(np.flatnonzero(near)[-1]) + 1
+                        ok = np.zeros(len(rest), dtype=bool)
+                        ok[:upto] = waypoints_passed_on_the_way(
+                            rest[:upto], track + [xy], radius
                         )
-                    )
+                        last = last_waypoint_reached(near & ok)
+                    else:
+                        last = None
                     if last is not None:
                         reached = sent["reached"] + 1 + last
                         visited_points = path[sent["reached"] + 1 : reached + 1]
                         sent["reached"], sent["last_progress"] = reached, now
-                        sent["driven_at_reached"] = sent["driven"]
+                        sent["track"] = [path[reached], xy]
                         self._actions_done[robot] = reached
                         advanced = True
             finished = sent["path"] is not None and sent["reached"] >= sent["steps"] - 1

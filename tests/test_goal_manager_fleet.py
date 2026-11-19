@@ -299,18 +299,19 @@ def test_a_finished_visit_asked_for_again_is_planned_again(h):
     assert sent.goal.pddl_goal == "(visited-object-by gauss o3)"
     assert not _new_mission(sent)  # euclid is still running
     assert not any("already done" in t for t in h.texts)
-    assert "o3" not in h.node._visited()
+    assert "(visited-object-by gauss o3)" in h.node._revisit  # asked for again
 
 
 def test_a_placement_that_holds_is_not_planned_again_with_a_visit(h):
-    h.send("(and (visited-object o1) (object-in-place o58 t2260))")
+    """As on main: a goal that is not only robots' named visits, sent again
+    with nothing left to do, is already done."""
+    h.send("(and (visited-object-by euclid o1) (object-in-place o58 t2260))")
     h.plan(euclid=("pe", 1, ["o1"]), hamilton=("ph", 1, ["o2"]))
     h.done("euclid", "pe")
     h.node._goal_holds(["(object-in-place o58 t2260)"])
     h.goals.clear()
-    h.send("(and (visited-object o1) (object-in-place o58 t2260))")
-    (sent,) = h.goals
-    assert sent.goal.pddl_goal == "(visited-object o1)"
+    h.send("(and (visited-object-by euclid o1) (object-in-place o58 t2260))")
+    assert h.goals == [] and any("already done" in t for t in h.texts)
 
 
 def test_a_replan_is_not_a_new_mission(h):
