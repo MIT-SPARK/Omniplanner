@@ -565,7 +565,8 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         with self._world_lock:
             state = self.world_tracker.snapshot(self._current_dsg())
         pub = getattr(self, "_pending_pub", None)
-        holding = bool(robots and pub and pub.get_subscription_count())
+        # held only with a robot running a non-empty plan, to answer for it
+        holding = bool(goals and pub and pub.get_subscription_count())
         later = [c for c in changes if holding and c.get("held")]
         changes = [c for c in changes if not (holding and c.get("held"))]
         affected = affecting_changes(
@@ -579,7 +580,9 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             )
         ]
         if held:
-            acting = self._acting({s for s, _, _ in held}, plans, goals) or robots
+            acting = self._acting({s for s, _, _ in held}, plans, goals) or sorted(
+                goals
+            )
             if not self._ask_operator(acting, held, later, version, epoch, goal):
                 # nobody listens any more: replanned at once, as on main
                 affected += [(sym, why) for sym, _, why in held]

@@ -13,6 +13,12 @@ from types import SimpleNamespace as NS
 import numpy as np
 import pytest
 import test_willow_repair_node as W
+from robot_executor_interface.action_descriptions import (
+    ActionSequence,
+    Follow,
+    Pick,
+    Place,
+)
 from test_willow_repair_node import (
     CARRY_GOAL,
     PLACES,
@@ -792,3 +798,47 @@ def test_each_held_change_keeps_its_own_kind_and_reason():
         "scene changed: o58 added, and the plan still has to pick it",
     ]
     assert node._hold_state()["keys"] == [("o58", REMOVED), ("o58", ADDED)]
+
+
+# ---------- rig, 2026-11-19 step C ----------
+
+
+def _placed_then_picking():
+    """The goal came through testbot_a (an empty plan); testbot_b has placed
+    o58 and is about to pick o60: no action left depends on o58."""
+    f = lambda: Follow("map", np.array([[0.0, 0.0], [1.0, 0.0]]))  # noqa: E731
+    seq = ActionSequence("h", "testbot_b", [
+        f(), Place("map", "box", np.zeros(3), np.array([4.0, 0.0, 0.0]), "o58"),
+        f(), Pick("map", "box", np.zeros(3), np.array([1.0, 0.2, 0.0]), "o60"),
+        f(), Place("map", "box", np.zeros(3), np.array([4.0, 0.0, 0.0]), "o60"),
+    ])  # fmt: skip
+    node = _confirming(_node(_map(), poses={"testbot_b": np.zeros(4)}))
+    node._planning_goal = "(and (object-in-place o58 t4) (object-in-place o60 t4))"
+    node.finalize_plans(
+        {"testbot_a": ActionSequence("h", "testbot_a", []), "testbot_b": seq},
+        node.f_poses,
+    )
+    for action, obj in (("FOLLOW", ""), ("PLACE", "o58"), ("FOLLOW", "")):
+        _done(node, "testbot_b", action, plan_id="h", obj=obj)
+    return node
+
+
+def test_a_question_only_the_goal_names_lists_the_robot_running_it():
+    node = _placed_then_picking()
+    _scene(node, [_rm("O58", (4.0, 0.0))])
+    q = _pending(node)
+    assert "o58 removed, and the goal says" in q["reason"]
+    assert q["robots"] == ["testbot_b"]
+
+
+def test_with_only_empty_plans_running_nothing_is_held():
+    node = _confirming(_node(_map()))
+    node._planning_goal = CARRY_GOAL
+    node.finalize_plans(
+        {"testbot_a": _carry(), "testbot_b": ActionSequence("e", "testbot_b", [])},
+        node.f_poses,
+    )
+    node._plan_goals.clear()  # no robot runs a non-empty plan for a goal
+    node._active_goal = CARRY_GOAL
+    _scene(node, [_rm("O58")])
+    assert _questions(node) == [] and len(_replans(node)) == 1  # as on main
