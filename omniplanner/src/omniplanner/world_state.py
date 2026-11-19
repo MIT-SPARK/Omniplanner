@@ -226,6 +226,7 @@ def split_held(
 def goal_parts(pddl_goal: str) -> Set[str]:
     """The top-level conjuncts of a goal, lower case, spaces normalised."""
     text = " ".join((pddl_goal or "").lower().split())
+    text = re.sub(r"\(\s+", "(", re.sub(r"\s+\)", ")", text))
     if not text:
         return set()
     if not re.match(r"\(\s*and\b", text):
@@ -243,16 +244,13 @@ def goal_parts(pddl_goal: str) -> Set[str]:
     return parts
 
 
-def is_team_part(part: str) -> bool:
-    """A conjunct that leaves the robot open: any of its predicates is not a
-    ``-by`` one. It is accomplished by the team, not by one robot."""
-    heads = [
-        h for h in re.findall(r"\(\s*([\w-]+)", part) if h not in ("and", "or", "not")
-    ]
-    return any(not h.endswith("-by") for h in heads)
+def is_team_part(part: str, robots) -> bool:
+    """A conjunct that names no robot: the team accomplishes it, not one robot."""
+    names = {str(r).lower() for r in robots}
+    return not (set(re.findall(r"[\w-]+", part.lower())) & names)
 
 
-def visits_to_forget(goals, running, new_goal, planned_for=None) -> Set[str]:
+def visits_to_forget(goals, running, new_goal, given=(), robots=()) -> Set[str]:
     """Whose visits a plan for ``new_goal`` starts without.
 
     A robot's visits are the history of its goal: kept for as long as the goal
@@ -260,32 +258,36 @@ def visits_to_forget(goals, running, new_goal, planned_for=None) -> Set[str]:
     forgotten once it is.
 
     goals: {robot: (the goal its visits were made for, accomplished?)}
-    running: robots with a plan running now; planned_for: the robots the new
-    goal may give a plan (None: any).
+    running: robots with a plan running now; given: the robots the new goal
+    is for by name (or by use-robots); robots: every robot name, to tell a
+    team part (naming none) from a robot's own.
 
     * Running: kept.
     * Accomplished: forgotten -- unless a part of its goal that names no robot
       is still being worked on by a running robot. That part is the team's,
       and the team has not accomplished it.
     * Stopped short of its goal: kept while the new goal still asks for a part
-      of it (a replan, or the goal sent again). Forgotten when the robot is
-      planned for a goal that has none of it: that goal was dropped.
+      of it (a replan, or the goal sent again). Forgotten when the new goal
+      names the robot and has none of its old goal: that goal was dropped.
     """
     running = {r.lower() for r in running}
+    given = {r.lower() for r in given}
+    robots = {r.lower() for r in robots} | set(goals) | running
     new_parts = goal_parts(new_goal)
-    live_team = set()
-    for r in running:
-        if r in goals:
-            live_team |= {c for c in goal_parts(goals[r][0]) if is_team_part(c)}
     forget = set()
     for robot, (goal, accomplished) in goals.items():
-        if robot in running:
+        if robot in running or accomplished:
             continue
-        parts = goal_parts(goal)
-        if accomplished:
-            if not (parts & live_team):
-                forget.add(robot)
-        elif (planned_for is None or robot in planned_for) and not (parts & new_parts):
+        if robot in given and not (goal_parts(goal) & new_parts):
+            forget.add(robot)  # stopped short, and its goal was dropped
+    # the team's parts still being worked on: by a running robot, or by one
+    # stopped short of its goal (stopped for a replan) whose goal still stands
+    live_team = set()
+    for robot, (goal, accomplished) in goals.items():
+        if robot in running or (not accomplished and robot not in forget):
+            live_team |= {c for c in goal_parts(goal) if is_team_part(c, robots)}
+    for robot, (goal, accomplished) in goals.items():
+        if accomplished and robot not in running and not (goal_parts(goal) & live_team):
             forget.add(robot)
     return forget
 

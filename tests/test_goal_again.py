@@ -48,8 +48,6 @@ AGAIN = [
     ("(visited-object-by gauss o3)", ["o3"]),
     ("(visited-region-by gauss r2)", ["r2", "t7"]),
     ("(explored-region-by gauss r2)", ["r2", "t7", "t8"]),
-    ("(visited-place t5)", ["t5"]),
-    ("(visited-region r2)", ["r2", "t7"]),
     ("(and (visited-place-by gauss t5) (visited-place-by gauss t6))", ["t5", "t6"]),
     ("(or (visited-place-by gauss t5) (visited-place-by gauss t6))", ["t5"]),
 ]
@@ -67,18 +65,19 @@ def test_the_same_goal_again_is_planned_again_while_another_robot_works(
 
 
 def test_an_old_place_next_to_a_new_one_is_planned_with_it(h):
-    """gauss has been to t5. "Go to t5 and t9" is not "go to t9"."""
+    """As on main: "t5 and t9" with t5 done plans t9; only a goal made of
+    finished robots' named visits alone is "go again"."""
     _gauss_did(h, "(visited-place-by gauss t5)", ["t5"])
     h.send("(and (visited-place-by gauss t5) (visited-place-by gauss t9))")
     (sent,) = h.goals
-    assert "t5" in sent.goal.pddl_goal and "t9" in sent.goal.pddl_goal
+    assert sent.goal.pddl_goal == "(visited-place-by gauss t9)"
 
 
 def test_an_old_place_next_to_another_robots_new_task_is_planned_with_it(h):
     _gauss_did(h, "(visited-place-by gauss t5)", ["t5"])
     h.send("(and (visited-place-by gauss t5) (visited-object-by hamilton o2))")
     (sent,) = h.goals
-    assert "t5" in sent.goal.pddl_goal and "o2" in sent.goal.pddl_goal
+    assert sent.goal.pddl_goal == "(visited-object-by hamilton o2)"
 
 
 def test_a_replan_still_leaves_out_what_the_mission_has_done(h):
@@ -90,3 +89,38 @@ def test_a_replan_still_leaves_out_what_the_mission_has_done(h):
     h.node._replan_request_cb(String(data="a place on euclid's route was removed"))
     (again,) = h.goals
     assert "t5" not in again.goal.pddl_goal and "o1" in again.goal.pddl_goal
+
+
+def test_the_running_mission_sent_again_does_not_send_back_a_robot_that_finished(h):
+    """The console's "Replan same goal" after a scene change re-sends the
+    running mission: hamilton, done with its part, is not sent back to it."""
+    goal = "(and (visited-object-by hamilton o2) (visited-object-by euclid o5))"
+    h.send(goal)
+    h.plan(hamilton=("ph", 1, ["o2"]), euclid=("pe", 3, ["o5"]))
+    h.done("hamilton", "ph")
+    h.goals.clear()
+    h.send(goal)
+    (sent,) = h.goals
+    assert sent.goal.pddl_goal == "(visited-object-by euclid o5)"
+
+
+def test_a_finished_robots_goal_sent_again_after_the_mission_moved_on(h):
+    """hamilton's own goal, finished, sent again while euclid works on
+    something else: hamilton goes again."""
+    h.send("(visited-object-by hamilton o2)")
+    h.plan(hamilton=("ph", 1, ["o2"]))
+    h.done("hamilton", "ph")
+    h.send("(visited-object-by euclid o5)")
+    h.plan(euclid=("pe", 3, ["o5"]))
+    h.goals.clear()
+    h.send("(visited-object-by hamilton o2)")
+    (sent,) = h.goals
+    assert sent.goal.pddl_goal == "(visited-object-by hamilton o2)"
+
+
+def test_a_visit_no_robot_is_named_for_stays_done_while_the_fleet_works(h):
+    """As on main: a team visit sent again while robots are still on the
+    mission is already done; only a robot named for a visit goes again."""
+    _gauss_did(h, "(visited-place t5)", ["t5"])
+    h.send("(visited-place t5)")
+    assert h.goals == [] and any("already done" in t for t in h.texts)

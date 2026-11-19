@@ -521,6 +521,11 @@ class GoalManager(Node):
         # (failed, stalled) gave back: they need a new plan.
         self._mission: List[str] = []
         self._lost: Set[str] = set()
+        # robots whose latest plan ran to its end: their named visits may be made again
+        self._finished: Set[str] = set()
+        # named visits asked for again by the operator (see _visit_again): not
+        # done until their robot finishes again, whatever was achieved before
+        self._revisit: Set[str] = set()
         # {robot -> the conjuncts of the robot-scoped goal it was last given}:
         # a goal naming some robots replaces only theirs, so goals for
         # different robots compose; a goal for the whole team replaces all.
@@ -738,6 +743,7 @@ class GoalManager(Node):
             stamp=pending.stamp if pending else self._stamp,
         )
         self._robots[robot] = entry
+        self._finished.discard(robot)  # its latest plan is this one
         if entry.total == 0:
             self._finish(robot, "its new plan is empty")
             return
@@ -873,6 +879,7 @@ class GoalManager(Node):
     def _path_cb(self, robot: str, msg: Path) -> None:
         """A Husky's new Path. An empty one stops it: it is free, not busy."""
         self._paths[robot] = (len(msg.poses), self._now())
+        self._finished.discard(robot)  # its latest plan is this Path
         entry = self._robots.get(robot)
         if not msg.poses and entry is not None and not entry.tracked:
             self._drop(robot, "was sent an empty Path: it is idle")
@@ -906,12 +913,25 @@ class GoalManager(Node):
             self._log_robot(robot, entry, "is making progress again")
         if status == "done":
             self._finish(robot, "reached the end of its path")
+            poses, _ = self._paths.get(robot, (None, 0.0))
+            steps = data.get("steps")
+            if steps is not None and poses is not None and int(steps) != int(poses):
+                # a "done" for an earlier Path than the latest one sent: the latest
+                # plan has not finished, whatever this report credited
+                self._finished.discard(robot)
 
     def _finish(self, robot: str, why: str) -> None:
         """Every action of the robot's plan succeeded: what it covered is
         achieved, and its entry is cleared. Other robots' entries stay."""
         entry = self._robots.pop(robot)
         entry.status = DONE
+        if entry.coverage or entry.reached:
+            self._finished.add(robot)  # an empty plan accomplishes nothing
+        self._revisit = {
+            c
+            for c in self._revisit
+            if str((_parse_goal(c) or [None, None])[1]) != robot
+        }
         self._release(robot)
         for poi in entry.coverage | entry.reached:
             self._achieved[poi] = (*self._stamp, robot)
@@ -958,6 +978,7 @@ class GoalManager(Node):
         if entry is None:
             return
         entry.status = status
+        self._finished.discard(robot)  # its goal is not accomplished
         for poi in entry.reached:
             self._achieved[poi] = (*self._stamp, robot)
         open_again = [c for c in entry.conjuncts if not self._is_done(c)]
@@ -1078,6 +1099,7 @@ class GoalManager(Node):
                     since=self._now(), stamp=pending.stamp if pending else self._stamp
                 )
                 self._robots[robot] = entry
+                self._finished.discard(robot)
                 self._log_robot(robot, entry, "got a new plan (a Path)")
         if pending is not None:
             self._commit_plan(pending, robots)
@@ -1153,6 +1175,7 @@ class GoalManager(Node):
         self._lost -= set(conjuncts)
 
     def _drop(self, robot: str, why: str) -> None:
+        self._finished.discard(robot)  # stopped short: not accomplished
         entry = self._robots.pop(robot, None)
         if entry is not None:
             entry.status = PREEMPTED
@@ -1485,6 +1508,8 @@ class GoalManager(Node):
         self._achieved.clear()
         self._facts = {c: s for c, s in self._facts.items() if _is_a_placement(c)}
         self._lost = set()
+        self._finished = set()
+        self._revisit = set()
         self._mission = []
         self._standing = {}
 
@@ -1508,6 +1533,8 @@ class GoalManager(Node):
         """An achieved fact: a visit the fleet made (on any version of this
         map), or a fact the planner said holds on this very map."""
         c = conjunct.lower()
+        if c in self._revisit:
+            return False  # asked for again (_visit_again)
         if self._facts.get(c) == self._stamp:
             return True
         ast = _parse_goal(c)
@@ -1557,43 +1584,43 @@ class GoalManager(Node):
         return out
 
     def _visit_again(self, conjuncts) -> None:
-        """A visit is remembered so that a replan of the mission it was made
-        in does not make it twice -- not to refuse the operator who names the
-        place again. A finished visit is planned again when:
+        """A visit is remembered so that a replan of the goal it was made for
+        does not make it twice -- not to refuse the operator who sends a robot
+        that has accomplished its goal back to the same place.
 
-        * the goal names its robot (a ``-by`` visit) and that robot has
-          finished its goal: its visits were for that goal;
-        * or nothing in the goal is left to do: sent all the same, it means
-          go again.
-
-        A visit no robot is named for stays done while it is sent next to
-        open work: that is the team's mission sent again (to give a lost
-        robot's part to another), and its finished parts are not repeated.
-        What the planner found holding on this map (an object already in its
-        place) is a fact, and always stays done.
+        So a goal is planned again, as asked, when every part of it is a visit
+        named for a robot (``visited-...-by r``) that is done, and each such
+        robot's latest plan ran to its end and it is not running now: the
+        operator is asking those robots to go again. Every other goal is judged
+        exactly as before (done parts are left out; "already done" when nothing
+        is left). Nothing achieved is forgotten: those conjuncts are only
+        marked as asked for again (``_revisit``) until their robot finishes.
         """
-        held = {c for c in conjuncts if self._facts.get(c.lower()) == self._stamp}
-        done = [c for c in conjuncts if c not in held and self._is_done(c)]
-        all_done = bool(conjuncts) and len(done) + len(held) == len(conjuncts)
-        again = []
-        for c in done:
+        if not conjuncts:
+            return
+        running = {r for r, e in self._robots.items() if e.status in (RUNNING, STALLED)}
+        for c in conjuncts:
             ast = _parse_goal(c.lower())
             named = (
                 isinstance(ast, (list, tuple))
                 and len(ast) == 3
                 and str(ast[0]).endswith("-by")
+                and str(ast[0])[: -len("-by")].startswith("visited-")
             )
-            entry = self._robots.get(str(ast[1])) if named else None
-            working = entry is not None and entry.status in (RUNNING, STALLED)
-            if all_done or (named and not working):
-                again.append(c)
-        for c in again:
-            for poi in _conjunct_symbols(_parse_goal(c.lower())):
-                self._achieved.pop(poi, None)
-        if again:
-            self.get_logger().info(
-                f"{' '.join(again)} was done, and is asked for again: planning it again"
-            )
+            if (
+                not named
+                or self._facts.get(c.lower()) == self._stamp
+                or not self._is_done(c)
+            ):
+                return
+            robot = str(ast[1])
+            if robot not in self._finished or robot in running:
+                return
+        self._revisit |= {c.lower() for c in conjuncts}
+        self.get_logger().info(
+            f"{' '.join(conjuncts)}: done by robots that have accomplished their "
+            "goals, and asked for again: planning it again"
+        )
 
     def _decide(self, msg: ConstrainedPddlGoalMsg) -> Decision:
         """What the planner still has to do for this goal.
