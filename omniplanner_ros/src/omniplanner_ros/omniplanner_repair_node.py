@@ -39,8 +39,8 @@ adds:
   ``~/replan_pending``: "" when nothing is held, else JSON ``{id, robots,
   reasons, reason, source, t}``. ``~/replan_decision`` answers it with JSON
   ``{id, decision}`` ("confirm" or "decline"); a decision for another id, or
-  with none, is ignored. Confirm sends each reason as its own
-  ``~/replan_request``; decline sends nothing. A robot given a new plan, or
+  with none, is ignored. Confirm sends one ``~/replan_request`` naming every
+  held change; decline sends nothing. A robot given a new plan, or
   whose plan ends, leaves the question (same id); a question left with no
   robot is cleared, and a further change makes a new question (new id). A
   held robot is not flagged by the progress watchdog, and a held Spot is
@@ -1028,10 +1028,11 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             + ("" if decision == "confirm" else "; nothing is sent")
         )
         if decision == "confirm":
-            # One request each: the goal manager reads the removed objects
-            # from one "scene changed: ..." reason at a time.
-            for reason in question["reasons"]:
-                self._request_replan(reason)
+            # One request, one lead: the goal manager reads the removed
+            # objects from the parts after a single "scene changed: ".
+            lead = "scene changed: "
+            parts = [r.removeprefix(lead) for r in question["reasons"]]
+            self._request_replan(lead + "; ".join(parts))
 
     def _reset_mission_state_callback(self, request, response):
         with self._world_lock:

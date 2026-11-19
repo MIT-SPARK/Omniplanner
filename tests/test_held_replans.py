@@ -230,7 +230,9 @@ def test_a_given_up_pick_is_not_replanned_and_leaves_the_question():
 # ---------- the question ----------
 
 
-def test_each_reason_is_its_own_replan_request():
+def _confirmed_two_removals():
+    """A hold of two removed goal objects, in two questions, confirmed: the
+    one replan request it sent."""
     node = _confirming(_node(_map()))
     _two(node)
     _scene(node, [_rm("O58")])
@@ -242,9 +244,34 @@ def test_each_reason_is_its_own_replan_request():
     _decide(node, "confirm", first)  # the replaced question
     assert _replans(node) == []
     _decide(node, "confirm")
-    a, b = _replans(node)
-    assert removed_symbols(a) == {"o58"} and removed_symbols(b) == {"o60"}
+    (reason,) = _replans(node)
     assert _pending(node) is None
+    return reason
+
+
+def test_a_confirm_sends_one_replan_request_naming_every_removed_object():
+    reason = _confirmed_two_removals()
+    assert reason.count("scene changed: ") == 1
+    assert removed_symbols(reason) == {"o58", "o60"}
+
+
+def test_the_goal_manager_drops_every_removed_object_of_a_confirmed_hold(tmp_path):
+    pytest.importorskip("robot_executor_msgs.msg")
+    from goal_manager_harness import Harness
+    from std_msgs.msg import String
+
+    reason = _confirmed_two_removals()
+    h = Harness(tmp_path)
+    try:
+        h.send("(and (visited-object o58) (visited-object o60) (visited-place t1))")
+        h.plan(euclid=("pe", 3, []))
+        h.goals.clear()
+        h.node._replan_request_cb(String(data=reason))
+        (out,) = h.goals
+        goal = out.goal.pddl_goal
+        assert "o58" not in goal and "o60" not in goal and "t1" in goal
+    finally:
+        h.close()
 
 
 def test_decisions_without_the_questions_id_are_ignored():
