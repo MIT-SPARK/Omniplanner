@@ -43,7 +43,11 @@ adds:
   held change; decline sends nothing. A robot given a new plan, or
   whose plan ends, leaves the question (same id); a question left with no
   robot is cleared, and a further change makes a new question (new id). A
-  held robot is not flagged by the progress watchdog, and a held Spot is
+  change whose pause did not reach every robot is not held: it replans at
+  once. An empty Path for a held Husky is the hold's own stop: the Husky
+  stays held, and its plan judged, until a decline ends it. A change asked
+  after the operator answered pauses its robots again. A held robot is not
+  flagged by the progress watchdog, and a held Spot is
   reported as progress on its path_status, so the goal manager does not take
   it for stalled.
 * the map version this node plans on, latched on ``~/map_version``, so the
@@ -154,9 +158,6 @@ OPERATOR_GAVE_UP = "operator_gave_up"
 # A scene change from change detection (AWCD) is the one replan the operator
 # confirms (see confirm_replans).
 HELD_SOURCE_PREFIX = "awcd/"
-# A Husky's empty Path seen back within this long of this node sending it is
-# its own pause coming back, not a stop.
-OWN_STOP_ECHO_S = 5.0
 # How often a held Spot is reported as progress on its path_status.
 HELD_PROGRESS_EVERY_S = 10.0
 
@@ -473,18 +474,16 @@ class OmniPlannerRepairRos(OmniPlannerRos):
 
     # ------------- plan validity under scene changes -------------
 
-    def _plan_over(self, robot: str, stopped: bool = False, release=True) -> None:
+    def _plan_over(self, robot: str, stopped: bool = False) -> None:
         """A robot's plan finished or was stopped (call under _plan_lock): it
         is not watched any more, and no later scene change is held against it
-        or its goal. Unless release is false (this node's own stop of a
-        Husky, seen back) it leaves a held replan's question too.
+        or its goal. It leaves a held replan's question too.
 
         Only a plan that ran to its end accomplished its goal, which is when
         its robot's visits stop being remembered (see visits_to_forget). A
         stop does not -- every replan stops a Husky first -- and neither does
         a pick the operator gave up."""
-        if release:
-            self._release_held({robot}, "its plan is over")
+        self._release_held({robot}, "its plan is over")
         goals = self.__dict__.setdefault("_visit_goals", {})
         goal = next(
             (g for r, g in self._plan_goals.items() if r.lower() == robot.lower()), None
@@ -505,12 +504,15 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         self._active_goal = joined_goals(self._plan_goals.values())
 
     def _stop_seen(self, robot: str) -> None:
-        own = self._own_stop_seen(robot)
+        if self._is_path_robot(robot) and self._is_held(robot):
+            # An empty Path for a held Husky is the hold's stop (this node's
+            # own, seen back, or one sent since: it is stopped either way). It
+            # stays held and its plan stays judged, so a further change joins
+            # the question; a decline ends its plan.
+            return
         with self._plan_lock:
             running = robot in self._running_plans
-            # This node's own empty Path (a pause), seen back: the Husky stays
-            # one of the robots a held replan waits with.
-            self._plan_over(robot, stopped=True, release=not own)
+            self._plan_over(robot, stopped=True)
         if running:
             self.get_logger().info(
                 f"{robot} was stopped: its plan is over and is no longer watched"
@@ -585,7 +587,21 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         token = None
         if "held" in reasons:
             token = self._hold_until_asked(robots, later[-1].get("source", ""))
-        self._pause_robots(robots, "; ".join(reasons.values()))
+        reached = self._pause_robots(robots, "; ".join(reasons.values()))
+        if token is not None and set(robots) - set(reached):
+            # A robot the pause did not reach drives on: nothing to hold.
+            self.get_logger().warning(
+                f"not holding {reasons['held']!r}: the pause did not reach "
+                f"{', '.join(sorted(set(robots) - set(reached)))}; replanning"
+            )
+            with self._hold_state()["lock"]:
+                self._hold_state()["waits"].pop(token, None)
+            token = None
+            reasons["now"] = "; ".join(
+                [reasons["now"], reasons.pop("held").removeprefix("scene changed: ")]
+                if "now" in reasons
+                else [reasons.pop("held")]
+            )
         if "now" in reasons:
             self._wait_for_map_then_replan(version, reasons["now"], epoch=epoch)
         if token is not None:
@@ -616,10 +632,6 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 stop = Path()
                 stop.header.frame_id = self.dsg_frame or ""
                 stop.header.stamp = self.get_clock().now().to_msg()
-                with self._hold_state()["lock"]:  # its echo is not a stop
-                    self._hold_state()["own_stops"].setdefault(robot, []).append(
-                        self._now_s()
-                    )
                 adaptor.publish_plan(stop)
                 pub, done = getattr(adaptor, "plan_pub", None), stopped
                 with self._plan_lock:
@@ -887,9 +899,9 @@ class OmniPlannerRepairRos(OmniPlannerRos):
     def _hold_state(self) -> dict:
         """The held replans' state, made on first use: lock (an RLock; take
         it after _plan_lock, never before), question (the one asked, or
-        None), waits ({token: {robots, source}}: changes held until the map
-        has them, then asked) and own_stops ({robot: [times]}: this node's
-        empty Paths to a Husky)."""
+        None), waits ({token: {robots, source, decided}}: changes held until
+        the map has them, then asked) and decided (how many questions the
+        operator has answered)."""
         state = self.__dict__.get("_hold")
         if state is None:
             state = self.__dict__.setdefault(
@@ -898,7 +910,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                     "lock": threading.RLock(),
                     "question": None,
                     "waits": {},
-                    "own_stops": {},
+                    "decided": 0,
                 },
             )
         return state
@@ -918,13 +930,24 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         token = uuid.uuid4().hex
         hold = self._hold_state()
         with hold["lock"]:
-            hold["waits"][token] = {"robots": robots, "source": source}
+            hold["waits"][token] = {
+                "robots": robots,
+                "source": source,
+                "decided": hold["decided"],
+            }
         return token
 
     def _ask_operator(self, token: str, reason: str) -> None:
         """Ask the operator to confirm the held replan: a new question (new
         id) with the reasons and robots already asked about, and these."""
         hold = self._hold_state()
+        with hold["lock"]:
+            wait = hold["waits"].get(token)
+            answered = wait is not None and wait["decided"] != hold["decided"]
+        if answered:
+            # The operator answered a question about these robots since they
+            # were paused, and may have resumed them: they are held paused.
+            self._pause_robots(sorted(wait["robots"]), reason)
         with hold["lock"]:
             wait = hold["waits"].pop(token, None)
             if not wait or not wait["robots"]:
@@ -980,22 +1003,6 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 robot in w["robots"] for w in hold["waits"].values()
             )
 
-    def _own_stop_seen(self, robot: str) -> bool:
-        """An empty Path seen on a Husky's plan topic is this node's own (a
-        pause), coming back."""
-        hold, now = self._hold_state(), self._now_s()
-        with hold["lock"]:
-            sent = [
-                t
-                for t in hold["own_stops"].get(robot, [])
-                if now - t <= OWN_STOP_ECHO_S
-            ]
-            own = bool(sent)
-            if sent:
-                sent.pop(0)
-            hold["own_stops"][robot] = sent
-        return own
-
     def _replan_decision_callback(self, msg: String) -> None:
         """The operator's answer, JSON {id, decision}. Only an answer to the
         question asked now counts."""
@@ -1021,7 +1028,14 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 )
                 return
             hold["question"] = None
+            hold["decided"] += 1
             self._publish_question(None)
+        if decision == "decline":
+            # A held Husky was stopped with an empty Path: nothing resumes it.
+            with self._plan_lock:
+                for robot in question["robots"]:
+                    if self._is_path_robot(robot):
+                        self._plan_over(robot, stopped=True)
         self.get_logger().info(
             f"replan {decision}d by the operator (question {qid[:8]}): "
             f"{question['reason']}"
@@ -1376,7 +1390,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             held = not finished and self._is_held(robot)
             ping = False
             if held:
-                sent["last_progress"] = now
+                sent["last_progress"], sent["warned"] = now, False
                 last = sent.get("held_reported")
                 ping = last is None or now - last >= HELD_PROGRESS_EVERY_S
                 if ping:

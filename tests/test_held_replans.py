@@ -371,7 +371,7 @@ def test_a_husky_stopped_for_the_hold_stays_held():
     assert echoes == ["testhusky"] and _questions(node) == []
     for robot in echoes:
         node._stop_seen(robot)  # seen back before the map arrives
-    assert node._plan_robots == []  # as without a hold
+    assert node._plan_robots == ["testhusky"]  # still judged while held
     _map_arrives(node, 5)
     assert _pending(node)["robots"] == ["testhusky"]
 
@@ -390,17 +390,66 @@ def test_a_stop_of_a_held_robot_takes_it_out():
     assert _replans(node) == []
 
 
-def test_an_external_empty_path_takes_a_held_husky_out():
+HUSKY_GOAL = "(and (visited-object testhusky o58) (visited-object testhusky o59))"
+
+
+def _held_husky():
     node = _confirming(_node(_map(), poses={"testhusky": np.zeros(4)}))
-    _husky_echoing(node)
-    node._planning_goal = "(visited-object testhusky o58)"
+    echoes = _husky_echoing(node)
+    node._planning_goal = HUSKY_GOAL
     node.finalize_plans({"testhusky": _path((1, 0), (2, 0))}, node.f_poses)
-    node._plan_deps = {"o58": ("visit", (2.0, 0.2))}
+    node._plan_deps = {"o58": ("visit", (2.0, 0.2)), "o59": ("visit", (3.0, 0.2))}
     _scene(node, [_rm("O58")])
-    node._stop_seen("testhusky")  # its own, seen back
+    for robot in echoes:
+        node._stop_seen(robot)  # its own empty Path, seen back
+    echoes.clear()
+    return node
+
+
+def test_a_further_change_for_a_held_husky_joins_the_question():
+    node = _held_husky()
+    first = _pending(node)
+    _scene(node, [_rm("O59", (3.0, 0.2))])
+    q = _pending(node)
+    assert q["id"] != first["id"] and q["robots"] == ["testhusky"]
+    assert len(q["reasons"]) == 2
+    _decide(node, "confirm")
+    (reason,) = _replans(node)
+    assert removed_symbols(reason) == {"o58", "o59"}
+
+
+def test_any_empty_path_keeps_a_held_husky_held_and_a_decline_ends_its_plan():
+    node = _held_husky()
+    node._stop_seen("testhusky")  # late, or another node's: stopped either way
     assert _pending(node)["robots"] == ["testhusky"]
-    node._stop_seen("testhusky")  # the goal manager's
-    assert _pending(node) is None
+    assert node._plan_robots == ["testhusky"]
+    _decide(node, "decline")
+    assert _replans(node) == [] and node._plan_robots == []
+    assert node._active_goal == ""
+
+
+def test_a_robot_the_pause_did_not_reach_is_replanned_at_once():
+    node = _confirming(_node(_map()))
+    _two(node)
+    node.f_pubs["/testbot_b/spot_executor_node/pause"].subscribers = 0
+    _scene(node, [_rm("O58")])
+    (reason,) = _replans(node)
+    assert removed_symbols(reason) == {"o58"} and _questions(node) == []
+    assert any("did not reach testbot_b" in m for m in W._warnings(node))
+
+
+def test_a_change_asked_after_an_answer_pauses_its_robots_again():
+    node = _confirming(_node(_map()))
+    _carrying(node)
+    _scene(node, [_rm("O58")])
+    _scene(node, [(MOVED, "O58", (2.0, 0.2), (5.0, 0.2))], version=5)  # waits
+    assert _paused(node, "testbot_a") == [True, True]
+    _decide(node, "decline")  # the console resumes testbot_a
+    _map_arrives(node, 5)
+    assert _paused(node, "testbot_a") == [True, True, True]
+    q = _pending(node)
+    assert q["robots"] == ["testbot_a"] and len(q["reasons"]) == 1
+    assert "o58 moved" in q["reason"]
 
 
 def test_a_finished_robot_leaves_the_question():
@@ -460,6 +509,18 @@ def test_no_robots_no_question():
 def _statuses(node, robot):
     pub = node.f_pubs.get(f"/{robot}/omniplanner_node/path_status")
     return [json.loads(m.data) for m in pub.sent] if pub else []
+
+
+def test_a_stall_flagged_before_the_hold_is_cleared_while_held():
+    node = _confirming(_node(_map(), poses={"testbot_a": np.zeros(4)}))
+    _carrying(node)
+    node.f_clock["t"] = 61.0
+    node._progress_tick()
+    assert node.status_warnings() == ["testbot_a stalled on plan carry"]
+    _scene(node, [_rm("O58")])
+    node.f_clock["t"] = 62.0
+    node._progress_tick()
+    assert node.status_warnings() == []
 
 
 def test_a_held_robot_is_not_flagged_and_is_reported_as_progress():
