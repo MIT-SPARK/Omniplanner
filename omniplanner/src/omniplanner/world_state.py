@@ -223,6 +223,73 @@ def split_held(
     )
 
 
+def goal_parts(pddl_goal: str) -> Set[str]:
+    """The top-level conjuncts of a goal, lower case, spaces normalised."""
+    text = " ".join((pddl_goal or "").lower().split())
+    if not text:
+        return set()
+    if not re.match(r"\(\s*and\b", text):
+        return {text}
+    parts, depth, start = set(), 0, None
+    for i, ch in enumerate(text):
+        if ch == "(":
+            depth += 1
+            if depth == 2:
+                start = i
+        elif ch == ")":
+            if depth == 2 and start is not None:
+                parts.add(text[start : i + 1])
+            depth -= 1
+    return parts
+
+
+def is_team_part(part: str) -> bool:
+    """A conjunct that leaves the robot open: any of its predicates is not a
+    ``-by`` one. It is accomplished by the team, not by one robot."""
+    heads = [
+        h for h in re.findall(r"\(\s*([\w-]+)", part) if h not in ("and", "or", "not")
+    ]
+    return any(not h.endswith("-by") for h in heads)
+
+
+def visits_to_forget(goals, running, new_goal, planned_for=None) -> Set[str]:
+    """Whose visits a plan for ``new_goal`` starts without.
+
+    A robot's visits are the history of its goal: kept for as long as the goal
+    is not accomplished, so that no repair of it goes anywhere twice, and
+    forgotten once it is.
+
+    goals: {robot: (the goal its visits were made for, accomplished?)}
+    running: robots with a plan running now; planned_for: the robots the new
+    goal may give a plan (None: any).
+
+    * Running: kept.
+    * Accomplished: forgotten -- unless a part of its goal that names no robot
+      is still being worked on by a running robot. That part is the team's,
+      and the team has not accomplished it.
+    * Stopped short of its goal: kept while the new goal still asks for a part
+      of it (a replan, or the goal sent again). Forgotten when the robot is
+      planned for a goal that has none of it: that goal was dropped.
+    """
+    running = {r.lower() for r in running}
+    new_parts = goal_parts(new_goal)
+    live_team = set()
+    for r in running:
+        if r in goals:
+            live_team |= {c for c in goal_parts(goals[r][0]) if is_team_part(c)}
+    forget = set()
+    for robot, (goal, accomplished) in goals.items():
+        if robot in running:
+            continue
+        parts = goal_parts(goal)
+        if accomplished:
+            if not (parts & live_team):
+                forget.add(robot)
+        elif (planned_for is None or robot in planned_for) and not (parts & new_parts):
+            forget.add(robot)
+    return forget
+
+
 class WorldStateTracker:
     """Accumulates mission progress from executor action reports."""
 
@@ -266,6 +333,11 @@ class WorldStateTracker:
             theirs = set().union(*(by.pop(r, set()) for r in gone))
             done -= theirs - set().union(*by.values())
         return gone
+
+    def forget_unclaimed(self) -> None:
+        """Forget visits and inspections that are no robot's."""
+        self.visited &= set().union(*self.visited_by.values())
+        self.inspected &= set().union(*self.inspected_by.values())
 
     def record(
         self,

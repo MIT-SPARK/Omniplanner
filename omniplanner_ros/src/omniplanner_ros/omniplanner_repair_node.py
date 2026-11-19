@@ -101,6 +101,7 @@ from omniplanner.world_state import (
     new_mission,
     split_held,
     unavailable_robots,
+    visits_to_forget,
 )
 from omniplanner_msgs.msg import ConstraintList
 from rclpy.executors import MultiThreadedExecutor
@@ -385,7 +386,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                     if msg.plan_id and msg.plan_id == self._plan_ids.get(
                         msg.robot_name
                     ):
-                        self._plan_over(msg.robot_name)
+                        self._plan_over(msg.robot_name, stopped=True)
                 self.get_logger().warning(
                     f"pick of {obj} by {msg.robot_name} was given up by the "
                     "operator: not replanning; its plan is over"
@@ -410,11 +411,14 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         is not watched any more, and no later scene change is held against it
         or its goal.
 
-        A plan that ran to its end (or was given up) also ends what its visits
-        are remembered for: see world_state_for. A stop does not: every replan
-        stops a Husky first, and may stop a Spot."""
-        if not stopped and robot in self._running_plans:
-            self._visits_over = getattr(self, "_visits_over", set()) | {robot.lower()}
+        Only a plan that ran to its end accomplished its goal, which is when
+        its robot's visits stop being remembered (see visits_to_forget). A
+        stop does not -- every replan stops a Husky first -- and neither does
+        a pick the operator gave up."""
+        goals = self.__dict__.setdefault("_visit_goals", {})
+        if robot in self._running_plans:
+            goal = self._plan_goals.get(robot, goals.get(robot.lower(), ("",))[0])
+            goals[robot.lower()] = (goal, not stopped)
         plan = self._running_plans.pop(robot, None)
         self._plan_goals.pop(robot, None)
         self._dispatched.pop(robot, None)
@@ -779,36 +783,43 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         names them; a named one still puts down what it holds first.
         """
         dsg = self._current_dsg()
+        assigned = assigned_robots(constraints)
         with self._plan_lock:
             running = {r.lower() for r in getattr(self, "_running_plans", None) or {}}
-            over = getattr(self, "_visits_over", set()) - running
-            self._visits_over = set()
+            goals = self.__dict__.setdefault("_visit_goals", {})
+            for r in running:  # mid-plan: its goal is the one it is running
+                goals[r] = (self._plan_goals.get(r, goals.get(r, ("",))[0]), False)
+            over = visits_to_forget(goals, running, pddl_goal, assigned)
+            for r in over:
+                goals.pop(r, None)
         with self._world_lock:
-            # A visit counts for the plan it was made in, so that a replan of
-            # that plan does not make it again. Once a robot's plan has run to
-            # its end (or was given up) nothing is left to repair: a goal that
-            # sends it to the same place means go there again. A robot that
-            # was only stopped keeps its visits: it is stopped before every
-            # replan (a Husky always, with an empty Path), and what it did
-            # before the stop is what the replan must not repeat.
+            # A robot's visits are the history of its goal. They are kept
+            # until the goal is accomplished -- through every replan and stop
+            # on the way -- and forgotten for that robot once it is. A goal
+            # sent when every robot is idle (new-mission) needs nothing more:
+            # each robot has either accomplished its goal, or is being sent on
+            # with it, or is being given another.
             tracked = {*self.world_tracker.visited_by, *self.world_tracker.inspected_by}
+            if new_mission(constraints):
+                # every robot is idle: visits no goal accounts for go too
+                over |= tracked - set(goals)
             forgot = self.world_tracker.forget_visits(keep=tracked - over)
+            if new_mission(constraints):
+                self.world_tracker.forget_unclaimed()
             if forgot:
                 self.get_logger().info(
                     "forgot the visits and inspections of "
-                    f"{', '.join(sorted(forgot))}: their plans are finished"
-                )
-            if new_mission(constraints):
-                self.world_tracker.reset()
-                self.get_logger().info(
-                    "New mission: forgot earlier visits and inspections "
-                    "(holding, and who put each object down, are kept)"
+                    f"{', '.join(sorted(forgot))}: "
+                    + (
+                        "a new mission"
+                        if new_mission(constraints)
+                        else "goal accomplished or dropped"
+                    )
                 )
             state = self.world_tracker.snapshot(dsg)
         busy = unavailable_robots(constraints, state, goal_tokens(pddl_goal))
         # A use-robots goal is theirs alone: the rest of the fleet is left
         # alone, and keeps holding what it holds.
-        assigned = assigned_robots(constraints)
         outside = set()
         if assigned is not None:
             outside = {
