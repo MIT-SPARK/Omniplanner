@@ -30,6 +30,12 @@ adds:
   on ``executor_pause_topic``, so none drives on while the map catches up.
   The replanned sequence releases each robot; if no plan is found they stay
   stopped and the goal manager tells the operator.
+  With ``confirm_replans`` (the default) a replan for a scene change, a map
+  reload or a cut route waits for the operator: it is offered on the latched
+  ``~/replan_pending`` (JSON ``{reason, robots}``; "" when none is waiting) and
+  goes out when "confirm" arrives on ``~/replan_decision`` ("decline" drops
+  it). The robots stay paused meanwhile; a new plan replaces the waiting
+  replan. A failed pick is replanned at once.
 * the map version this node plans on, latched on ``~/map_version``, so the
   goal manager replans a goal the running plan covers once the map changed.
 * routes under map edits: each new map is checked against the part of every
@@ -300,6 +306,18 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                     10,
                 )
         self._replan_pub = self.create_publisher(String, "~/replan_request", 10)
+        self.declare_parameter("confirm_replans", True)
+        self._confirm_replans = bool(self.get_parameter("confirm_replans").value)
+        self._held_replan = None
+        self._pending_pub = self.create_publisher(
+            String,
+            "~/replan_pending",
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL),
+        )
+        self._pending_pub.publish(String(data=""))
+        self.create_subscription(
+            String, "~/replan_decision", self._replan_decision_callback, 10
+        )
         self.create_subscription(
             SceneChangeMsg, "~/scene_changes", self._scene_changes_callback, 10
         )
@@ -479,9 +497,10 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             robots = list(self._plan_robots)
         with self._world_lock:
             state = self.world_tracker.snapshot(self._current_dsg())
-        affected = affecting_changes(
-            changes, deps, goal, state, move_threshold_m=self._move_threshold_m
-        )
+        # A reported change counts as reported: AWCD reports no moves (a moved
+        # object comes as one removed and one added) and a map edit's move is
+        # deliberate. move_threshold_m is for a reload, which reports nothing.
+        affected = affecting_changes(changes, deps, goal, state, move_threshold_m=0.0)
         if not affected:
             self.get_logger().info(
                 f"scene change does not affect the plan: "
@@ -636,7 +655,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             return f"objects the plan acts on unchanged: {sorted(deps)}"
         reason = "map reloaded: " + "; ".join(r for _, r in affected)
         self._pause_robots(robots, reason)
-        self._request_replan(reason)
+        self._request_replan(reason, confirm=True)
         return f"objects affected: {[s for s, _ in affected]}"
 
     @staticmethod
@@ -694,7 +713,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             self._route = {}  # judged; the new plan brings its own route
         reason = "map changed: " + "; ".join(why for _, why in broken)
         self._pause_robots(robots, reason)
-        self._request_replan(reason)
+        self._request_replan(reason, confirm=True)
         return f"route affected: {reason}"
 
     def _publish_map_version(self) -> None:
@@ -747,7 +766,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 self.get_logger().warning(
                     f"map_version {version} not received after 10 s; replanning anyway"
                 )
-            self._request_replan(reason)
+            self._request_replan(reason, confirm=True)
             return
         timer = None
 
@@ -758,9 +777,41 @@ class OmniPlannerRepairRos(OmniPlannerRos):
 
         timer = self.create_timer(0.2, again)
 
-    def _request_replan(self, reason: str) -> None:
+    def _request_replan(self, reason: str, confirm: bool = False) -> None:
+        if confirm and getattr(self, "_confirm_replans", False):
+            with self._plan_lock:
+                robots = list(self._plan_robots)
+            held = getattr(self, "_held_replan", None)
+            if held is not None:  # one question: the reasons add up
+                reason = f"{held['reason']}; {reason}"
+                robots = sorted(set(held["robots"]) | set(robots))
+            self._held_replan = {"reason": reason, "robots": robots}
+            self.get_logger().warning(
+                f"plan invalidated: {reason}; the replan waits for the operator"
+            )
+            self._pending_pub.publish(String(data=json.dumps(self._held_replan)))
+            return
         self.get_logger().warning(f"plan invalidated: {reason}; requesting a replan")
         self._replan_pub.publish(String(data=reason))
+
+    def _drop_held_replan(self, why: str):
+        """The waiting replan, now no longer waiting (None if none was)."""
+        held, self._held_replan = getattr(self, "_held_replan", None), None
+        if held is not None:
+            self._pending_pub.publish(String(data=""))
+            self.get_logger().info(f"replan of {held['reason']!r} {why}")
+        return held
+
+    def _replan_decision_callback(self, msg: String) -> None:
+        decision = msg.data.strip().lower()
+        if decision not in ("confirm", "decline"):
+            self.get_logger().warning(f"unknown replan decision {msg.data!r}")
+            return
+        held = self._drop_held_replan(f"{decision}d by the operator")
+        if held is None:
+            self.get_logger().info(f"replan {decision}: no replan is waiting")
+        elif decision == "confirm":
+            self._request_replan(held["reason"])
 
     def _reset_mission_state_callback(self, request, response):
         with self._world_lock:
@@ -874,6 +925,9 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 f"the new plan of {self._planning_goal!r}"
             )
         running = {**kept, **plan_dict}
+        held = getattr(self, "_held_replan", None)
+        if held is not None and set(plan_dict) & set(held["robots"]):
+            self._drop_held_replan("dropped: a new plan was made for its robots")
         # What these plans act on, for judging later scene changes.
         with self._plan_lock:
             self._running_plans = running

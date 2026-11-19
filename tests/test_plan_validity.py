@@ -366,7 +366,7 @@ def test_a_cut_route_pauses_the_robots_and_replans():
         _current_dsg=lambda: NS(has_edge=lambda a, b: True),
         _mesh_places=lambda dsg: {"t1": 1, "t2": 2, "t4": 4},  # t3 deleted
         _pause_robots=lambda robots, why: paused.append(robots),
-        _request_replan=replans.append,
+        _request_replan=lambda reason, **_: replans.append(reason),
     )
     N._check_routes(node)
     assert paused == [["euclid", "hilbert"]] and "t3" in replans[0]

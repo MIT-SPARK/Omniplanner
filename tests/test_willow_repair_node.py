@@ -947,3 +947,101 @@ def test_a_given_up_pick_of_an_older_plan_leaves_the_running_one_alone():
         note="operator_gave_up",
     )  # fmt: skip
     assert _replans(node) == [] and "testbot_a" in node._running_plans
+
+
+# ---- 2026-11-19: a replan for a scene change waits for the operator ----
+
+
+def _confirming(node):
+    node._confirm_replans = True
+    node._held_replan = None
+    node._pending_pub = node.create_publisher(None, "~/replan_pending", 1)
+    return node
+
+
+def _pending(node):
+    sent = node.f_pubs["~/replan_pending"].sent
+    return json.loads(sent[-1].data) if sent and sent[-1].data else None
+
+
+def _decide(node, decision):
+    node._replan_decision_callback(NS(data=decision))
+
+
+def _removed(node, symbol):
+    """A removed object, judged at once, through the path that waits for the map."""
+    from omniplanner.plan_validity import REMOVED
+
+    node._pending_changes = [
+        {"kind": REMOVED, "symbol": symbol, "old": (2.0, 0.2), "new": None}
+    ]
+    node._settle_timer = NS(cancel=lambda: None)
+    node._map_state = lambda: ("e1", 99)  # the planner already holds the change
+    node._judge_changes()
+    return _replans(node)
+
+
+def test_a_scene_change_replan_waits_for_the_operator_and_goes_out_on_confirm():
+    node = _confirming(_node(_map()))
+    _carrying(node)
+    assert _removed(node, "O58") == []  # not replanned yet
+    assert node.f_pubs["/testbot_a/spot_executor_node/pause"].sent  # paused
+    held = _pending(node)
+    assert "o58 removed" in held["reason"] and held["robots"] == ["testbot_a"]
+    _decide(node, "confirm")
+    (reason,) = _replans(node)
+    assert "o58 removed" in reason
+    assert _pending(node) is None
+
+
+def test_a_declined_replan_is_not_sent():
+    node = _confirming(_node(_map()))
+    _carrying(node)
+    _removed(node, "O58")
+    _decide(node, "decline")
+    assert _replans(node) == [] and _pending(node) is None
+    _decide(node, "confirm")  # nothing is waiting any more
+    assert _replans(node) == []
+
+
+def test_a_new_plan_for_the_paused_robot_replaces_the_waiting_replan():
+    node = _confirming(_node(_map()))
+    _carrying(node)
+    _removed(node, "O58")
+    _carrying(node)  # the operator sent a new goal
+    assert _pending(node) is None
+    _decide(node, "confirm")
+    assert _replans(node) == []
+
+
+def test_a_reload_and_a_cut_route_wait_for_the_operator_too():
+    node = _confirming(_node(_map("e1", 4)))
+    node.finalize_plans({"testbot_a": _carry()}, {"testbot_a": np.zeros(4)})
+    node._note_map_state()
+    node.dsg_last = _map("e2", 1, places={k: v for k, v in PLACES.items() if k != "t3"})
+    node.dsg_callback(NS(full_update=True, layer_contents=None, header=None))
+    assert _replans(node) == []
+    assert "t3" in _pending(node)["reason"]
+
+
+def test_a_failed_pick_is_still_replanned_at_once():
+    node = _confirming(_about_to_pick())
+    _done(node, "testbot_a", "PICK", obj="o58", ok=False)
+    assert len(_replans(node)) == 1 and _pending(node) is None
+
+
+def test_a_reported_move_counts_however_short():
+    """The report decides that an object moved (AWCD reports none: a moved
+    object comes as removed + added; a map edit's move is deliberate)."""
+    from omniplanner.plan_validity import MOVED
+
+    node = _node(_map())
+    _carrying(node)
+    node._pending_changes = [
+        {"kind": MOVED, "symbol": "O58", "old": (2.0, 0.2), "new": (2.3, 0.2)}
+    ]
+    node._settle_timer = NS(cancel=lambda: None)
+    node._wait_for_map_then_replan = lambda v, reason, **_: node._request_replan(reason)
+    node._judge_changes()
+    (reason,) = _replans(node)
+    assert "o58 moved 0.3 m" in reason
