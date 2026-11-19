@@ -317,3 +317,17 @@ def test_compiled_pick_and_place_carry_the_object_class():
         if type(a).__name__ in ("Pick", "Place")
     ]
     assert len(acts) == 2 and all(a.object_class == "trash" for a in acts)
+
+
+def test_forgetting_a_robots_visits_keeps_what_the_others_made():
+    t = WorldStateTracker()
+    t.visited, t.inspected = {"t1", "t2", "t3", "t9"}, {"o1", "o2"}
+    t.visited_by = {"gauss": {"t1", "t2"}, "euclid": {"t2", "t3"}}
+    t.inspected_by = {"gauss": {"o1"}, "euclid": {"o2"}}
+    t.placed_by = {"gauss": {"o5"}}
+    assert t.forget_visits(keep=["Euclid"]) == {"gauss"}
+    assert t.visited == {"t2", "t3", "t9"}  # t9: nobody's, not forgotten
+    assert t.inspected == {"o2"}
+    assert t.visited_by == {"euclid": {"t2", "t3"}}
+    assert t.placed_by == {"gauss": {"o5"}}  # where an object is, is not a visit
+    assert t.forget_visits(keep=["euclid"]) == set()

@@ -1556,6 +1556,45 @@ class GoalManager(Node):
                 out[c] = (CONJ_IN_PROGRESS, _names(by))
         return out
 
+    def _visit_again(self, conjuncts) -> None:
+        """A visit is remembered so that a replan of the mission it was made
+        in does not make it twice -- not to refuse the operator who names the
+        place again. A finished visit is planned again when:
+
+        * the goal names its robot (a ``-by`` visit) and that robot has
+          finished its goal: its visits were for that goal;
+        * or nothing in the goal is left to do: sent all the same, it means
+          go again.
+
+        A visit no robot is named for stays done while it is sent next to
+        open work: that is the team's mission sent again (to give a lost
+        robot's part to another), and its finished parts are not repeated.
+        What the planner found holding on this map (an object already in its
+        place) is a fact, and always stays done.
+        """
+        held = {c for c in conjuncts if self._facts.get(c.lower()) == self._stamp}
+        done = [c for c in conjuncts if c not in held and self._is_done(c)]
+        all_done = bool(conjuncts) and len(done) + len(held) == len(conjuncts)
+        again = []
+        for c in done:
+            ast = _parse_goal(c.lower())
+            named = (
+                isinstance(ast, (list, tuple))
+                and len(ast) == 3
+                and str(ast[0]).endswith("-by")
+            )
+            entry = self._robots.get(str(ast[1])) if named else None
+            working = entry is not None and entry.status in (RUNNING, STALLED)
+            if all_done or (named and not working):
+                again.append(c)
+        for c in again:
+            for poi in _conjunct_symbols(_parse_goal(c.lower())):
+                self._achieved.pop(poi, None)
+        if again:
+            self.get_logger().info(
+                f"{' '.join(again)} was done, and is asked for again: planning it again"
+            )
+
     def _decide(self, msg: ConstrainedPddlGoalMsg) -> Decision:
         """What the planner still has to do for this goal.
 
@@ -1567,6 +1606,7 @@ class GoalManager(Node):
         """
         conjuncts = goal_conjuncts(msg.goal.pddl_goal)
         forbidden = extract_forbidden_pois(msg.constraints)
+        self._visit_again(conjuncts)
         classes = self._classify(conjuncts, forbidden)
         todo = [c for c in conjuncts if classes[c][0] != CONJ_DONE]
         new = [c for c in todo if classes[c][0] == CONJ_NEW]
@@ -1828,12 +1868,16 @@ class GoalManager(Node):
             and not busy
             and not new_mission
             and not robots
+            and not any(c.predicate == NEW_MISSION for c in msg.constraints)
         ):
             return msg
         out = ConstrainedPddlGoalMsg()
         out.goal.robot_id = msg.goal.robot_id
         out.goal.pddl_goal = todo[0] if len(todo) == 1 else f"(and {' '.join(todo)})"
-        out.constraints = list(msg.constraints)
+        # The mark is this method's to give: a goal kept for replanning was
+        # sent with it once, and a replan of that mission must not forget
+        # what the mission has done since.
+        out.constraints = [c for c in msg.constraints if c.predicate != NEW_MISSION]
         if robots:
             out.constraints = [c for c in out.constraints if c.predicate != USE_ROBOTS]
             out.constraints.append(

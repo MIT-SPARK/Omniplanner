@@ -75,6 +75,7 @@ from __future__ import annotations
 import json
 import threading
 import uuid
+from typing import Optional
 
 import numpy as np
 import rclpy
@@ -100,6 +101,7 @@ from omniplanner.world_state import (
     new_mission,
     split_held,
     unavailable_robots,
+    visits_to_forget,
 )
 from omniplanner_msgs.msg import ConstraintList
 from rclpy.executors import MultiThreadedExecutor
@@ -135,6 +137,54 @@ OPERATOR_GAVE_UP = "operator_gave_up"
 def _note(msg) -> str:
     """How an ActionDoneMsg says its action ended ("" for most)."""
     return getattr(getattr(msg, "header", None), "frame_id", "") or ""
+
+
+def last_waypoint_reached(near) -> Optional[int]:
+    """How far along the rest of its path a robot has come: the index of the
+    last waypoint of the first stretch it is near (near[i]: waypoint i ahead
+    is within reach of the robot), or None when it is near none.
+
+    Only the first stretch counts. A path that comes back over its own ground
+    (out to a place and home again, or twice past the same corner) has later
+    waypoints at the spot the robot is standing on: being near those says
+    nothing about the waypoints in between, which it has yet to drive.
+    Waypoints before the stretch were cut short, and count as passed.
+    """
+    idx = np.flatnonzero(np.asarray(near, dtype=bool))
+    if len(idx) == 0:
+        return None
+    gaps = np.flatnonzero(np.diff(idx) > 1)
+    return int(idx[gaps[0]] if len(gaps) else idx[-1])
+
+
+def path_lengths(path, start=None) -> np.ndarray:
+    """How far along the path each waypoint lies, in metres, counted from the
+    robot's start when it is known (else from the first waypoint)."""
+    path = np.asarray(path, dtype=float).reshape(-1, 2)
+    if len(path) == 0:
+        return np.zeros(0)
+    first = 0.0 if start is None else float(np.hypot(*(path[0] - start)))
+    legs = np.hypot(*np.diff(path, axis=0).T) if len(path) > 1 else np.zeros(0)
+    return first + np.concatenate([[0.0], np.cumsum(legs)])
+
+
+# How much farther along its path than it has driven a robot can be, in visit
+# radii: it is counted at a waypoint from one radius before it, may have been
+# counted at the last one a radius late, and cuts corners.
+PATH_SLACK_RADII = 2.5
+
+
+def waypoints_in_range(along, reached, driven, radius) -> np.ndarray:
+    """Which of the waypoints after `reached` the robot can have come to,
+    having driven `driven` metres since it reached that one.
+
+    A path that comes back over its own ground has a later waypoint at the
+    spot the robot stands on. Standing there is not having driven the path to
+    it: a waypoint farther along the path than the robot has driven is out of
+    range, however near it is.
+    """
+    base = along[reached] if reached >= 0 else 0.0
+    return along[reached + 1 :] - base <= driven + PATH_SLACK_RADII * radius
 
 
 class OmniPlannerRepairRos(OmniPlannerRos):
@@ -336,7 +386,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                     if msg.plan_id and msg.plan_id == self._plan_ids.get(
                         msg.robot_name
                     ):
-                        self._plan_over(msg.robot_name)
+                        self._plan_over(msg.robot_name, stopped=True)
                 self.get_logger().warning(
                     f"pick of {obj} by {msg.robot_name} was given up by the "
                     "operator: not replanning; its plan is over"
@@ -356,10 +406,19 @@ class OmniPlannerRepairRos(OmniPlannerRos):
 
     # ------------- plan validity under scene changes -------------
 
-    def _plan_over(self, robot: str) -> None:
+    def _plan_over(self, robot: str, stopped: bool = False) -> None:
         """A robot's plan finished or was stopped (call under _plan_lock): it
         is not watched any more, and no later scene change is held against it
-        or its goal."""
+        or its goal.
+
+        Only a plan that ran to its end accomplished its goal, which is when
+        its robot's visits stop being remembered (see visits_to_forget). A
+        stop does not -- every replan stops a Husky first -- and neither does
+        a pick the operator gave up."""
+        goals = self.__dict__.setdefault("_visit_goals", {})
+        if robot in self._running_plans:
+            goal = self._plan_goals.get(robot, goals.get(robot.lower(), ("",))[0])
+            goals[robot.lower()] = (goal, not stopped)
         plan = self._running_plans.pop(robot, None)
         self._plan_goals.pop(robot, None)
         self._dispatched.pop(robot, None)
@@ -374,7 +433,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
     def _stop_seen(self, robot: str) -> None:
         with self._plan_lock:
             running = robot in self._running_plans
-            self._plan_over(robot)
+            self._plan_over(robot, stopped=True)
         if running:
             self.get_logger().info(
                 f"{robot} was stopped: its plan is over and is no longer watched"
@@ -724,18 +783,43 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         names them; a named one still puts down what it holds first.
         """
         dsg = self._current_dsg()
+        assigned = assigned_robots(constraints)
+        with self._plan_lock:
+            running = {r.lower() for r in getattr(self, "_running_plans", None) or {}}
+            goals = self.__dict__.setdefault("_visit_goals", {})
+            for r in running:  # mid-plan: its goal is the one it is running
+                goals[r] = (self._plan_goals.get(r, goals.get(r, ("",))[0]), False)
+            over = visits_to_forget(goals, running, pddl_goal, assigned)
+            for r in over:
+                goals.pop(r, None)
         with self._world_lock:
+            # A robot's visits are the history of its goal. They are kept
+            # until the goal is accomplished -- through every replan and stop
+            # on the way -- and forgotten for that robot once it is. A goal
+            # sent when every robot is idle (new-mission) needs nothing more:
+            # each robot has either accomplished its goal, or is being sent on
+            # with it, or is being given another.
+            tracked = {*self.world_tracker.visited_by, *self.world_tracker.inspected_by}
             if new_mission(constraints):
-                self.world_tracker.reset()
+                # every robot is idle: visits no goal accounts for go too
+                over |= tracked - set(goals)
+            forgot = self.world_tracker.forget_visits(keep=tracked - over)
+            if new_mission(constraints):
+                self.world_tracker.forget_unclaimed()
+            if forgot:
                 self.get_logger().info(
-                    "New mission: forgot earlier visits and inspections "
-                    "(holding, and who put each object down, are kept)"
+                    "forgot the visits and inspections of "
+                    f"{', '.join(sorted(forgot))}: "
+                    + (
+                        "a new mission"
+                        if new_mission(constraints)
+                        else "goal accomplished or dropped"
+                    )
                 )
             state = self.world_tracker.snapshot(dsg)
         busy = unavailable_robots(constraints, state, goal_tokens(pddl_goal))
         # A use-robots goal is theirs alone: the rest of the fleet is left
         # alone, and keeps holding what it holds.
-        assigned = assigned_robots(constraints)
         outside = set()
         if assigned is not None:
             outside = {
@@ -930,15 +1014,22 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                     String, f"/{robot}/omniplanner_node/path_status", 10
                 )
             pose = robot_poses.get(robot)
+            start = None if pose is None else np.asarray(pose[:2], dtype=float)
             self._dispatched[robot] = {
                 "plan_id": getattr(plan, "plan_id", "") or "(path)",
                 "since": now,
                 "last_progress": now,
-                "pose": None if pose is None else np.asarray(pose[:2], dtype=float),
+                "pose": start,
                 "warned": False,
                 "path": path,
                 "reached": -1,
                 "steps": len(plan.actions) if path is None else len(path),
+                # How far along its path each waypoint lies, and how far the
+                # robot has driven: see waypoints_in_range.
+                "along": None if path is None else path_lengths(path, start),
+                "at": start,
+                "driven": 0.0,
+                "driven_at_reached": 0.0,
             }
 
     def _progress_tick(self) -> None:
@@ -968,12 +1059,25 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                     moved = True
                 path = sent["path"]
                 if path is not None and len(path):
+                    if sent["at"] is not None:
+                        sent["driven"] += float(np.hypot(*(xy - sent["at"])))
+                    sent["at"] = xy
+                    radius = self.world_tracker.visited_radius_m
                     ahead = np.hypot(*(path[sent["reached"] + 1 :] - xy).T)
-                    near = np.nonzero(ahead <= self.world_tracker.visited_radius_m)[0]
-                    if len(near):
-                        reached = sent["reached"] + 1 + int(near[-1])
+                    last = last_waypoint_reached(
+                        (ahead <= radius)
+                        & waypoints_in_range(
+                            sent["along"],
+                            sent["reached"],
+                            sent["driven"] - sent["driven_at_reached"],
+                            radius,
+                        )
+                    )
+                    if last is not None:
+                        reached = sent["reached"] + 1 + last
                         visited_points = path[sent["reached"] + 1 : reached + 1]
                         sent["reached"], sent["last_progress"] = reached, now
+                        sent["driven_at_reached"] = sent["driven"]
                         self._actions_done[robot] = reached
                         advanced = True
             finished = sent["path"] is not None and sent["reached"] >= sent["steps"] - 1

@@ -37,9 +37,7 @@ def test_a_finished_robot_makes_its_targets_done_while_others_stay_in_progress(h
     assert "euclid" not in h.node._robots
     assert set(h.node._robots) == {"hamilton", "hilbert"}
 
-    h.send("(visited-object o1)")
-    assert h.goals == [] and h.sent == []  # done: no plan, nobody paused
-    assert "already done" in h.texts[-1] and "o1 by euclid" in h.texts[-1]
+    assert h.node._is_done("(visited-object o1)")
 
     # o2 is hamilton's and still in progress: not replanned, not called done.
     h.send("(and (visited-object o1) (visited-object o2))")
@@ -284,8 +282,49 @@ def test_a_husky_is_busy_until_the_planner_says_its_path_is_done(h):
     _path_status(h, "gauss", "done")
     assert "gauss" not in h.node._robots
     assert "o3" in h.node._visited()
-    h.send("(visited-object o3)")
-    assert h.goals == [] and any("already done" in t for t in h.texts)
+
+
+def test_a_finished_visit_asked_for_again_is_planned_again(h):
+    """2026-11-18: gauss had been to its place and was sent there once more
+    while the Spots were still working. A finished visit is remembered so the
+    rest of its mission is not planned twice; asked for by itself, it is a
+    new instruction, and is not refused as "already done"."""
+    h.send("(and (visited-object o1) (visited-object-by gauss o3))")
+    h.plan(euclid=("pe", 2, ["o1"]), gauss=("", 0, ["o3"]))
+    _path_status(h, "gauss", "done")
+    assert h.node._is_done("(visited-object-by gauss o3)")
+    h.goals.clear()
+    h.send("(visited-object-by gauss o3)")
+    (sent,) = h.goals
+    assert sent.goal.pddl_goal == "(visited-object-by gauss o3)"
+    assert not _new_mission(sent)  # euclid is still running
+    assert not any("already done" in t for t in h.texts)
+    assert "o3" not in h.node._visited()
+
+
+def test_a_placement_that_holds_is_not_planned_again_with_a_visit(h):
+    h.send("(and (visited-object o1) (object-in-place o58 t2260))")
+    h.plan(euclid=("pe", 1, ["o1"]), hamilton=("ph", 1, ["o2"]))
+    h.done("euclid", "pe")
+    h.node._goal_holds(["(object-in-place o58 t2260)"])
+    h.goals.clear()
+    h.send("(and (visited-object o1) (object-in-place o58 t2260))")
+    (sent,) = h.goals
+    assert sent.goal.pddl_goal == "(visited-object o1)"
+
+
+def test_a_replan_is_not_a_new_mission(h):
+    """2026-11-18: the first goal of a mission is marked new-mission, and was
+    kept with the mark; when a pick failed, the replan carried it and the
+    planner forgot every visit the mission had made."""
+    h.send("(and (visited-object o1) (visited-object o2))")
+    (first,) = h.goals
+    assert _new_mission(first)
+    h.plan(euclid=("pe", 2, ["o1"]), hamilton=("ph", 2, ["o2"]))
+    h.goals.clear()
+    h.node._replan_request_cb(String(data="pick of o2 by hamilton failed"))
+    (again,) = h.goals
+    assert not _new_mission(again)
 
 
 def test_a_husky_that_stops_moving_gives_its_part_back(h):

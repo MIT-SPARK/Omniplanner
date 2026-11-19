@@ -378,6 +378,85 @@ def test_a_husky_reaching_its_path_visits_places():
     assert [json.loads(m.data)["status"] for m in sent] == ["progress", "done"]
 
 
+# Places 2 m apart: no waypoint is in reach of the next one's place.
+FAR_APART = {"t1": (1.0, 0.0), "t2": (3.0, 0.0), "t3": (5.0, 0.0), "t4": (7.0, 0.0)}
+
+
+def _at(node, robot, x):
+    node.f_poses[robot] = np.array([float(x), 0.0, 0.0, 0.0])
+    node._progress_tick()
+
+
+def test_a_path_that_comes_back_over_itself_is_followed_in_order():
+    """2026-11-18: gauss was sent out to t4896 and home again. Standing at the
+    start, it was within reach of the waypoints of the way back too, and was
+    credited with the whole loop: the next goal found t4896 "visited" and
+    sent it straight home."""
+    node = _node(_map(places=FAR_APART), poses={})
+    out_and_back = _path((1, 0), (3, 0), (5, 0), (7, 0), (5, 0), (3, 0), (1, 0))
+    node.finalize_plans({"testhusky": out_and_back}, node.f_poses)
+    _at(node, "testhusky", 1)  # at t1, where the path also ends
+    assert node._actions_done["testhusky"] == 0
+    assert "testhusky" in node._dispatched  # not at the end of its path
+    for x, reached in ((3, 1), (5, 2)):
+        _at(node, "testhusky", x)
+        assert node._actions_done["testhusky"] == reached
+    assert "t4" not in node.world_tracker.visited
+    _at(node, "testhusky", 7)
+    assert "t4" in node.world_tracker.visited_by["testhusky"]
+    assert "testhusky" in node._dispatched  # still has to come home
+    for x in (5, 3, 1):
+        _at(node, "testhusky", x)
+    assert "testhusky" not in node._dispatched
+    sent = node.f_pubs["/testhusky/omniplanner_node/path_status"].sent
+    assert json.loads(sent[-1].data)["status"] == "done"
+
+
+def test_the_first_stretch_of_waypoints_in_reach_is_how_far_a_robot_came():
+    far, near = False, True
+    assert repair.last_waypoint_reached([]) is None
+    assert repair.last_waypoint_reached([far, far]) is None
+    assert repair.last_waypoint_reached([near, near, far]) == 1
+    assert repair.last_waypoint_reached([far, near, far]) == 1  # cut a corner
+    assert repair.last_waypoint_reached([near, far, far, near, near]) == 0
+    assert repair.last_waypoint_reached([far, near, near, far, near]) == 2
+
+
+def test_a_robot_whose_plan_is_over_starts_the_next_with_no_visits():
+    """2026-11-18: a visit is remembered so that a replan of the same plan
+    does not make it again -- not after the plan is over, when a goal for the
+    same place means go there again."""
+    node = _node(_map(places=FAR_APART), poses={})
+    node.finalize_plans({"testhusky": _path((1, 0), (3, 0), (5, 0))}, node.f_poses)
+    _at(node, "testhusky", 1)
+    # Mid-plan: a replan starts from what the plan has done.
+    state = node.world_state_for("(visited-place-by testhusky t3)")
+    assert "t1" in state.visited and "t1" in state.visited_by["testhusky"]
+    _at(node, "testhusky", 3)
+    _at(node, "testhusky", 5)
+    assert "testhusky" not in node._dispatched  # at the end of its path
+    state = node.world_state_for("(visited-place-by testhusky t3)")
+    assert state.visited == set() and "testhusky" not in state.visited_by
+
+
+def test_a_finished_robot_does_not_take_a_running_robots_visits_with_it():
+    dsg = _map(places=FAR_APART)
+    node = _node(dsg, poses={})
+    node.finalize_plans(
+        {"testhusky": _path((1, 0), (3, 0)), "testbot_a": _carry()}, node.f_poses
+    )
+    for robot in ("testbot_a", "testhusky"):  # both came by t2
+        node.world_tracker.record("FOLLOW", True, robot, points=[(3, 0)], dsg=dsg)
+    node.world_tracker.record("FOLLOW", True, "testbot_a", points=[(7, 0)], dsg=dsg)
+    _at(node, "testhusky", 1)
+    _at(node, "testhusky", 3)  # testhusky is done; testbot_a still carries
+    assert "t1" in node.world_tracker.visited
+    state = node.world_state_for("(visited-place t2)")
+    assert "testhusky" not in state.visited_by
+    assert {"t2", "t4"} <= state.visited_by["testbot_a"]
+    assert {"t2", "t4"} <= state.visited and "t1" not in state.visited
+
+
 # ---------- P11: a plan that makes no progress ----------
 
 
