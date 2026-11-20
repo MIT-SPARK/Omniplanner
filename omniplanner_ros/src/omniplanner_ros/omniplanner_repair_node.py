@@ -51,6 +51,20 @@ adds:
   changes itself and publishes that count on ``~/map_version``: it only ever
   goes up. A new epoch is a whole new map: the route and the objects the plan
   acts on are judged against it afresh.
+* a map being rebuilt: heracles rebuilds or reloads the map in place, and a
+  map read meanwhile is half built (places without their edges). Before a
+  route, a reload's objects or a failed plan is acted on, the map database's
+  ``_MapState`` is read (``map_state_neo4j_uri``, by default from
+  ADT4_HERACLES_IP / ADT4_HERACLES_PORT): while a rebuild runs or failed, or
+  the database is at another (epoch, version) than the map held, nothing is
+  judged and no robot is stopped; it is checked again every
+  ``map_recheck_period_s`` until the map settles, then judged, and a plan that
+  failed meanwhile is planned again. A map that changed while it was checked
+  is checked again too. Past ``map_settle_timeout_s`` (or at once for a failed
+  rebuild) the operator is told on ``~/progress_alert``; the robots are still
+  not stopped. Without the database, a map of the same epoch with far fewer
+  places or place edges than the last one judged (``min_map_fraction``) is
+  waited on, and taken as it is after the timeout.
 * platforms: a Spot is paused on ``executor_pause_topic``; a Husky (a Path
   plan) has no executor to pause and is stopped with an empty Path on its
   plan topic. Only the robots a message can reach are reported as stopped.
@@ -81,6 +95,7 @@ and the upstream ``plugin.on_plan_compiled`` hook handle the per-call work.
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
@@ -101,6 +116,7 @@ from omniplanner.plan_validity import (
     broken_route,
     plan_dependencies,
     route_places,
+    unsettled_map,
 )
 from omniplanner.world_state import (
     MAP_METADATA_KEY,
@@ -121,7 +137,19 @@ from robot_executor_msgs.msg import ActionDoneMsg
 from std_msgs.msg import Bool, Int64, String
 from std_srvs.srv import Trigger
 
+from omniplanner_ros.map_state_db import MapStateDb
 from omniplanner_ros.omniplanner_node import OmniPlannerRos, plan_is_empty
+
+# A map under this many places is never taken for half loaded by its size.
+MIN_SIZED_MAP = 20
+
+
+def default_map_state_uri() -> str:
+    """The map database heracles' nodes use (ADT4_HERACLES_IP/PORT), or ""."""
+    ip = os.environ.get("ADT4_HERACLES_IP", "")
+    port = os.environ.get("ADT4_HERACLES_PORT", "")
+    return f"neo4j://{ip}:{port}" if ip and port else ""
+
 
 # robot_type values whose plan is a nav_msgs/Path (a Husky running phoenix).
 PATH_ROBOT_TYPES = {"husky", "phoenix"}
@@ -281,6 +309,10 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         # {robot -> what was dispatched to it and when it last made progress},
         # for the progress watchdog and a Husky's visits.
         self._dispatched: dict = {}
+        # The map database's _MapState (None: not read), and (epoch, size) of
+        # the last map judged settled; see _map_unsettled.
+        self._map_db = None
+        self._settled_map = None
 
         super().__init__()
 
@@ -378,6 +410,39 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         self._progress_pub = self.create_publisher(String, "~/progress_alert", 10)
         self._path_status_pubs = {}
         self.create_timer(1.0, self._progress_tick)
+
+        # A map being rebuilt is not judged (see _map_unsettled).
+        self.declare_parameter("map_state_neo4j_uri", default_map_state_uri())
+        self.declare_parameter(
+            "map_state_neo4j_user", os.environ.get("ADT4_NEO4J_USERNAME", "neo4j")
+        )
+        self.declare_parameter(
+            "map_state_neo4j_pass", os.environ.get("ADT4_NEO4J_PASSWORD", "neo4j_pw")
+        )
+        self.declare_parameter("map_settle_timeout_s", 120.0)
+        self.declare_parameter("map_recheck_period_s", 1.0)
+        self.declare_parameter("min_map_fraction", 0.8)
+        uri = str(self.get_parameter("map_state_neo4j_uri").value)
+        if uri:
+            self._map_db = MapStateDb(
+                uri,
+                (
+                    str(self.get_parameter("map_state_neo4j_user").value),
+                    str(self.get_parameter("map_state_neo4j_pass").value),
+                ),
+            )
+        else:
+            self.get_logger().warning(
+                "no map database to read the map state from "
+                "(map_state_neo4j_uri): a half-built map is told by its size only"
+            )
+        self._map_settle_timeout_s = float(
+            self.get_parameter("map_settle_timeout_s").value
+        )
+        self._map_recheck_period_s = float(
+            self.get_parameter("map_recheck_period_s").value
+        )
+        self._min_map_fraction = float(self.get_parameter("min_map_fraction").value)
         self.get_logger().info(
             "OmniPlannerRepairRos listening for persistent constraints on "
             "~/constraints and mission progress on /action_done"
@@ -681,9 +746,11 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         if change is None:
             return
         old, new, reloaded = change
-        verdict = self._check_routes()
-        if reloaded and not verdict.startswith("route affected"):
-            verdict += "; " + self._judge_reload()
+        why = self._map_unsettled()
+        if why:
+            verdict = self._defer_map_check(why, reloaded=reloaded)
+        else:
+            verdict = self._judge_map(self._settled_now(reloaded))
         if old is None:
             what = f"first map: map_version {new[1]}"
         elif reloaded:
@@ -714,6 +781,183 @@ class OmniPlannerRepairRos(OmniPlannerRos):
                 self._announced = set()
         return old, key, reloaded
 
+    def _judge_map(self, reloaded: bool) -> str:
+        """Judge the route, and after a reload the objects, on the map held."""
+        verdict = self._check_routes()
+        if reloaded and not verdict.startswith(("route affected", "deferred")):
+            verdict += "; " + self._judge_reload()
+        return verdict
+
+    # ------------- a map being rebuilt -------------
+
+    def _read_map_db(self):
+        """The map database's map state, or None; says when that changes."""
+        db = getattr(self, "_map_db", None)
+        if db is None:
+            return None
+        state = db.read()
+        error = "" if state is not None else (db.error or "unknown error")
+        if error != self.__dict__.get("_map_db_error", ""):
+            self._map_db_error = error
+            if error:
+                self.get_logger().warning(
+                    f"cannot read the map state from {db.uri} ({error}): a "
+                    "half-built map is told by its size only"
+                )
+            else:
+                self.get_logger().info(f"map state readable again from {db.uri}")
+        return state
+
+    @staticmethod
+    def _map_size(dsg):
+        """(places, place edges) of a map; None for no map."""
+        if dsg is None:
+            return None
+        try:
+            layer = dsg.get_layer(spark_dsg.DsgLayers.MESH_PLACES)
+            return (layer.num_nodes(), layer.num_edges())
+        except Exception:
+            return (0, 0)
+
+    def _map_unsettled(self) -> str:
+        """Why the map held now must not be judged ("" if it can be): see
+        omniplanner.plan_validity.unsettled_map. Sets _map_db_known."""
+        held = self._map_state()
+        size = self._map_size(self._current_dsg())
+        db = self._read_map_db()
+        self._map_db_known = db is not None
+        settled = getattr(self, "_settled_map", None)
+        if settled is not None and max(settled[1]) < MIN_SIZED_MAP:
+            settled = None
+        why = unsettled_map(
+            held, db, size, settled, getattr(self, "_min_map_fraction", 0.8)
+        )
+        if not why and size is not None:
+            self._settled_map = (held[0], size)
+        return why
+
+    def _map_changed_since(self, key) -> str:
+        """Why a check begun on the map (epoch, version) key must not be
+        acted on: the map changed under it, or is not settled now."""
+        if self._map_state() != key:
+            return "the map changed while it was checked"
+        return self._map_unsettled()
+
+    def _map_wait(self) -> dict:
+        """Made on first use: the recheck timer while the map is not settled,
+        since when, why, whether a reload is still to be judged, the failed
+        plan to plan again, and whether the operator was told."""
+        return self.__dict__.setdefault(
+            "_map_wait_state",
+            {
+                "timer": None,
+                "since": 0.0,
+                "why": "",
+                "reloaded": False,
+                "retry": None,
+                "alerted": False,
+            },
+        )
+
+    def _defer_map_check(self, why: str, reloaded=False, retry=None) -> str:
+        """Judge nothing on this map and stop no robot; check again until it
+        settles. Returns the verdict, for the log."""
+        wait = self._map_wait()
+        with self._plan_lock:
+            wait["why"] = why
+            wait["reloaded"] = wait["reloaded"] or reloaded
+            if retry is not None:
+                wait["retry"] = retry  # an older one was superseded by it
+            start = wait["timer"] is None
+            if start:
+                wait["since"], wait["alerted"] = self._now_s(), False
+                wait["timer"] = self.create_timer(
+                    getattr(self, "_map_recheck_period_s", 1.0), self._recheck_map
+                )
+        if start:
+            self.get_logger().warning(
+                f"not judging the route or the plan on this map: {why}. No robot "
+                "is stopped for it; checking again until the map is settled"
+            )
+        return f"deferred: {why}"
+
+    def _settled_now(self, reloaded: bool) -> bool:
+        """The map is settled and about to be judged: a reload still waiting
+        to be judged is judged with it, and the recheck ends unless a failed
+        plan waits for it. Returns whether to judge a reload."""
+        wait = self._map_wait()
+        timer = None
+        with self._plan_lock:
+            reloaded, wait["reloaded"] = reloaded or wait["reloaded"], False
+            if wait["retry"] is None:
+                timer, wait["timer"] = wait["timer"], None
+        if timer is not None:
+            timer.cancel()
+            self.destroy_timer(timer)
+        return reloaded
+
+    def _recheck_map(self) -> None:
+        wait = self._map_wait()
+        why = self._map_unsettled()
+        waited = self._now_s() - wait["since"]
+        timeout = getattr(self, "_map_settle_timeout_s", 120.0)
+        if why and not getattr(self, "_map_db_known", False) and waited >= timeout:
+            # Nothing says a rebuild runs: a map this much smaller for this
+            # long is the map.
+            self.get_logger().warning(
+                f"{why}, for {waited:.0f} s, and the map state cannot be read: "
+                "taking the map as it is"
+            )
+            held = self._map_state()
+            self._settled_map = (held[0], self._map_size(self._current_dsg()))
+            why = ""
+        if why:
+            failed = why.startswith("the last map rebuild failed")
+            with self._plan_lock:
+                wait["why"] = why
+                alert = not wait["alerted"] and (failed or waited >= timeout)
+                wait["alerted"] = wait["alerted"] or alert
+            if alert:
+                text = (
+                    f"The map is not settled after {waited:.0f} s: {why}. Route "
+                    "and plan checks wait for it, and no robot was stopped for "
+                    "it. Reload or reset the map if it stays this way."
+                )
+                self.get_logger().error(text)
+                self._progress_pub.publish(String(data=text))
+            return
+        with self._plan_lock:
+            timer, wait["timer"] = wait["timer"], None
+            if timer is None:
+                return  # settled and judged already
+            reloaded, wait["reloaded"] = wait["reloaded"], False
+            retry, wait["retry"] = wait["retry"], None
+            before = wait["why"]
+        timer.cancel()
+        self.destroy_timer(timer)
+        verdict = self._judge_map(reloaded)
+        self.get_logger().info(
+            f"map settled after {waited:.1f} s ({before}): {verdict}"
+        )
+        if retry is not None:
+            self.get_logger().info("planning the goal that failed meanwhile again")
+            # Off this callback: planning takes as long as it takes.
+            threading.Thread(target=retry, daemon=True).start()
+
+    def defer_plan_failure(self, name, exc, retry) -> bool:
+        """A plan that failed on a map not settled (half built: "the goal is
+        unreachable", 0 operators) is planned again once it is; nothing is
+        reported, so no robot is stopped for it."""
+        why = self._map_unsettled()
+        if not why:
+            return False
+        self.get_logger().warning(
+            f"{name}: no plan ({exc}), but on a map that is not settled ({why}); "
+            "planning the goal again once it is"
+        )
+        self._defer_map_check(why, retry=retry)
+        return True
+
     def _expect_announcement(self, version: int, verdict: str) -> None:
         """Warn if no scene change message announces this map version soon."""
         timer = None
@@ -740,6 +984,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             robots = list(self._plan_robots)
         if not deps:
             return "no objects to recheck"
+        key = self._map_state()
         dsg = self._current_dsg()
         where = {}
         try:
@@ -760,6 +1005,9 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         )
         if not affected:
             return f"objects the plan acts on unchanged: {sorted(deps)}"
+        why = self._map_changed_since(key)
+        if why:
+            return self._defer_map_check(why, reloaded=True)
         reason = "map reloaded: " + "; ".join(r for _, r in affected)
         self._pause_robots(robots, reason)
         self._request_replan(reason)
@@ -805,6 +1053,7 @@ class OmniPlannerRepairRos(OmniPlannerRos):
             self._route_version = version
             route, done = dict(self._route), dict(self._actions_done)
             robots = list(self._plan_robots)
+        key = self._map_state()
         dsg = self._current_dsg()
         places = self._mesh_places(dsg)
         broken = broken_route(
@@ -816,6 +1065,11 @@ class OmniPlannerRepairRos(OmniPlannerRos):
         if not broken:
             watched = {p for legs in route.values() for _, ps in legs for p in ps if p}
             return f"route not affected ({len(watched)} place(s) watched)"
+        why = self._map_changed_since(key)
+        if why:
+            with self._plan_lock:
+                self._route_version = None  # judged again once settled
+            return self._defer_map_check(why)
         with self._plan_lock:
             self._route = {}  # judged; the new plan brings its own route
         reason = "map changed: " + "; ".join(why for _, why in broken)
