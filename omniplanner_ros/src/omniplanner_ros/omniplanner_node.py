@@ -465,6 +465,12 @@ class OmniPlannerRos(Node):
         """Problems for the status monitor to show; subclasses add theirs."""
         return []
 
+    def defer_plan_failure(self, name, exc, retry) -> bool:
+        """A failed plan a subclass takes back, to plan it again later by
+        calling retry() (which does nothing if a newer goal came meanwhile).
+        True: the failure is not reported now. Here: never."""
+        return False
+
     def finalize_plans(self, plan_dict, robot_poses):
         """Last look at the compiled plans before they are published.
 
@@ -572,7 +578,9 @@ class OmniPlannerRos(Node):
                 # status monitor never recovers.
                 done_planning()
                 # A newer goal is already waiting; this failure no longer matters.
-                if not superseded():
+                if not superseded() and not self.defer_plan_failure(
+                    name, exc, lambda: superseded() or plan_handler(msg)
+                ):
                     self.plan_failed_pub.publish(String(data=f"{name}: {exc}"))
                     self.publish_plan_status(name, msg, False, str(exc))
                 return
