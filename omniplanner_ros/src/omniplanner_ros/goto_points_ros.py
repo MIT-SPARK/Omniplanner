@@ -41,6 +41,8 @@ def compile_plan(adaptor, plan_frame: str, p: GotoPointsPlan):
 
 @dispatch
 def compile_plan(adaptor: PhoenixPlanningAdaptor, plan_frame: str, p: GotoPointsPlan):
+    if getattr(adaptor, "sequential_tasks", False):
+        return compile_points_plan(p, str(uuid.uuid4()), adaptor.name, plan_frame)
     return compile_points_path(p, adaptor.name, plan_frame)
 
 

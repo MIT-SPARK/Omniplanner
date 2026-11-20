@@ -216,7 +216,29 @@ def compile_pddl_plan(
 def compile_plan(
     adaptor: PhoenixPlanningAdaptor, plan_frame: str, p: SymbolicContext[PddlPlan]
 ):
+    if getattr(adaptor, "sequential_tasks", False):
+        return compile_phoenix_tasks(p, adaptor.name, plan_frame)
     return compile_phoenix_pddl_plan(p, adaptor.name, plan_frame)
+
+
+def compile_phoenix_tasks(contextualized_plan, robot_name, frame_id):
+    """Keep each movement action as a task; never infer legs from geometry."""
+    plan = contextualized_plan.value
+    if len(plan.symbolic_actions) != len(plan.parameterized_actions):
+        raise ValueError("Symbolic actions and grounded paths have different lengths")
+    actions = []
+    for symbolic, parameters in zip(plan.symbolic_actions, plan.parameterized_actions):
+        if symbolic[0] == "goto-poi":
+            actions.append(Follow(frame=frame_id, path2d=parameters))
+        elif symbolic[0] in ("inspect", "pick-object", "place-object"):
+            # Preserve the legacy Phoenix behavior explicitly: these are not
+            # navigation tasks and the Husky has no executor for them yet.
+            logger.warning("Phoenix cannot execute %s; skipping it", symbolic[0])
+        else:
+            raise NotImplementedError(f"Unsupported Phoenix action: {symbolic[0]}")
+    if not actions:
+        raise ValueError("Phoenix mission contains no movement tasks")
+    return ActionSequence(plan_id=str(uuid.uuid4()), robot_name=robot_name, actions=actions)
 
 
 def compile_phoenix_pddl_plan(contextualized_plan, robot_name, frame_id):
