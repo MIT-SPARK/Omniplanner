@@ -231,3 +231,48 @@ def broken_route(
                 broken.append((robot, why))
                 break
     return broken
+
+
+def unsettled_map(held, db, size, settled, min_fraction: float = 0.8) -> str:
+    """Why the map the planner holds must not be judged now ("" if it can be).
+
+    heracles rebuilds the map in place (change_log.rebuild, a reload): every
+    map node is deleted and loaded again, under a "rebuilding" mark on its
+    ``_MapState``. A map read in that time is half built -- places without
+    their edges, or none at all -- and judging a route or a goal on it stops
+    robots for edges that were never gone.
+
+    held: (map_epoch, map_version) of the planner's map. db: what the map
+    database says now, {rebuilding, failed, epoch, version}, or None when it
+    cannot be read. With it, the map can be judged only when no rebuild runs
+    or has failed, and the database is at the planner's map: a map published
+    mid-rebuild carries the version from before it, and the rebuild ends by
+    bumping the version.
+
+    Without it, size and settled stand in: size is (places, place edges) of
+    the planner's map (None: no map), settled (epoch, size) of the last map
+    judged (or None).
+    A map of the same epoch with far fewer of either looks half loaded.
+    """
+    if db is not None:
+        if db.get("rebuilding"):
+            return "the map is being rebuilt"
+        if db.get("failed"):
+            return f"the last map rebuild failed ({db['failed']})"
+        now = (str(db.get("epoch") or ""), int(db.get("version") or 0))
+        if now != (str(held[0] or ""), int(held[1] or 0)):
+            return (
+                f"the planner's map (map_version {held[1]}) is not the "
+                f"database's (map_version {now[1]}): a newer map is on its way"
+            )
+        return ""
+    if size is None:
+        return ""
+    if size[0] == 0:
+        return "the map has no places"
+    if settled is None or settled[0] != held[0]:
+        return ""
+    for what, n, before in zip(("places", "place edges"), size, settled[1]):
+        if before and n < min_fraction * before:
+            return f"the map has {n} {what}, {before} before: it looks half loaded"
+    return ""

@@ -363,6 +363,8 @@ def test_a_cut_route_pauses_the_robots_and_replans():
         _route_version=3,
         _plan_robots=["euclid", "hilbert"],
         _map_version=lambda: 4,
+        _map_state=lambda: ("e1", 4),
+        _map_changed_since=lambda key: "",  # a settled map
         _current_dsg=lambda: NS(has_edge=lambda a, b: True),
         _mesh_places=lambda dsg: {"t1": 1, "t2": 2, "t4": 4},  # t3 deleted
         _pause_robots=lambda robots, why: paused.append(robots),
