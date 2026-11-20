@@ -212,12 +212,28 @@ class PhoenixPlanningAdaptor(RobotPlanningAdaptor):
         # a Path plan is latest-only, as before (depth 1, whatever qos_profile says)
         data["qos_profile"] = 1
         super().__init__(config, **data)
+        self.sequential_tasks = getattr(config, "sequential_tasks", False)
+        self.task_pub = None
+        if self.sequential_tasks:
+            self.task_pub = data["node"].create_publisher(
+                ActionSequenceMsg,
+                f"/{self.name}/omniplanner_node/compiled_tasks_out", 1)
+
+    def publish_plan(self, plan):
+        if self.sequential_tasks:
+            if not isinstance(plan, ActionSequenceMsg):
+                raise TypeError("Sequential Phoenix execution requires an action sequence")
+            # Never send the flattened preview to the legacy path executor.
+            self.task_pub.publish(plan)
+        else:
+            super().publish_plan(plan)
 
 
 @register_config("robot_adaptor", name="phoenix", constructor=PhoenixPlanningAdaptor)
 @dataclass
 class PhoenixRobotConfig(RobotConfig):
-    pass
+    # Explicit opt-in; requires phoenix_task_executor and disabling lrp_gen_node.
+    sequential_tasks: bool = False
 
 
 @dataclass
